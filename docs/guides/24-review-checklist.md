@@ -126,7 +126,7 @@ lock.
   merge; the whole `scripts/local_ci.sh` at the end of a batch or a release).
 - [ ] Where the app reads settings or secrets: `scripts/one_input.sh` (`scripts/local_ci.sh oneinput`) with the apps,
   started with `DATABASE_URL` alone.
-- [ ] Where the app declares a service or a companion's sign-in: `scripts/companions_rehearsal.sh` or
+- [ ] Where the app declares a service or a companion's sign-in: the kernel's `companions_it` and
   `scripts/oidc_rehearsal.sh` as they apply.
 - [ ] Where the app changes its interface: the frontend the platform pins (`FRONTEND_REV` in the `Dockerfile`) is the
   one `ui/dist/.source` names, or one the app was checked against.
@@ -145,7 +145,7 @@ lock.
 ## Checked by
 
 The scripts named in each item: `scripts/check_apps.py`, `settings.py`, `secret_paths.py`, `mutation_paths.py`,
-`licenses.py`, `mutants.py`, `registry.py`, `app_ci.sh`, `local_ci.sh`, `one_input.sh`, `companions_rehearsal.sh`,
+`licenses.py`, `mutants.py`, `registry.py`, `app_ci.sh`, `local_ci.sh`, `one_input.sh`,
 `oidc_rehearsal.sh`; the server's `compiled_apps_fit_together`; Ferrum-Frontend's `packages/build/cli.mjs check`.
 Every item marked **(reviewed)** is a person's.
 

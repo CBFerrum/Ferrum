@@ -990,7 +990,6 @@ MUTANTS = [
     ("companion-renders-with-the-vault-closed", "crates/kernel/src/companion.rs", "        self.db.vault.installation()?;\n        let vault = crate::vault::handle_of(self, owner)?;\n", "        let vault = crate::vault::handle_of(self, owner)?;\n", COMPANIONS),
     ("companion-renders-where-it-is-refused", "crates/kernel/src/companion.rs", "            Some(why) => Err(Error::Conflict(", "            Some(_) => Ok(()),\n            Some(why) => Err(Error::Conflict(", COMPANIONS),
     ("companion-keeps-twice", "crates/kernel/src/vault/secrets.rs", "                > 0;\n            if marked {", "                >= 0;\n            if marked {", COMPANIONS),
-    ("object-store-renders-any-store", "server/src/companions.rs", "    if bundled {\n        return None;", "    if true {\n        return None;", ("-p", "ferrum-server", "--lib", "companions::tests")),
     ("companion-writes-among-others-files", "crates/kernel/src/companion.rs", "        if !listed.contains(&name) {\n", "        if false {\n", COMPANION_UNIT),
     ("companion-renders-at-once-into-one-directory", "crates/kernel/src/companion.rs", "    handle.lock().map_err(", "    handle.lock_shared().map_err(", COMPANION_UNIT),
     ("companion-secret-in-a-plain-file", "crates/kernel/src/companion.rs", "    for f in files.iter().filter(|f| !f.secret) {\n", "    for f in files.iter().filter(|_| false) {\n", COMPANION_UNIT),

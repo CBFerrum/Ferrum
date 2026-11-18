@@ -95,13 +95,7 @@ pub async fn at_start(db: &Db, hooks: &HookRegistry, platform: &Vault, config: &
             continue;
         }
         let found = platform.reveal_at_start(db, hooks, &def.key).await.map_err(|e| format!("{} in the vault: {e}", def.key))?;
-        let Some((value, rule)) = found else {
-            // The keys a bundled store handed over at its first start, until the vault keeps them (adopt_handoff).
-            if let Some((_, text)) = crate::store::handed_over().into_iter().flat_map(|h| h.keys).find(|(k, _)| *k == def.key) {
-                out.values.insert(def.key.clone(), text);
-            }
-            continue;
-        };
+        let Some((value, rule)) = found else { continue };
         let text = Zeroizing::new(String::from_utf8(value.to_vec()).map_err(|_| format!("{} in the vault is not text", def.key))?);
         if let Some(host) = sent_to(&def.key, snapshot)
             && !rule.hosts.contains(&host)
@@ -165,35 +159,6 @@ pub async fn adopt(st: &AppState, env: &(dyn Fn(&str) -> Option<String> + Sync))
             Ok(false) => {}
             Err(e) => tracing::warn!(secret = %def.key, "storing the environment's secret in the vault (the next start tries again): {e}"),
         }
-    }
-    stored
-}
-
-/// The keys a bundled store handed over at its first start (crate::store::HANDOFF, deploy/docker-compose.yml), stored in
-/// the vault once, as `adopt` stores the environment's; the file is then deleted, so that the vault alone keeps them
-/// here. Kept while the vault is closed, a key could not be stored, or the bucket the store asked to have set up is not
-/// yet (the next start tries again). The keys stored.
-pub async fn adopt_handoff(st: &AppState) -> Vec<String> {
-    let Some(handoff) = crate::store::handed_over() else { return Vec::new() };
-    if handoff.keys.is_empty() || !st.vault_open {
-        return Vec::new();
-    }
-    let snapshot = &st.live_settings.start.snapshot;
-    let (mut stored, mut all) = (Vec::new(), !handoff.set_up_bucket || crate::store::bucket_set_up());
-    for (key, text) in handoff.keys {
-        let Some(def) = find(key) else { continue };
-        let (value, rule) = kept(def, text.trim(), snapshot);
-        match st.vault.adopt(&st.kernel, Scope::Installation, key, value, rule, crate::companions::HANDED_OVER_BY).await {
-            Ok(true) => stored.push(key.to_string()),
-            Ok(false) => {}
-            Err(e) => {
-                all = false;
-                tracing::warn!(secret = %key, "storing the object store's handed-over key in the vault (the next start tries again): {e}");
-            }
-        }
-    }
-    if all && let Err(e) = std::fs::remove_file(crate::store::handoff_path()) {
-        tracing::warn!("the object store's keys are in the vault, and their file could not be deleted: {e}");
     }
     stored
 }

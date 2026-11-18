@@ -1,13 +1,11 @@
 //! Where the server keeps files (docs/plan/stateless.md, D6; docs/operations.md, "Object storage").
 //!
-//! * **The object store** the settings name (crate::objects::s3), and nothing else outside development and tests. An
-//!   installation that keeps its files in a local directory goes on doing so, warned, until it moves them ([`decide`]).
-//! * **Moving files** from that directory: once the store is set, a read looks in the store first and the directory
-//!   second, a write goes to the store, and a deletion takes both, until `ferrum task files_move` ([`move_files`]) has
-//!   copied every file, read each copy back the same, and recorded that the directory is no longer read.
+//! * **The object store** the settings name (crate::objects::s3), and nothing else outside development and tests, which
+//!   keep files in a directory ([`decide`]). The server never makes, keys or fills a store: it is given one, and the doctor
+//!   says what the bucket lacks. `ferrum task bucket_set_up` (crate::tasks) is the one thing that changes a bucket.
 //! * **Deletions that wait** ([`Releases`], `files_delete_after_days`): names are never used again for other bytes, so a
 //!   database restored to a moment within the backups' reach needs only that the objects it names still exist.
-//! * **The bucket** asked what the doctor checks, and set up where the settings say so ([`Bucket`]).
+//! * **The bucket** asked what the doctor checks, and set up on request ([`Bucket`]).
 
 use crate::objects::Objects;
 use crate::state::Settings;
@@ -110,22 +108,9 @@ pub struct Health {
     up: std::sync::atomic::AtomicBool,
     failures: AtomicU64,
     cause: std::sync::Mutex<Option<String>>,
-    set_up: std::sync::OnceLock<SetUp>,
-}
-
-/// A bucket set-up asked for (`s3_set_up_bucket`, or the bundled store's handoff), kept to be tried again.
-pub struct SetUp {
-    pub bucket: Bucket,
-    pub keep_days: u64,
-    pub db: Db,
 }
 
 impl Health {
-    /// Has every probe set the bucket up first, until that has worked: before it, the replica is not ready.
-    pub fn ask_set_up(&self, set_up: SetUp) {
-        let _ = self.set_up.set(set_up);
-    }
-
     /// Whether a probe has worked since this replica started.
     pub fn answered(&self) -> bool {
         self.answered.load(Ordering::SeqCst)
@@ -195,10 +180,7 @@ pub enum Change {
 
 /// One write-then-read probe of `objects`, recorded, and said in the log when it changes what is known (once each).
 pub async fn check(objects: &Objects) {
-    let outcome = match set_up_first(objects).await {
-        Ok(()) => objects.probe().await.map_err(|e| e.to_string()),
-        Err(e) => Err(e),
-    };
+    let outcome = objects.probe().await.map_err(|e| e.to_string());
     match (objects.health.record(&outcome), &outcome) {
         (Change::NotReady, Err(e)) => tracing::error!(
             "object storage did not take a write and a read ({e}): this replica is not ready until it does, and asks it again every \
@@ -217,27 +199,24 @@ pub async fn check(objects: &Objects) {
     }
 }
 
-/// The bucket's set-up, where one was asked for and has not worked yet in this process: one replica at a time (it is
-/// safe to run again), its failure the cause the replica is not ready.
-async fn set_up_first(objects: &Objects) -> std::result::Result<(), String> {
-    let Some(s) = objects.health.set_up.get().filter(|_| !bucket_set_up()) else { return Ok(()) };
-    let failed = |e: String| format!("setting up the bucket failed (making it, then versioning, lifecycle rules and encryption): {e}");
-    let mut conn = s.db.direct.acquire().await.map_err(|e| failed(e.to_string()))?.detach();
-    let mine: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(SET_UP_LOCK).fetch_one(&mut conn).await.map_err(|e| failed(e.to_string()))?;
-    if !mine {
-        return Err("another replica is setting up the bucket".into());
+/// Where this server keeps files, decided as it starts; refused, saying what to set instead (rule 8): the store the
+/// settings name, or, only in development and tests (`development`), the local directory `files_dir`. A production start
+/// without a bucket is refused: only this machine sees a directory, and a new container starts without it.
+pub fn decide(settings: &Settings, development: bool) -> std::result::Result<Objects, String> {
+    if !settings.s3_bucket.trim().is_empty() {
+        return Objects::new(settings);
     }
-    let done = s.bucket.set_up(s.keep_days).await;
-    let _ = sqlx::query("select pg_advisory_unlock($1)").bind(SET_UP_LOCK).execute(&mut conn).await;
-    let done = done.map_err(failed)?;
-    if !done.is_empty() {
-        tracing::info!(done = %done.join(", "), "set up the object store's bucket");
+    let dir = settings.files_dir.as_str();
+    if !development {
+        return Err(format!(
+            "no object storage is set, and only development and tests keep files in a local directory ({dir}): only this machine sees it, and a \
+             new container starts without it. Set FERRUM_S3_BUCKET, with FERRUM_S3_ENDPOINT, FERRUM_S3_REGION and the keys for an S3-compatible \
+             store (docs/operations.md, \"Object storage\")"
+        ));
     }
-    Ok(())
+    std::fs::create_dir_all(dir).map_err(|e| format!("files_dir: {e}"))?;
+    Objects::local(dir)
 }
-
-/// Session advisory lock: one bucket set-up at a time.
-const SET_UP_LOCK: i64 = 0x0FE2_2102;
 
 /// How often a replica asks its store until it has answered, and after.
 const NOT_READY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
@@ -258,232 +237,6 @@ pub fn spawn_health(objects: std::sync::Arc<Objects>, mut stop: tokio::sync::wat
     })
 }
 
-/// What a start found about where files are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Found {
-    /// The local directory: development and tests, or (`kept`) an installation found keeping its files there.
-    Directory { kept: bool },
-    /// The object store; `moving`: the directory is read second until `files_move` has confirmed it.
-    Store { moving: bool },
-}
-
-/// The newest object the database names: a workspace's newest file, else the newest interface's first file. `None` on a
-/// database that names none (a new installation).
-async fn newest_named(db: &Db) -> Result<Option<String>> {
-    let mut tx = db.system_tx().await?;
-    // ponytail: no index on created_at across workspaces, a scan at the start of a server without a bucket (one
-    // machine's files); an index if such installations grow large.
-    let file: Option<String> = sqlx::query_scalar("select storage_key from file_object order by created_at desc limit 1").fetch_optional(&mut *tx).await?;
-    let ui: Option<(String, String, serde_json::Value)> =
-        sqlx::query_as("select app, digest, files from ui_release order by created_at desc limit 1").fetch_optional(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(file.or_else(|| {
-        let (app, digest, files) = ui?;
-        let first = files.as_object()?.keys().next()?.clone();
-        Some(format!("ui/{app}/{digest}/{first}"))
-    }))
-}
-
-/// Where files have moved (`file_store`), if a server of this release has seen them in a store.
-async fn state(db: &Db) -> Result<Option<(String, chrono::DateTime<chrono::Utc>)>> {
-    let mut tx = db.system_tx().await?;
-    let row = sqlx::query_as("select state, since from file_store").fetch_optional(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(row)
-}
-
-/// Whether a local directory holds anything of an installation's (hidden entries and `lost+found` aside).
-fn holds_files(dir: &str) -> bool {
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().any(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            !name.starts_with('.') && name != "lost+found"
-        })
-    })
-}
-
-/// Where this server keeps files, decided as it starts; refused, saying what to set instead (rule 8):
-///
-/// * **No bucket** (`files_dir`): with `require_object_storage`, refused as before. Outside development and tests, used
-///   only by an installation that already keeps its files there: the newest object its database names is in that
-///   directory. A new database names none; a wrong or empty directory (a volume not mounted, another machine's) lacks it;
-///   a database whose files have moved to a store says so (`file_store`). So no mistake in the settings makes a new or
-///   moved installation keep files where a new container would lose them.
-/// * **A bucket**: the store, recorded in `file_store` (once, whichever replica starts first; never by a guest of a newer
-///   build's database): files moving while the directory still holds any, the directory then read second until the move
-///   is confirmed; else the store alone.
-pub async fn decide(db: &Db, settings: &Settings, development: bool, guest: bool) -> std::result::Result<(Objects, Found), String> {
-    let err = |e: Error| format!("where files are kept: {e}");
-    let dir = settings.files_dir.as_str();
-    if settings.s3_bucket.trim().is_empty() {
-        if settings.require_object_storage {
-            return Err("object storage is required so every replica sees the same attachments: set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT for \
-                        S3-compatible stores), or FERRUM_REQUIRE_OBJECT_STORAGE=false for a single-server install"
-                .into());
-        }
-        let kept = !development;
-        if kept {
-            if let Some((_, since)) = state(db).await.map_err(err)? {
-                return Err(format!(
-                    "this installation keeps its files in object storage (since {}), and no bucket is set: set FERRUM_S3_BUCKET (with its \
-                     endpoint, region and keys) as before. A local directory is not read",
-                    since.format("%Y-%m-%d")
-                ));
-            }
-            match newest_named(db).await.map_err(err)? {
-                None => {
-                    return Err(format!(
-                        "no object storage is set, and a new installation does not keep files in a local directory ({dir}): only this machine \
-                         sees it, and a new container starts without it. Set FERRUM_S3_BUCKET, with FERRUM_S3_ENDPOINT, FERRUM_S3_REGION and the \
-                         keys for an S3-compatible store (docker-compose.yml bundles one; docs/operations.md, \"Object storage\"). Only development \
-                         and tests keep files in a directory"
-                    ));
-                }
-                Some(key) if !std::path::Path::new(dir).join(&key).is_file() => {
-                    return Err(format!(
-                        "no object storage is set, and the local directory {dir} does not hold the newest file this database names ({key}): it is \
-                         not where this installation keeps its files. Mount the directory that does (FERRUM_FILES_DIR), or set the object store \
-                         (FERRUM_S3_BUCKET) where the files are"
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
-        std::fs::create_dir_all(dir).map_err(|e| format!("files_dir: {e}"))?;
-        return Ok((Objects::local(dir)?, Found::Directory { kept }));
-    }
-    let store = Objects::new(settings)?;
-    let moving = match state(db).await.map_err(err)? {
-        Some((s, _)) => s == "moving",
-        None => {
-            // Recorded once, whichever replica starts first: files moving while the directory holds any, else in the
-            // store alone. Either way a start without a bucket is refused from now on.
-            let found = if holds_files(dir) { "moving" } else { "store" };
-            if !guest {
-                let mut tx = db.system_tx().await.map_err(err)?;
-                sqlx::query("insert into file_store (state) values ($1) on conflict (id) do nothing")
-                    .bind(found)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| err(e.into()))?;
-                tx.commit().await.map_err(|e| err(e.into()))?;
-            }
-            state(db).await.map_err(err)?.map_or(found == "moving", |(s, _)| s == "moving")
-        }
-    };
-    // While the old directory is still mounted, a read the store misses looks there too, after the move as well: a file an
-    // older build wrote there (a rollback after the move) is readable at once, and [`rescue`] copies it over.
-    let objects = if moving || holds_files(dir) { store.reading_directory(dir)? } else { store };
-    Ok((objects, Found::Store { moving }))
-}
-
-/// What [`rescue`] found and copied.
-#[derive(Debug, Default)]
-pub struct Rescued {
-    /// Files the database names that the store lacks and the old directory holds.
-    pub found: u64,
-    /// Of those, copied over and read back the same.
-    pub copied: u64,
-    /// Those whose copy did not verify, and why.
-    pub failed: Vec<String>,
-}
-
-/// Files the database names that the store lacks and the old directory still holds (one an older build wrote there after
-/// the move, or while it ran): copied over as `files_move` copies them (read back, compared, recorded in `file_move`), and
-/// logged. Rows made from `from` on (`None`: from an hour before files began to move); under the move's lock, so that one
-/// replica does it at a time. `None` back when another holds it, or before the move is confirmed (until then
-/// `files_move` does this): nothing was looked at. `copy` false only counts them (the doctor). Nothing without the
-/// directory mounted.
-// ponytail: one look at the store per row made since files began to move, at each start; a watermark kept in the
-// database if installations keep the old directory mounted for months.
-pub async fn rescue(db: &Db, objects: &Objects, from: Option<chrono::DateTime<chrono::Utc>>, copy: bool) -> Result<Option<Rescued>> {
-    let Some(dir) = &objects.directory else { return Ok(Some(Rescued::default())) };
-    let (moved, since) = match state(db).await? {
-        Some((s, since)) => (s == "store", since),
-        None => (false, chrono::Utc::now()),
-    };
-    if !moved {
-        return Ok(None);
-    }
-    let from = from.unwrap_or(since - chrono::Duration::hours(1));
-    let mut lock = None;
-    if copy {
-        let mut conn = db.direct.acquire().await?.detach();
-        let mine: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(MOVE_LOCK).fetch_one(&mut conn).await?;
-        if !mine {
-            return Ok(None);
-        }
-        lock = Some(conn);
-    }
-    let rescued = rescuing(db, objects, dir, from, copy).await;
-    if let Some(mut conn) = lock {
-        let _ = sqlx::query("select pg_advisory_unlock($1)").bind(MOVE_LOCK).execute(&mut conn).await;
-    }
-    rescued.map(Some)
-}
-
-async fn rescuing(db: &Db, objects: &Objects, dir: &Operator, from: chrono::DateTime<chrono::Utc>, copy: bool) -> Result<Rescued> {
-    let mut tx = db.system_tx().await?;
-    let keys: Vec<String> = sqlx::query_scalar(
-        "select storage_key from file_object where created_at >= $1 \
-         union select 'ui/' || r.app || '/' || r.digest || '/' || f.key from ui_release r cross join lateral jsonb_object_keys(r.files) f(key) \
-           where r.created_at >= $1 \
-         union select bundle_key from app_release where bundle_key is not null and created_at >= $1",
-    )
-    .bind(from)
-    .fetch_all(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    let mut out = Rescued::default();
-    for key in keys {
-        match objects.op.stat(&key).await {
-            Ok(_) => continue,
-            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {}
-            Err(e) => return Err(Error::Unavailable(format!("storage: {e}"))),
-        }
-        if !dir.exists(&key).await.map_err(|e| Error::Unavailable(format!("the old files directory: {e}")))? {
-            continue;
-        }
-        out.found += 1;
-        if !copy {
-            continue;
-        }
-        let copied = copy_one(dir, &objects.op, &key).await;
-        let mut moved = Moved::default();
-        match record(db, &key, copied, &mut moved).await? {
-            Some(why) => {
-                tracing::error!(%key, "a file the database names is in the old files directory and not in object storage, and did not copy: {why}");
-                out.failed.push(format!("{key}: {why}"));
-            }
-            None if moved.copied + moved.already > 0 => {
-                out.copied += 1;
-                tracing::warn!(%key, "a file the database names was in the old files directory and not in object storage: copied over");
-            }
-            None => {}
-        }
-    }
-    Ok(out)
-}
-
-/// Session advisory lock: one `files_move` at a time, whichever machine runs it.
-const MOVE_LOCK: i64 = 0x0FE2_2101;
-
-/// What a `files_move` did.
-#[derive(Debug, Default, serde::Serialize)]
-pub struct Moved {
-    /// Files copied and read back the same in this run.
-    pub copied: u64,
-    /// Files an earlier run had copied, or that the store already held the same.
-    pub already: u64,
-    /// Files whose copy did not verify, and why: they stop the confirmation.
-    pub failed: Vec<String>,
-    /// Replicas that may still write to the directory: they stop the confirmation.
-    pub writers: Vec<String>,
-    /// Whether the directory is no longer read now.
-    pub confirmed: bool,
-}
-
 /// The length and SHA-256 of an object, read once as a stream; `None` when it is not there.
 pub async fn digest_of(op: &Operator, key: &str) -> std::result::Result<Option<(u64, String)>, opendal::Error> {
     // Asked first: a reader is lazy, and an object that is not there shows only once read, as another kind of error.
@@ -500,169 +253,6 @@ pub async fn digest_of(op: &Operator, key: &str) -> std::result::Result<Option<(
         hash.update(&chunk);
     }
     Ok(Some((size, hex::encode(hash.finalize()))))
-}
-
-/// Copies one file from the directory to the store, streamed, and reads the copy back: its length and SHA-256 when they
-/// are the directory's. A file the store already holds is compared, never written over (a server wrote it meanwhile,
-/// or a run that stopped did). A file deleted from the directory while it was copied (a deletion takes the directory
-/// first) has its copy deleted too: `None`.
-async fn copy_one(dir: &Operator, store: &Operator, key: &str) -> std::result::Result<Option<(u64, String)>, String> {
-    let e = |what: &str, e: opendal::Error| format!("{what}: {e}");
-    let Some(source) = digest_of(dir, key).await.map_err(|x| e("reading it from the directory", x))? else { return Ok(None) };
-    if digest_of(store, key).await.map_err(|x| e("reading it from the store", x))?.is_none() {
-        let mut w = store.writer_with(key).chunk(8 << 20).await.map_err(|x| e("writing it", x))?;
-        let mut stream = dir.reader(key).await.map_err(|x| e("reading it", x))?.into_bytes_stream(..).await.map_err(|x| e("reading it", x))?;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|x| format!("reading it: {x}"))?;
-            if let Err(x) = w.write(chunk).await {
-                let _ = w.abort().await;
-                return Err(e("writing it", x));
-            }
-        }
-        w.close().await.map_err(|x| e("writing it", x))?;
-    }
-    let copy = digest_of(store, key).await.map_err(|x| e("reading the copy back", x))?;
-    if !dir.exists(key).await.map_err(|x| e("looking for it again", x))? {
-        store.delete(key).await.map_err(|x| e("deleting the copy of a file deleted meanwhile", x))?;
-        return Ok(None);
-    }
-    match copy {
-        Some(c) if c == source => Ok(Some(source)),
-        Some((size, _)) => Err(format!(
-            "the store holds other bytes under this name ({size} bytes, the directory's {}): neither is written over; compare them, remove the wrong one, and run files_move again",
-            source.0
-        )),
-        None => Err("the copy is not in the store after it was written".into()),
-    }
-}
-
-/// `ferrum task files_move`: copies every file of the local directory `dir` to the store (`objects`), each read back and
-/// compared with the directory's (length and SHA-256), and records each one copied (`file_move`), so that a run after a
-/// crash, or a second run, goes on from there. One run at a time, on whatever machine (a session lock; another run
-/// stops at once). Beside traffic: servers write to the store meanwhile and read the directory second. Uploads not yet
-/// recorded and the restore marker are not moved (each server writes the store's own).
-///
-/// It ends by recording that the directory is no longer read (`file_store`), when nothing failed, when no server that
-/// may still write to the directory runs (one started before files began to move, or a build older than this one), and
-/// once a last pass after that check finds nothing new. `stop_after`: stop after that many copies, as a crash would
-/// (tests). Nothing is ever deleted from the directory.
-pub async fn move_files(db: &Db, objects: &Objects, dir: &str, stop_after: Option<u64>) -> Result<Moved> {
-    let mut lock = db.direct.acquire().await?.detach();
-    let mine: bool = sqlx::query_scalar("select pg_try_advisory_lock($1)").bind(MOVE_LOCK).fetch_one(&mut lock).await?;
-    if !mine {
-        return Err(Error::Conflict("another server is moving the files now: this one stops; run it again when that one has finished".into()));
-    }
-    let moved = moving(db, objects, dir, stop_after).await;
-    let _ = sqlx::query("select pg_advisory_unlock($1)").bind(MOVE_LOCK).execute(&mut lock).await;
-    moved
-}
-
-async fn moving(db: &Db, objects: &Objects, dir: &str, stop_after: Option<u64>) -> Result<Moved> {
-    let source = crate::objects::directory(dir).map_err(Error::Unavailable)?;
-    let mut out = Moved::default();
-    // Passes until one copies nothing new; the confirmation needs one that began after the check for writers. Files that
-    // keep arriving after it (something still writes to the directory that no replica row shows) stop it unconfirmed.
-    let mut checked_writers = false;
-    // What was there before this run: the first pass's count (a later pass finds every file it copied as done).
-    let mut already = None;
-    for _ in 0..8 {
-        let before = out.copied;
-        pass(db, &source, &objects.op, &mut out, stop_after).await?;
-        out.already = *already.get_or_insert(out.already);
-        if stop_after.is_some_and(|n| out.copied >= n) || !out.failed.is_empty() {
-            return Ok(out);
-        }
-        if out.copied == before && checked_writers {
-            let mut tx = db.system_tx().await?;
-            sqlx::query("update file_store set state = 'store', confirmed_at = now(), updated_at = now() where state = 'moving'").execute(&mut *tx).await?;
-            tx.commit().await?;
-            out.confirmed = true;
-            return Ok(out);
-        }
-        if !checked_writers {
-            out.writers = writers(db).await?;
-            if !out.writers.is_empty() {
-                return Ok(out);
-            }
-            checked_writers = true;
-        }
-    }
-    out.failed.push("files keep arriving in the directory: something still writes there; stop it, then run files_move again".into());
-    Ok(out)
-}
-
-/// One pass over the directory: each file not yet recorded as copied, copied and recorded; a few at a time.
-async fn pass(db: &Db, source: &Operator, store: &Operator, out: &mut Moved, stop_after: Option<u64>) -> Result<()> {
-    let unavailable = |e: opendal::Error| Error::Unavailable(format!("the local directory: {e}"));
-    let mut lister = match source.lister_with("").recursive(true).await {
-        Ok(l) => l,
-        Err(e) if e.kind() == opendal::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(unavailable(e)),
-    };
-    let mut batch = Vec::new();
-    loop {
-        let next = lister.next().await.transpose().map_err(unavailable)?;
-        if let Some(entry) = &next {
-            let key = entry.path();
-            if !key.ends_with('/') && !transient(key) && !key.starts_with(ferrum_kernel::recovery::MARKER_PREFIX) && !key.starts_with('.') {
-                batch.push(key.to_string());
-            }
-        }
-        if batch.len() >= 64 || (next.is_none() && !batch.is_empty()) {
-            copy_batch(db, source, store, std::mem::take(&mut batch), out, stop_after).await?;
-            if stop_after.is_some_and(|n| out.copied >= n) {
-                return Ok(());
-            }
-        }
-        if next.is_none() {
-            return Ok(());
-        }
-    }
-}
-
-async fn copy_batch(db: &Db, source: &Operator, store: &Operator, keys: Vec<String>, out: &mut Moved, stop_after: Option<u64>) -> Result<()> {
-    let mut tx = db.system_tx().await?;
-    let done: Vec<String> = sqlx::query_scalar("select key from file_move where key = any($1)").bind(&keys).fetch_all(&mut *tx).await?;
-    tx.commit().await?;
-    let todo: Vec<String> = keys.into_iter().filter(|k| !done.contains(k)).collect();
-    out.already += done.len() as u64;
-    // Eight at a time, each group finished before the next begins: a stop (or a crash) falls between files.
-    for group in todo.chunks(8) {
-        let copies = futures_util::future::join_all(group.iter().map(|key| async move { (copy_one(source, store, key).await, key) })).await;
-        for (copied, key) in copies {
-            if let Some(why) = record(db, key, copied, out).await? {
-                out.failed.push(format!("{key}: {why}"));
-            }
-        }
-        if stop_after.is_some_and(|n| out.copied >= n) {
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-/// Records a file copied and read back the same (`file_move`); why, when it was not.
-async fn record(db: &Db, key: &str, copied: std::result::Result<Option<(u64, String)>, String>, out: &mut Moved) -> Result<Option<String>> {
-    let (size, sha) = match copied {
-        Ok(Some(c)) => c,
-        Ok(None) => return Ok(None),
-        Err(why) => return Ok(Some(why)),
-    };
-    let mut tx = db.system_tx().await?;
-    let recorded = sqlx::query("insert into file_move (key, size_bytes, sha256) values ($1, $2, $3) on conflict (key) do nothing")
-        .bind(key)
-        .bind(i64::try_from(size).unwrap_or(i64::MAX))
-        .bind(&sha)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    tx.commit().await?;
-    if recorded > 0 {
-        out.copied += 1;
-    } else {
-        out.already += 1;
-    }
-    Ok(None)
 }
 
 /// Every workspace file the database names (one workspace's with `tenant`), read through where it is kept: its length
@@ -700,76 +290,23 @@ pub async fn verify_files(db: &Db, objects: &Objects, tenant: Option<uuid::Uuid>
     }
 }
 
-/// The replicas seen in the last two minutes that may still write to the local directory: one that started before
-/// files began to move (it may keep them there), or one of a build older than this one (it does not know they move).
-async fn writers(db: &Db) -> Result<Vec<String>> {
-    let mut tx = db.system_tx().await?;
-    let rows: Vec<(uuid::Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "select r.id, r.pool, r.started_at from replica r where r.seen_at > now() - interval '2 minutes' \
-         and (r.build_date < $1 or r.started_at < coalesce((select since from file_store), '-infinity'))",
-    )
-    .bind(ferrum_kernel::window::build_date())
-    .fetch_all(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(rows.into_iter().map(|(id, pool, at)| format!("{id} (pool {pool}, started {})", at.format("%Y-%m-%d %H:%M:%S UTC"))).collect())
-}
-
-/// What the doctor says of where files are: a kept directory (error-level), files still moving (with how many have
-/// moved), files the store lacks that the old directory, still mounted, holds, or nothing.
-pub async fn place_findings(db: &Db, settings: &Settings, production: bool, objects: &Objects) -> Vec<Finding> {
+/// What the doctor says of where files are, when no bucket is set: nothing to report with one. In production that is a
+/// blocker (the server does not start so; this is what a task sees); elsewhere a directory is the development default.
+pub fn place_findings(settings: &Settings, production: bool) -> Vec<Finding> {
     let dir = &settings.files_dir;
-    if settings.s3_bucket.trim().is_empty() {
-        return if production {
-            vec![Finding::blocker(
-                "storage.directory",
-                format!("files are kept in a local directory ({dir}), which only this machine sees; a later release refuses it"),
-                "Move them to object storage: set the store (FERRUM_S3_BUCKET, FERRUM_S3_ENDPOINT, FERRUM_S3_REGION and its keys), start again, then run \
-                 ferrum task files_move (docs/operations.md, Object storage). Until it has finished, files are read from both.",
-            )]
-        } else {
-            vec![Finding::off("storage.directory", format!("files are kept in a local directory ({dir}): development and tests only"))]
-        };
-    }
-    if !objects.reads_directory() {
+    if !settings.s3_bucket.trim().is_empty() {
         return vec![];
     }
-    if state(db).await.ok().flatten().is_some_and(|(s, _)| s == "store") {
-        return vec![match rescue(db, objects, None, false).await {
-            Ok(Some(r)) if r.found > 0 => Finding::warning(
-                "storage.directory_files",
-                format!(
-                    "{} files the database names are in the old files directory ({dir}) and not in object storage (an older build wrote them there after the move): they are read from there",
-                    r.found
-                ),
-                "Servers copy them over at their start and every hour; or run ferrum task files_move. Keep the directory mounted until this says none.",
-            ),
-            Ok(_) => Finding::ok(
-                "storage.directory_files",
-                format!(
-                    "the old files directory ({dir}) is still mounted, and object storage holds every file the database names since files moved: it may go"
-                ),
-            ),
-            Err(e) => Finding::warning(
-                "storage.directory_files",
-                format!("the old files directory could not be compared with object storage: {e}"),
-                "Check object storage and the directory.",
-            ),
-        }];
-    }
-    let moved: i64 = match db.system_tx().await {
-        Ok(mut tx) => {
-            let n = sqlx::query_scalar("select count(*) from file_move").fetch_one(&mut *tx).await.unwrap_or_default();
-            let _ = tx.commit().await;
-            n
-        }
-        Err(_) => 0,
-    };
-    vec![Finding::warning(
-        "storage.moving",
-        format!("files are moving from the local directory ({dir}) to object storage; {moved} copied so far. Reads look in both until the move is confirmed"),
-        "Run ferrum task files_move until it says the directory is no longer read (it goes on from where it stopped), then restart the servers.",
-    )]
+    vec![if production {
+        Finding::blocker(
+            "storage.directory",
+            format!("no object storage is set: files would be kept in a local directory ({dir}), which only this machine sees"),
+            "Set the store (FERRUM_S3_BUCKET, FERRUM_S3_ENDPOINT, FERRUM_S3_REGION and its keys): Ferrum takes a bucket and operates none \
+             (docs/operations.md, Object storage).",
+        )
+    } else {
+        Finding::off("storage.directory", format!("files are kept in a local directory ({dir}): development and tests only"))
+    }]
 }
 
 /// Days a deletion waits against how far back the database's backups reach (`files_delete_after_days`,
@@ -800,7 +337,7 @@ pub fn lag_finding(lag_days: u64, reach_days: u64, production: bool) -> Finding 
     }
 }
 
-/// How long the lifecycle rule `s3_set_up_bucket` adds keeps old versions: as far as the database's backups reach, or as
+/// How long the lifecycle rule `ferrum task bucket_set_up` adds keeps old versions: as far as the database's backups reach, or as
 /// long as deletions wait, whichever is longer; 30 days when neither is said.
 pub fn keep_versions_days(settings: &Settings) -> u64 {
     match settings.backup_reach_days.max(settings.files_delete_after_days) {
@@ -810,7 +347,7 @@ pub fn keep_versions_days(settings: &Settings) -> u64 {
 }
 
 /// The bucket's own configuration, asked over S3's API with the same keys or identity as the files: what the doctor
-/// checks, and what `s3_set_up_bucket` sets up.
+/// checks, and what `ferrum task bucket_set_up` sets up.
 pub struct Bucket {
     /// `<endpoint>/<bucket>`, path-style as the files are reached.
     url: String,
@@ -916,8 +453,8 @@ impl Bucket {
             Ok(a) if a.status == 200 => Finding::warning(
                 "storage.versioning",
                 "the bucket keeps no versions: a file deleted or written over outside Ferrum cannot be taken back",
-                "Turn versioning on for the bucket (aws s3api put-bucket-versioning --versioning-configuration Status=Enabled), or set \
-                 s3_set_up_bucket true to have the server do it.",
+                "Turn versioning on for the bucket (aws s3api put-bucket-versioning --versioning-configuration Status=Enabled), or run \
+                 ferrum task bucket_set_up.",
             ),
             Ok(a) => not_asked("storage.versioning", &a, "versioning"),
             Err(e) => refused("storage.versioning", e),
@@ -928,7 +465,7 @@ impl Bucket {
                 "storage.lifecycle",
                 "no lifecycle rule ends old versions: with versioning on, every deleted file is kept for ever",
                 "Add a rule that expires noncurrent versions after as many days as the database's backups reach (and aborts unfinished \
-                 uploads after a day), or set s3_set_up_bucket true.",
+                 uploads after a day), or run ferrum task bucket_set_up.",
             ),
             Ok(a) => not_asked("storage.lifecycle", &a, "lifecycle rules"),
             Err(e) => refused("storage.lifecycle", e),
@@ -941,7 +478,7 @@ impl Bucket {
             Ok(a) if a.code() == Some("ServerSideEncryptionConfigurationNotFoundError") => Finding::warning(
                 "storage.encryption",
                 "the bucket does not encrypt objects at rest",
-                "Turn default encryption on for the bucket (SSE-S3 or a KMS key), or set s3_set_up_bucket true.",
+                "Turn default encryption on for the bucket (SSE-S3 or a KMS key), or run ferrum task bucket_set_up.",
             ),
             Ok(a) => not_asked("storage.encryption", &a, "encryption at rest"),
             Err(e) => refused("storage.encryption", e),
@@ -1028,7 +565,6 @@ impl Bucket {
             ok(put("?encryption", Some(body.into())).await?, "turning encryption on")?;
             done.push("turned default encryption on");
         }
-        SET_UP.store(true, Ordering::SeqCst);
         Ok(done)
     }
 }
@@ -1088,67 +624,6 @@ pub fn clock_finding(store: Option<chrono::DateTime<chrono::Utc>>, here: chrono:
     }
 }
 
-/// The bundled store's keys, handed over once at its first start (deploy/docker-compose.yml, deploy/store/start.sh): a
-/// file the store writes into a volume it shares with the server alone, which the server keeps in the vault and then
-/// deletes. A debug build (tests, the rehearsals) looks under `FERRUM_TEST_RUN_DIR` instead when that is set.
-pub const HANDOFF: &str = "/run/ferrum/object-store/keys.json";
-
-/// Where [`HANDOFF`] is read from.
-pub fn handoff_path() -> std::path::PathBuf {
-    let elsewhere = if cfg!(debug_assertions) { std::env::var("FERRUM_TEST_RUN_DIR").ok().filter(|d| !d.trim().is_empty()) } else { None };
-    match elsewhere {
-        Some(dir) => std::path::Path::new(&dir).join("object-store/keys.json"),
-        None => std::path::PathBuf::from(HANDOFF),
-    }
-}
-
-/// What the bundled store handed over at its first start: its keys, by the setting each is (`aws_access_key_id`,
-/// `aws_secret_access_key`), and whether the bucket is this installation's alone, for the server to make and set up
-/// (`set_up_bucket`; only the store Compose bundles says so, so that a bucket of an installation's own is never changed
-/// unasked).
-#[derive(Default)]
-pub struct Handoff {
-    pub keys: Vec<(&'static str, ferrum_kernel::vault::Zeroizing<String>)>,
-    pub set_up_bucket: bool,
-}
-
-impl Handoff {
-    /// Whether the store asked for its bucket to be set up and the server signs with the key it handed over (`key_id`,
-    /// the one in use): an installation pointed at a store of its own signs with that store's, so its bucket is left as
-    /// it is even with the bundled store left running beside it.
-    pub fn sets_up(&self, key_id: Option<&str>) -> bool {
-        self.set_up_bucket && self.keys.iter().any(|(k, v)| *k == "aws_access_key_id" && Some(v.as_str()) == key_id)
-    }
-}
-
-/// [`Handoff`] from the file's text; `None` when it is not JSON.
-pub fn parse_handoff(text: &str) -> Option<Handoff> {
-    let v = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    let keys = ["aws_access_key_id", "aws_secret_access_key"]
-        .into_iter()
-        .filter_map(|k| Some((k, ferrum_kernel::vault::Zeroizing::new(v[k].as_str().filter(|s| !s.is_empty())?.to_string()))))
-        .collect();
-    Some(Handoff { keys, set_up_bucket: v["set_up_bucket"] == serde_json::json!(true) })
-}
-
-/// [`HANDOFF`], when the file is there.
-pub fn handed_over() -> Option<Handoff> {
-    let text = std::fs::read_to_string(handoff_path()).ok()?;
-    let handoff = parse_handoff(&text);
-    if handoff.is_none() {
-        tracing::error!("{} is not the object store's keys as JSON: not used", handoff_path().display());
-    }
-    handoff
-}
-
-/// Whether this process has made and set up the bucket (`s3_set_up_bucket`, or the bundled store's handoff asking for
-/// it): until it has, the handoff's file stays, and the next start tries again.
-static SET_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub fn bucket_set_up() -> bool {
-    SET_UP.load(Ordering::SeqCst)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,24 +653,6 @@ mod tests {
         assert!(h.metrics_text().contains("ferrum_object_storage_up 0\n"), "the metric says so");
         assert_eq!(h.record(&down), Change::None);
         assert_eq!(h.record(&Ok(())), Change::Back);
-    }
-
-    #[test]
-    fn only_the_bundled_store_asks_for_its_bucket_to_be_set_up() {
-        let bundled = parse_handoff(r#"{"aws_access_key_id":"FERRUMAB","aws_secret_access_key":"s3cr3t","set_up_bucket":true}"#).unwrap();
-        assert!(bundled.set_up_bucket);
-        assert_eq!(
-            bundled.keys.iter().map(|(k, v)| (*k, v.as_str())).collect::<Vec<_>>(),
-            [("aws_access_key_id", "FERRUMAB"), ("aws_secret_access_key", "s3cr3t")]
-        );
-        let keys_only = parse_handoff(r#"{"aws_access_key_id":"A","aws_secret_access_key":"B"}"#).unwrap();
-        assert!(!keys_only.set_up_bucket, "without the store saying so, a bucket is never changed");
-        assert!(bundled.sets_up(Some("FERRUMAB")));
-        assert!(!bundled.sets_up(Some("OWNKEY")), "a store of the installation's own, the bundled one left running beside it");
-        assert!(!bundled.sets_up(None));
-        assert!(!keys_only.sets_up(Some("A")));
-        assert!(!parse_handoff(r#"{"set_up_bucket":"yes"}"#).unwrap().set_up_bucket);
-        assert!(parse_handoff("not json").is_none());
     }
 
     #[test]
@@ -1250,14 +707,19 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_holds_files_but_for_hidden_entries() {
-        let dir = std::env::temp_dir().join(format!("ferrum-holds-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(dir.join(".ferrum-probe")).unwrap();
-        std::fs::create_dir_all(dir.join("lost+found")).unwrap();
-        assert!(!holds_files(dir.to_str().unwrap()));
-        std::fs::create_dir_all(dir.join("tenants")).unwrap();
-        assert!(holds_files(dir.to_str().unwrap()));
-        assert!(!holds_files("/no/such/ferrum/directory"));
-        std::fs::remove_dir_all(dir).unwrap();
+    fn a_directory_only_in_development_and_a_bucket_anywhere() {
+        let dir = std::env::temp_dir().join(format!("ferrum-decide-{}", uuid::Uuid::now_v7()));
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({"files_dir": dir.to_str().unwrap()})).unwrap();
+        let why = decide(&settings, false).err().expect("production without a bucket is refused");
+        assert!(why.contains("FERRUM_S3_BUCKET") && why.contains("only development and tests"), "says what to set: {why}");
+        assert!(!dir.exists(), "refused before anything is made");
+        assert_eq!(place_findings(&settings, true)[0].level, ferrum_kernel::doctor::Level::Blocker);
+        assert_eq!(place_findings(&settings, false)[0].level, ferrum_kernel::doctor::Level::Off);
+        assert!(!decide(&settings, true).unwrap().direct_uploads() && dir.is_dir(), "development keeps a directory");
+        std::fs::remove_dir_all(&dir).unwrap();
+        settings.s3_bucket = "files".into();
+        settings.s3_region = "eu-west-1".into();
+        assert!(decide(&settings, false).unwrap().direct_uploads(), "a bucket is the store, in production too");
+        assert!(place_findings(&settings, true).is_empty() && !dir.exists());
     }
 }

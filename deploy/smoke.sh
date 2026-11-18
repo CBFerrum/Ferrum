@@ -30,9 +30,11 @@ export FERRUM_PORT=${SMOKE_PORT:-8080}
 export OFFICE_PORT=${SMOKE_OFFICE_PORT:-9980} OFFICE_BIND=127.0.0.1
 export OFFICE_PUBLIC_HOST=127.0.0.1:$OFFICE_PORT OFFICE_PUBLIC_URL=http://127.0.0.1:$OFFICE_PORT
 OFFICE="http://127.0.0.1:$OFFICE_PORT"
-export POSTGRES_PASSWORD FERRUM_DB_PASSWORD JWT_SECRET
+export POSTGRES_PASSWORD FERRUM_DB_PASSWORD JWT_SECRET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 FERRUM_DB_PASSWORD=$(openssl rand -hex 16)
+AWS_ACCESS_KEY_ID=FERRUM$(openssl rand -hex 8 | tr 'a-f' 'A-F')
+AWS_SECRET_ACCESS_KEY=$(openssl rand -hex 24)
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
 API="http://127.0.0.1:${FERRUM_PORT}"
 PASSWORD='Smoke-Test-Passw0rd'
@@ -55,7 +57,7 @@ cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
     echo "--- smoke test failed; logs:"
-    compose logs --tail 200 ferrum pdf office db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
+    compose logs --tail 200 ferrum store-setup store pdf office db ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet} || true
   fi
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$work"
@@ -90,7 +92,7 @@ fi
 
 first_image=$FERRUM_IMAGE
 step "starting the stack from $FERRUM_IMAGE"
-compose up -d --no-build db ferrum pdf office ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
+compose up -d --no-build db store store-setup ferrum pdf office ${FERRUM_EDITORS_IMAGE:+editors} ${SMOKE_MEET:+meet}
 wait_up "$API/_health" "the server"
 
 step "creating, seeding and invoicing a workspace"

@@ -115,7 +115,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 | Secrets only in the vault, through the app's own handle; never in a setting, a log, an error, a test's output | [08](08-secrets-and-the-vault.md) | `scripts/secret_paths.py`; the manifest has no field for one; the server will not start on a handle taken outside the registration |
 | No cryptography crate of the app's own, no `unsafe` | [08](08-secrets-and-the-vault.md), [13](13-security-rules.md) | `scripts/secret_paths.py` (with a baseline that may only shrink) |
 | An app's own kinds of file declared once, reached only through its handle | [09](09-files-and-storage.md) | `HookRegistry::file_kind` (the server stops on a second declaration) |
-| A companion's sign-in and service declared inside the app's registration, once | [10](10-companions-and-sign-in.md) | `HookRegistry::settle` stops the server; `scripts/oidc_rehearsal.sh`, `scripts/companions_rehearsal.sh` |
+| A companion's sign-in and service declared inside the app's registration, once | [10](10-companions-and-sign-in.md) | `HookRegistry::settle` stops the server; `scripts/oidc_rehearsal.sh`, the kernel's `companions_it` |
 
 ### Integrations, privacy, security, operations
 

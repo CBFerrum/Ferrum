@@ -78,4 +78,4 @@ disk: a marker written into an object of an encrypted bucket and of a plain one,
 
 MinIO (both candidates ran; its server's licence is AGPL-3.0 too). Recovery from a lost volume, and lifecycle rules
 taking effect (each needs days); `scripts/object_store_rehearsal.sh` runs the chosen store again with
-`deploy/store/start.sh` on each run.
+`deploy/store/start.sh` on each run (given its key; `ferrum task bucket_set_up` makes the bucket).

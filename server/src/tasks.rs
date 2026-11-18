@@ -919,47 +919,32 @@ impl Task for CheckFiles {
     }
 }
 
-/// `files_move`: copies the local directory's files into the object store, verified, and then records that the directory
-/// is no longer read (docs/operations.md, "Object storage", Moving files from a directory). Run where the store is set;
-/// safe to run again, beside traffic, and on several machines (one copies at a time).
-pub struct FilesMove;
+/// `bucket_set_up`: makes the bucket the settings name when it is missing, and turns on what the doctor looks for where the
+/// bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set;
+/// unfinished uploads after a day) and default encryption. A bucket's own rules or encryption are never replaced. Safe to run
+/// again and beside traffic; two runs at once are harmless (docs/operations.md, "Object storage"). The server never does
+/// this on its own: whoever operates the store runs it once, with keys that may change the bucket's configuration.
+pub struct BucketSetUp;
 
 #[async_trait]
-impl Task for FilesMove {
+impl Task for BucketSetUp {
     fn task(&self) -> TaskInfo {
         TaskInfo {
-            name: "files_move".into(),
-            detail: "Copies the local directory's files into object storage, each read back the same, then stops reading the directory".into(),
+            name: "bucket_set_up".into(),
+            detail: "Makes the object store's bucket if it is missing and turns on versioning, lifecycle rules and encryption where it has none".into(),
         }
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let st = app_state(ctx).map_err(|e| Error::Message(format!("{:?}", e.0)))?;
-        if st.settings.s3_bucket.trim().is_empty() {
-            return Err(Error::Message("no object store is set here: set FERRUM_S3_BUCKET (with its endpoint, region and keys) first, then run this".into()));
+        let bucket = crate::store::Bucket::new(&st.settings).map_err(Error::Message)?.ok_or_else(|| {
+            Error::Message("no object store is set here: set FERRUM_S3_BUCKET (with its endpoint, region and keys) first, then run this".into())
+        })?;
+        let done = bucket.set_up(crate::store::keep_versions_days(&st.settings)).await.map_err(Error::Message)?;
+        println!("bucket {}: {} steps done", st.settings.s3_bucket.trim(), done.len());
+        for step in done {
+            println!("{step}");
         }
-        let moved = crate::store::move_files(&st.kernel.db, &st.objects, &st.settings.files_dir, None).await.map_err(refused)?;
-        println!("{} files copied and read back the same, {} copied before or already in the store", moved.copied, moved.already);
-        for f in &moved.failed {
-            println!("not copied: {f}");
-        }
-        for w in &moved.writers {
-            println!("may still write to the directory: replica {w}");
-        }
-        if moved.confirmed {
-            println!("the directory {} is no longer read: start the servers again, and keep it until you are sure", st.settings.files_dir);
-            return Ok(());
-        }
-        if !moved.failed.is_empty() {
-            return Err(Error::Message(format!(
-                "{} files did not copy as they are: the directory is still read; fix them and run this again",
-                moved.failed.len()
-            )));
-        }
-        Err(Error::Message(
-            "servers started before the store was set (or of an older build) may still write to the directory: start them again with the store's \
-             settings, then run this again"
-                .into(),
-        ))
+        Ok(())
     }
 }
 
@@ -984,7 +969,6 @@ async fn move_source(st: &crate::state::AppState, vars: &Vars) -> Result<ferrum_
             s.s3_bucket = bucket.unwrap_or_default();
             s.s3_region = env("FERRUM_MOVE_SOURCE_S3_REGION").unwrap_or_default();
             s.s3_endpoint = env("FERRUM_MOVE_SOURCE_S3_ENDPOINT").unwrap_or_default();
-            s.require_object_storage = false;
             let storage = std::sync::Arc::new(crate::app::build_storage(&s)?);
             let objects = std::sync::Arc::new(crate::objects::Objects::new(&s).map_err(Error::Message)?);
             Some(std::sync::Arc::new(crate::mailer::StorageFiles(storage, objects)) as std::sync::Arc<dyn ferrum_kernel::files::FileStore>)

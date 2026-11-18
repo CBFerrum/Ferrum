@@ -95,7 +95,7 @@ pub struct Settings {
     /// (`POST /api/files/uploads`). Completing one reads it back once to record its hash.
     #[serde(default = "default_direct_upload_max")]
     pub direct_upload_max_bytes: u64,
-    /// Local directory for uploaded files when no S3 bucket is configured.
+    /// Local directory for uploaded files when no S3 bucket is configured: development and tests only (crate::store::decide).
     #[serde(default = "default_files_dir")]
     pub files_dir: String,
     #[serde(default)]
@@ -107,12 +107,6 @@ pub struct Settings {
     /// `AWS_SECRET_ACCESS_KEY` and optionally `AWS_SESSION_TOKEN`.
     #[serde(default)]
     pub s3_endpoint: String,
-    /// Refuse to start without object storage, so replicas never keep attachments on local disk.
-    #[serde(default)]
-    pub require_object_storage: bool,
-    /// Make the bucket and turn on versioning, lifecycle rules and encryption where it has none (crate::store).
-    #[serde(default)]
-    pub s3_set_up_bucket: bool,
     /// Days a deleted file stays in object storage before it goes: as long as backups reach by default (0: at once, an
     /// installation without backups to restore).
     #[serde(default = "default_backup_days")]

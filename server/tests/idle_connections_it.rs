@@ -36,7 +36,6 @@ async fn scenario() {
             ("PORT", port.to_string()),
             ("BINDING", "127.0.0.1".to_string()),
             ("PUBLIC_URL", format!("http://127.0.0.1:{port}")),
-            ("FERRUM_REQUIRE_OBJECT_STORAGE", "false".to_string()),
             ("FERRUM_FILES_DIR", dir.join("files").to_string_lossy().into_owned()),
             ("FERRUM_PACKAGES_DIR", manifest.join("../packages").to_string_lossy().into_owned()),
             ("LOG_LEVEL", "warn".to_string()),

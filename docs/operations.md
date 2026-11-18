@@ -80,15 +80,13 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits, zones and networks is the entry that many from the right; at 0 it is the connection's own address and the header is not read. Set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
 | `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables the operator's routes (`/api/operator/…`, docs/api.md) with header `X-Ferrum-Operator-Token`, in a zone whose rule says `operator: true` (they are in no other); empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
-| `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
-| `require_object_storage` | `FERRUM_REQUIRE_OBJECT_STORAGE` | bool | `true` | installation, next start | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs. |
+| `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory, used only by development and tests (`-e development`, `-e test`): a production start without `FERRUM_S3_BUCKET` is refused. |
 | `s3_bucket` | `FERRUM_S3_BUCKET` | text |  | installation, next start | Attachment storage on S3 (multi-replica); with `FERRUM_S3_REGION` (`auto` if empty), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
 | `s3_region` | `FERRUM_S3_REGION` | text |  | installation, next start | The bucket's region (`auto` if empty). |
 | `s3_endpoint` | `FERRUM_S3_ENDPOINT` | text |  | installation, next start | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability. |
 | `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
 | `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
 | `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
-| `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds). |
 | `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `30` | installation, at once | Days a deleted file stays in object storage before it goes. At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*); in production the doctor blocks while it is less. 0: at once, for an installation without backups to restore. |
 | `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `30` | installation, at once | How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
 | `files_direct_links` | `FERRUM_FILES_DIRECT_LINKS` | bool | `false` | installation, at once | `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded, for outside people, for types a browser would run, or while files move. Off by default. |
@@ -892,62 +890,28 @@ store does not take a replica out of service, which would take every replica out
 doctor's `storage` line says so, and so do `ferrum_object_storage_up` (0 when this replica's last probe, every thirty
 seconds, failed) and `ferrum_object_storage_probe_failures_total`. The chart has no alert rules for the server; alert on
 `ferrum_object_storage_up == 0` for five minutes. Compose starts the server once the store's health check passes.
-Where the bucket is to be set up (the bundled store's handoff, or `s3_set_up_bucket`), each probe sets it up first,
-one replica at a time, until that has worked: until then the replica is not ready, and its answer and the log say that
-the set-up fails and why, so a store that refused the first start's set-up needs no restart either.
 
-**A local directory** (`files_dir`) is for development and tests. Elsewhere a server without a bucket starts only for
-an installation that already keeps its files there: the newest file its database names (a workspace's newest file,
-else the newest interface's) must be in that directory. A new database names none, an empty or wrong directory (a
-volume that was not mounted, another machine's) lacks it, and a database that has kept its files in a store says so: so
-no mistake in the settings makes a new installation keep files where a new container loses them. Refused, the server
-says what to set. An installation that keeps its files there works, with a warning at each start and an error-level
-line in the doctor (`storage.directory`), until its files move. `require_object_storage` refuses a directory outright.
+**The bucket is the store's owner's.** The server never makes a bucket, keys one or changes one: a replica whose bucket is
+missing is not ready, saying `NoSuchBucket`, and becomes ready once the bucket exists, with no restart. `ferrum task
+bucket_set_up` (below) makes it and turns on what the doctor looks for; the reference stacks run it once.
 
-### Moving files from a directory
-
-1. Set the store (`ferrum task set key:s3_bucket value:…`, its endpoint and region, and its keys: `ferrum task
-   secret_set`), or the variables, and start the servers again. A server that starts with a bucket while the directory
-   still holds files records that files are moving (`file_store`, once, whichever replica starts first): from then on
-   every write goes to the store, a read looks in the store first and the directory second, and a deletion takes both.
-   Nothing needs to wait: everything is readable all along. Keep the directory mounted.
-2. Run `ferrum task files_move` (where the store is set: in the server's container, or as a Job). It copies every file
-   of the directory to the store, reads each copy back, and compares its length and SHA-256 with the directory's;
-   each one copied is recorded (`file_move`), so a run that stops, or is killed, goes on from there when run again.
-   One runs at a time, wherever it is run (a session lock: another run stops at once). It never writes over what the
-   store holds (a file there with other bytes is named, and stops the confirmation), never deletes from the directory,
-   and leaves out uploads not yet recorded and the restore marker (each server writes the store's own).
-3. It ends by recording that the directory is no longer read, once nothing failed, no server that may still write to
-   the directory runs (one started before files began to move, or a build older than this one: from `replica`), and a
-   last pass after that check found nothing new. Otherwise it says why; fix that and run it again. Then start the
-   servers again (until then they still look in the directory second, which does no harm), and keep the directory
-   until you are sure.
-
-What guarantees that nothing is lost: a write goes to the store from the moment a server starts with it; a server of
-this build without a bucket refuses to start while files move; the confirmation waits for every replica that might
-still write to the directory, then passes over the directory once more; a file deleted while it is copied is deleted
-from the directory first, so the copy sees it gone and deletes its own. A server of a build from before the settings'
-`replica` table (a rollback after the move, or one still running when it is confirmed) is the one writer nothing sees,
-and it writes to the directory. So for as long as the old directory is still mounted, a read the store misses still
-looks there, and the file is readable at once; and at each start and every hour, one replica copies over every file the
-database names (since files began to move) that the store lacks and the directory holds, as `files_move` copies them,
-and logs it. The doctor counts such files (`storage.directory_files`), and says when the directory may go. Unmounted,
-nothing looks there.
+**A local directory** (`files_dir`) is for development and tests (`-e development`, `-e test`) alone. A production server
+without a bucket is refused, saying what to set (`FERRUM_S3_BUCKET`, with `FERRUM_S3_ENDPOINT`, `FERRUM_S3_REGION` and the
+keys): only one machine sees a directory, and a new container starts without it. The doctor says so (`storage.directory`).
 
 ### What the doctor checks
 
-`storage` (a write, a read and a delete), `storage.directory` and `storage.moving`, `storage.deletions` (below), and,
+`storage` (a write, a read and a delete), `storage.directory`, `storage.deletions` (below), and,
 asking the bucket with the same keys or identity: `storage.versioning` (versions kept, so that what is deleted or
 written over outside Ferrum can be taken back), `storage.lifecycle` (a rule over the whole bucket ending old versions,
 no sooner than `backup_reach_days`), `storage.encryption` (default encryption at rest), `storage.public` (a listing
 and a probe file asked for without keys are refused, and the bucket's policy does not make it public) and `storage.clock` (a request signed more
-than 15 minutes off the store's time is refused). Each says what to do. `s3_set_up_bucket` makes the bucket where it
-is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is not
-set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
-none of them; it never replaces a bucket's own rules. The store Compose bundles asks for it at its first start (its
-handoff, below); a bucket of an installation's own is never changed unasked: its doctor shows these lines, each saying
-what to turn on, and `ferrum task set key:s3_set_up_bucket value:true` (then a restart) has the server do it, with keys
-allowed to change the bucket's configuration.
+than 15 minutes off the store's time is refused). Each says what to do. `ferrum task bucket_set_up` makes the bucket
+where it is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is
+not set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
+none of them; it never replaces a bucket's own rules, and running it again does nothing. It is run by whoever operates
+the store, once, with keys allowed to change the bucket's configuration (the reference stacks do); the server itself
+never does it. It prints each step it took (none: the bucket was as it should be).
 
 ### Direct links
 
@@ -999,34 +963,15 @@ it after each change to backups, and at least quarterly.
 ### The store Compose bundles
 
 `deploy/docker-compose.yml` runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one
-process with its own volume. Only its S3 port listens, on Compose's network alone. Its first start
-(`deploy/store/start.sh`) makes an access key and the key that encrypts what it keeps, in its own volume, and hands the
-access key to the server once (`/run/ferrum/object-store/keys.json`, a volume only the two share): the server keeps it
-in the vault and deletes the file. Nothing goes into `deploy/.env`. The handoff also asks the server to make the bucket
-`ferrum` with versioning, lifecycle rules and encryption, which it does then (and before each probe until it has: not ready meanwhile), and only
-while it signs with the key handed over: an installation that points Compose at a store of its own signs with that
-store's keys, so its bucket is left as it is even with the bundled store left running (`STORE_REPLICAS=0` stops it).
-The store makes no bucket a write names, so a wrong bucket name is refused, and the server is not ready, saying
-`NoSuchBucket`. A database restored from a dump brings the
-keys with its vault; a database made anew beside a store that already has keys finds none, and the server says so:
-read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
-secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
-
-Once it has handed its keys over, the store can take them back from the vault at each start, and the vault rotates
-them from then on (`-f deploy/store-files.yml`; *Files for the programs beside the server*): a one-shot service renders
-the keys the server keeps into a file before each start of the store (`STORE_S3_CONFIG` for `deploy/store/start.sh`).
-The first render keeps the handed-over keys for the service, as they are: the store keeps its data, its keys and its
-encryption key. A new installation starts once without that file, so that the handoff happens. The render, and a
-rotation through it, are refused, writing and making nothing, on an installation whose store is not the bundled one:
-where the vault holds no keys the bundled store handed over (the server signs with the machine's identity, or a store
-of the installation's own has keys given elsewhere), or where the keys there now were set by an operator (`secret_set`,
-the environment). `ferrum task services` says so. Without the refusal, keys made by a render would be what the server
-signs with at its next start, and its real store would never have heard of them.
-
-An installation whose `files` volume holds files starts with the store set and files moving, reads both, and moves
-its files with `docker compose exec ferrum ferrum task files_move`. Back the store up beside the database with the commands
-in *Backups and restore* (the dump, then the store's volume while the store is paused); they were not run here, as
-there is no Docker on the machine this was built on.
+process with its own volume. Only its S3 port listens, on Compose's network alone. It is given the key in `deploy/.env`
+(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, which `deploy/preflight.sh --generate` makes, and the server signs with:
+`deploy/store/start.sh`; it refuses to start without them) and makes the key that encrypts what it keeps, in its own
+volume. The one-shot `store-setup` service runs `ferrum task bucket_set_up` once the store answers, which makes the bucket
+`ferrum` with versioning, lifecycle rules and encryption; it does not run with a store of your own (`STORE_REPLICAS=0`),
+whose bucket is left as it is. The store makes no bucket a write names, so a wrong bucket name is refused, and the server
+is not ready, saying `NoSuchBucket`. To use a store of your own instead, set its bucket, address and keys and
+`STORE_REPLICAS=0`. Back the store up beside the database with the commands in *Backups and restore* (the dump, then the
+store's volume while the store is paused); they were not run here, as there is no Docker on the machine this was built on.
 
 ## Backups and restore
 
@@ -1622,8 +1567,8 @@ says (*A sandbox of a workspace*), with keys of its own. A move carries them (*M
 
 ## Files for the programs beside the server
 
-Some programs run beside the server and share a secret or a setting with it: the object store Compose bundles, the
-meeting server, the mail server, an app's engine. Each can take what it needs from files written as it starts, from the
+Some programs run beside the server and share a secret or a setting with it: the meeting server, the mail server, an
+app's engine. Each can take what it needs from files written as it starts, from the
 database and the vault alone, instead of a Secret or a `deploy/.env` value typed once for it and once for the server. A
 secret the two share is then made once, by the vault, and typed by nobody.
 
@@ -1677,13 +1622,12 @@ server's image, with the database's address as its one input (straight to Postgr
 `/run/ferrum` for the vault's key file. It writes into a memory-backed volume the program mounts read-only at
 `/run/companion`, and the program's network policy lets the pod reach the database, and DNS, for the render. It opens
 the vault with the key file or the database password, never with the pod's service account. In Compose, a one-shot
-service renders them before the program starts, into a volume the two share (on the host's disk, as the store's own
-keys always were: a volume in memory would be gone before the program starts). What makes each program take its
+service renders them before the program starts, into a volume the two share (on the host's disk: a volume in memory
+would be gone before the program starts). What makes each program take its
 files this way:
 
 | Program | Its service (owner) | Switched by | What it is given |
 |---|---|---|---|
-| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
 | Metrics' engine | `metrics-engine` (Metrics) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal`; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
 | The meeting server (LiveKit) | `meet` (Comms) | `deploy/meet.yml` (LiveKit started with `--config /run/meet-files/livekit.yaml`) | `livekit.yaml`: its configuration, with a key for each version kept |
 | The mail server (Stalwart) | `mail` (Comms) | `deploy/mail.yml`, and in Stalwart's `config.toml` once: `authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` | `admin-secret`: the fallback administrator's secret alone (the server's `FERRUM_MAIL_ADMIN` is `admin`) |
@@ -1704,22 +1648,10 @@ address alone, and the program takes it at its next start.
 The online editor and the browser editors take no secret of ours, only settings the chart's values give
 them; a render would put the database's address into pods that hold no secret today (and, for the editor, into a
 namespace of a lower security level), so they keep their values. None of this was run on a cluster or in Compose: the
-chart and `deploy/k8s` were rendered and compared (`deploy/helm/test.sh`), Compose with `docker compose config`; the
-store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.sh`).
+chart was rendered (`deploy/helm/test.sh`), Compose with `docker compose config`.
 
 **Rotating, program by program.**
 
-- *The store Compose bundles* (`object-store`): both keys rotate together. Restart the store first: it then lets in
-  both pairs. Then restart the servers: each starts with the new pair, and one not yet restarted keeps the pair before,
-  which the store still lets in. A day later the overlap is over: restart the store once more, and it lets in the new
-  pair alone.
-  ```bash
-  C="docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env"
-  $C exec ferrum ferrum task vault_rotate level:service service:object-store
-  $C up -d --force-recreate store-files store      # both pairs rendered; the store started on them
-  $C up -d --force-recreate ferrum
-  $C up -d --force-recreate store-files store      # a day later: the new pair alone
-  ```
 - *Metrics' engine* (`metrics-engine`): rotate, then restart the engine's pods
   within the overlap (a day): each is given both tokens, and Metrics sends the one before until the overlap is over, so
   no pod refuses it meanwhile.

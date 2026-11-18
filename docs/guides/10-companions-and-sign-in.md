@@ -152,9 +152,7 @@ after the rotation. Say which in the app's operations notes ([14](14-operations-
 
 **What was run.** The kernel's `crates/kernel/tests/companions_it.rs` renders a meeting server declared as Comms
 declares it, two replicas at once (one `make`), the refusals, a rotation and a closed vault, and starts LiveKit 1.13.11
-on the written file with tokens the vault signs. `scripts/companions_rehearsal.sh` runs the real binary with
-`DATABASE_URL` alone on the platform's bundled store. Not run: the chart, `deploy/k8s` and Compose (rendered and compared
-only), and Stalwart (not on the machine; its file macro is from its documentation as remembered).
+on the written file with tokens the vault signs. Not run: the chart and Compose (rendered only), and Stalwart (not on the machine; its file macro is from its documentation as remembered).
 
 ## Part 2: signing people in to the program
 
@@ -279,8 +277,7 @@ session should end that session instead.
 ## Checked by
 
 - `HookRegistry::settle` at every start: names, duplicates, declarations outside an app's registration.
-- `crates/kernel/tests/companions_it.rs` (the `rust` job), `scripts/companions_rehearsal.sh` (`scripts/local_ci.sh
-  companions`, run when named).
+- `crates/kernel/tests/companions_it.rs` (the `rust` job).
 - `crates/kernel/tests/openid_it.rs`, `server/tests/oidc_it.rs`, `scripts/oidc_rehearsal.sh` (`scripts/local_ci.sh oidc`,
   run when named, with a real Forgejo).
 - An app's own service and sign-in handling: its own suite (Comms' and Metrics' `tests/services_it.rs`); otherwise

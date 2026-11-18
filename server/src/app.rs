@@ -32,13 +32,6 @@ pub static EXTRA_APPS: std::sync::OnceLock<fn(&mut HookRegistry)> = std::sync::O
 /// crate::store decides on as it starts ([`storage_of`]).
 pub(crate) fn build_storage(settings: &Settings) -> Result<Storage> {
     if settings.s3_bucket.is_empty() {
-        if settings.require_object_storage {
-            return Err(Error::Message(
-                "object storage is required so every replica sees the same attachments: set FERRUM_S3_BUCKET (and FERRUM_S3_ENDPOINT for \
-                 S3-compatible stores), or FERRUM_REQUIRE_OBJECT_STORAGE=false for a single-server install"
-                    .into(),
-            ));
-        }
         std::fs::create_dir_all(&settings.files_dir).map_err(|e| Error::Message(format!("files_dir: {e}")))?;
     }
     let objects = crate::objects::Objects::new(settings).map_err(|e| Error::Message(format!("object storage: {e}")))?;
@@ -52,7 +45,7 @@ pub(crate) fn storage_of(objects: Arc<crate::objects::Objects>) -> Storage {
 }
 
 /// How long a stopping replica keeps answering the requests in flight. Kubernetes gives a replica
-/// 40 s after its 5 s preStop pause (deploy/k8s/deployment.yaml); this and the background loops'
+/// 40 s after its 5 s preStop pause (deploy/helm/ferrum/templates/deployment.yaml); this and the background loops'
 /// 10 s fit inside it.
 const DRAIN: Duration = Duration::from_secs(20);
 
@@ -249,8 +242,6 @@ impl Hooks for App {
         let kernel_live = crate::settings::kernel_live(&settings, &ferrum_kernel::env::var).map_err(Error::Message)?;
         let catalog = crate::packages::base_catalog(Path::new(&settings.packages_dir)).map_err(|e| Error::Message(format!("packages: {e}")))?;
         ferrum_domain::register(&mut hooks);
-        // The platform's own services: the programs beside the server whose files it renders (`ferrum task render`).
-        crate::companions::register(&mut hooks);
         crate::packages::register(&mut hooks).map_err(|e| Error::Message(format!("apps: {e}")))?;
         if let Some(extra) = EXTRA_APPS.get() {
             extra(&mut hooks);
@@ -340,56 +331,24 @@ impl Hooks for App {
         let vault_open = ferrum_kernel::vault::status(&kernel.db).await.is_ok_and(|s| s.open);
         let sessions = crate::sessions::Sessions::start(&jwt.secret, vault_open.then(|| (kernel.clone(), platform.clone()))).await.map_err(Error::Message)?;
         // Where files are kept (docs/operations.md, "Object storage"): the store, or a local directory only in development
-        // and tests and for an installation already keeping its files there; while they move to the store, read from both.
+        // and tests.
         // A task other than the server's start runs without it while it is not set up yet: on a fresh installation the
         // settings that name it are what `apply_settings` writes and its keys what `secret_set` puts in the vault, from the
         // database's address alone (D1). Whatever then reaches for a file is refused; the server itself never starts so.
         let development = matches!(ctx.environment, Environment::Development | Environment::Test);
-        let guest = kernel.booted.guest.is_some();
         let task = !is_start(std::env::args());
-        let (objects, found, unstored) = match crate::store::decide(&kernel.db, &settings, development, guest).await {
-            Ok((objects, found)) => (objects, found, false),
+        let (objects, unstored) = match crate::store::decide(&settings, development) {
+            Ok(objects) => (objects, false),
             Err(e) if task => {
                 tracing::warn!("object storage is not set up ({e}): this task runs without it, and refuses whatever needs a file");
-                (crate::objects::Objects::refusing().map_err(Error::Message)?, crate::store::Found::Store { moving: false }, true)
+                (crate::objects::Objects::refusing().map_err(Error::Message)?, true)
             }
             Err(e) => return Err(Error::Message(e)),
         };
-        match found {
-            crate::store::Found::Directory { kept: true } => tracing::warn!(
-                dir = %settings.files_dir,
-                "files are kept in a local directory, which only this machine sees and a later release refuses: move them to object storage \
-                 (docs/operations.md, \"Object storage\"; ferrum task doctor says how)"
-            ),
-            crate::store::Found::Store { moving: true } => tracing::warn!(
-                dir = %settings.files_dir,
-                "files are moving from the local directory to object storage: reads look in both until `ferrum task files_move` has copied them"
-            ),
-            crate::store::Found::Store { moving: false } if objects.reads_directory() => tracing::warn!(
-                dir = %settings.files_dir,
-                "the old files directory is still mounted: a file object storage lacks is looked for there, and copied over at start and every hour"
-            ),
-            _ => {}
-        }
         let releases = Arc::new(crate::store::Releases::new(kernel.db.clone(), settings.files_delete_after_days));
         let objects = Arc::new(objects.with_releases(releases));
-        // The bucket made and protected where the settings ask, or where the store Compose bundles asks at its first start
-        // (its handoff) and the server signs with the key it handed over: never a bucket of an installation's own unasked.
-        let env_key = std::env::var("AWS_ACCESS_KEY_ID").ok().filter(|v| !v.is_empty());
-        let key_id = env_key.as_deref().or_else(|| settings.revealed.get("aws_access_key_id"));
-        if (settings.s3_set_up_bucket || crate::store::handed_over().is_some_and(|h| h.sets_up(key_id))) && !guest && !unstored {
-            // Done by each probe first, until it has worked (crate::store::check).
-            match crate::store::Bucket::new(&settings) {
-                Ok(Some(bucket)) => {
-                    objects.health.ask_set_up(crate::store::SetUp { bucket, keep_days: crate::store::keep_versions_days(&settings), db: kernel.db.clone() })
-                }
-                Ok(None) => {}
-                Err(e) => tracing::error!("setting up the object store's bucket: {e}"),
-            }
-        }
-        // One write-then-read probe (the bucket's set-up first, where asked): until one has worked this replica is not
-        // ready (/api/ready), and it keeps asking (crate::store::spawn_health); the start goes on, so that it serves its
-        // liveness and says why.
+        // One write-then-read probe: until one has worked this replica is not ready (/api/ready), and it keeps asking
+        // (crate::store::spawn_health); the start goes on, so that it serves its liveness and says why.
         if !unstored {
             crate::store::check(&objects).await;
         }
@@ -513,11 +472,6 @@ impl Hooks for App {
             if !stored.is_empty() {
                 tracing::info!(secrets = %stored.join(", "), "stored the secrets the environment sets in the vault");
             }
-            // The keys the bundled store handed over at its first start (deploy/docker-compose.yml).
-            let stored = crate::secrets::adopt_handoff(&state).await;
-            if !stored.is_empty() {
-                tracing::info!(secrets = %stored.join(", "), "stored the object store's keys in the vault, and deleted the file that handed them over");
-            }
         }
         // Every replica that serves requests: cache invalidation and delivery to the sockets it holds.
         let mut listeners = state.kernel.spawn_listeners(state.shutdown.subscribe());
@@ -615,31 +569,6 @@ impl Hooks for App {
                     }
                 }
             }));
-            // While the old files directory is still mounted: files the database names that object storage lacks and the
-            // directory holds (an older build's, after a move), copied over at start and every hour, one replica at a time.
-            if state.objects.reads_directory() {
-                let (db, objects, mut stop) = (state.kernel.db.clone(), state.objects.clone(), state.shutdown.subscribe());
-                handles.push(tokio::spawn(async move {
-                    let mut from = None;
-                    loop {
-                        let started = chrono::Utc::now();
-                        match crate::store::rescue(&db, &objects, from, true).await {
-                            Ok(Some(r)) => {
-                                from = Some(started - chrono::Duration::hours(1));
-                                if r.copied > 0 || !r.failed.is_empty() {
-                                    tracing::warn!(copied = r.copied, failed = r.failed.len(), "files from the old files directory copied to object storage");
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => tracing::warn!("copying files the store lacks from the old files directory failed (tried again in an hour): {e}"),
-                        }
-                        tokio::select! {
-                            _ = stop.changed() => return,
-                            _ = tokio::time::sleep(Duration::from_secs(3600)) => {}
-                        }
-                    }
-                }));
-            }
             // Interface releases: mark those this replica served as used; purge the unused.
             let (shell, mut stop) = (state.shell.clone(), state.shutdown.subscribe());
             handles.push(tokio::spawn(async move {
@@ -787,7 +716,7 @@ impl Hooks for App {
         tasks.register(crate::tasks::AllowOlderBuilds);
         tasks.register(crate::tasks::AdoptMove);
         tasks.register(crate::tasks::CheckFiles);
-        tasks.register(crate::tasks::FilesMove);
+        tasks.register(crate::tasks::BucketSetUp);
         tasks.register(crate::tasks::MoveWorkspace);
         tasks.register(crate::tasks::FinishMove);
         tasks.register(crate::tasks::CopyWorkspace);
@@ -1272,12 +1201,6 @@ mod tests {
         assert!(signup_settings(env(&[("FERRUM_PLANS", r#"{"free": {"seats": 3}}"#)]), true).is_err(), "not a quota");
         assert!(signup_settings(env(&[("FERRUM_PLANS", "[1]")]), true).is_err());
         assert!(signup_settings(env(&[("FERRUM_SIGNUP_PER_ADDRESS", "0")]), true).is_err());
-    }
-
-    #[test]
-    fn local_files_need_an_explicit_opt_out_when_object_storage_is_required() {
-        let settings: Settings = serde_json::from_value(serde_json::json!({"require_object_storage": true})).unwrap();
-        assert!(build_storage(&settings).is_err());
     }
 
     #[tokio::test]

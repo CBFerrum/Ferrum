@@ -40,9 +40,9 @@
 #           default 8a34644e, the first with floors) and this one on one database. The older build is made once and kept
 #           in WINDOW_WORK (about 3 GB while it builds; refused under 8 GB free).
 #   objects not in the workflow, and only when named: scripts/object_store_rehearsal.sh, the server without apps on real
-#           S3 servers (SeaweedFS from Homebrew, run by deploy/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a new
-#           installation refused on a directory, files moved with files_move killed partway, two replicas, the doctor's
-#           bucket lines, the restore drill, direct links and a machine's identity in place of keys.
+#           S3 servers (SeaweedFS from Homebrew, run by deploy/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a start
+#           without a bucket refused, `bucket_set_up` making the bucket, two replicas, the doctor's bucket lines, the
+#           restore drill, direct links and a machine's identity in place of keys.
 #   oneinput not in the workflow, and only when named: scripts/one_input.sh, the server with its apps started with
 #           DATABASE_URL in its environment and nothing else, as two replicas doing real work on a fresh database with
 #           a private SeaweedFS for its files, Comms taking its meeting address from the table and signing with the
@@ -52,16 +52,11 @@
 #   oidc    not in the workflow, and only when named: scripts/oidc_rehearsal.sh, this build's server (without apps, with
 #           the stand-in for the Cloud app in server/examples/oidc_rehearsal.rs) and a real Forgejo (FORGEJO, default
 #           Homebrew's) on SQLite signing a person in through the workspace's address, then every way of leaving.
-#   companions not in the workflow, and only when named: scripts/companions_rehearsal.sh, the server without apps
-#           rendering the bundled store's keys from a fresh database with DATABASE_URL alone (two renders at once, one
-#           key pair), SeaweedFS started on the file by deploy/store/start.sh, servers writing through it, a rotation's
-#           overlap and its end, and a vault that does not open writing nothing. LiveKit on rendered files is the
-#           kernel's companions_it, in the rust job. Needs SeaweedFS's `weed`.
 #   editors not run here: it needs Docker and Playwright's browsers. The image job and the cluster workflow need
 #           Docker too: docs/operations.md, "Running the image and cluster checks on your own machine".
 #
 # A job run only when named needs software of its own: PostgreSQL 17's programs (replica, managed; PG_BIN), PgBouncer
-# (managed; PGBOUNCER), SeaweedFS's `weed` (objects, oneinput, companions; window's object-storage step), moto 5.0.28
+# (managed; PGBOUNCER), SeaweedFS's `weed` (objects, oneinput, window, oidc), moto 5.0.28
 # with boto3 in a virtualenv (objects; OBJECT_PYTHON), a C compiler (oneinput), Forgejo 17 and sqlite3 (oidc; FORGEJO).
 # Where it is not there, the job says so in one line, SKIP: a run that named it fails, the default run names it at the end. LiveKit (`livekit-server`) is the rust job's:
 # companions_it starts it where installed.
@@ -340,7 +335,7 @@ managed_tests() { # name args...
 }
 
 job_window() {
-  has weed || echo "     note: no $WEED_NEEDED: the rehearsal leaves out its object-storage step"
+  has weed || { skip window "$WEED_NEEDED"; return; }
   run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --example oidc_rehearsal --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
@@ -367,12 +362,6 @@ job_oidc() {
   run "oidc rehearsal" scripts/oidc_rehearsal.sh "ferrum_oidcrehearsal$SFX"
 }
 
-job_companions() {
-  has weed || { skip companions "$WEED_NEEDED"; return; }
-  run "companions build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
-  run "companions rehearsal" scripts/companions_rehearsal.sh "ferrum_companions$SFX"
-}
-
 job_editors() { skip editors "Docker (its nginx image) and Playwright's browsers; docs/operations.md says how to run it"; }
 
 jobs=("$@")
@@ -381,8 +370,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | release | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, release, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | release | managed | objects | oneinput | oidc) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, release, managed, objects, oneinput, oidc)"; exit 2 ;;
   esac
 done
 skipped=$(sort -u "$LOGS/skipped" | paste -sd, - | sed 's/,/, /g')

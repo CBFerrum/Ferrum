@@ -585,7 +585,7 @@ async fn direct_link(
 ) -> ApiResult<Option<Response>> {
     let now = st.live_settings.now();
     let recorded = entity.is_some_and(|e| ctx.reads_recorded(e).is_some());
-    if !may_link(now.settings.files_direct_links, st.objects.direct_uploads() && !st.objects.reads_directory(), ctx.outside, recorded, ctype) {
+    if !may_link(now.settings.files_direct_links, st.objects.direct_uploads(), ctx.outside, recorded, ctype) {
         return Ok(None);
     }
     let ttl = std::time::Duration::from_secs(now.settings.files_direct_link_seconds.clamp(1, DIRECT_LINK_MAX_SECS));

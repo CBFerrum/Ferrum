@@ -16,8 +16,8 @@ placeholder() { case "$1" in "" | *[Cc][Hh][Aa][Nn][Gg][Ee]* | *example* | *repl
 
 if [ "${1:-}" = "--generate" ]; then
   [ -f .env ] || cp .env.example .env
-  # The database's two passwords and nothing else: the vault (in the database) keeps and makes every other secret.
-  for pair in POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24; do
+  # The database's two passwords and the object store's key: the vault (in the database) keeps and makes every other secret.
+  for pair in POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24 AWS_SECRET_ACCESS_KEY:24; do
     name=${pair%:*} bytes=${pair#*:}
     if placeholder "$(value "$name")"; then
       generated=$(openssl rand -base64 "$bytes" | tr -d '\n')
@@ -25,6 +25,10 @@ if [ "${1:-}" = "--generate" ]; then
       echo "generated $name"
     fi
   done
+  if placeholder "$(value AWS_ACCESS_KEY_ID)"; then
+    grep -v "^AWS_ACCESS_KEY_ID=" .env > .env.new && echo "AWS_ACCESS_KEY_ID=FERRUM$(openssl rand -hex 8 | tr 'a-f' 'A-F')" >> .env.new && mv .env.new .env
+    echo "generated AWS_ACCESS_KEY_ID"
+  fi
   chmod 600 .env
   # The online editor's WOPI proof key: with it, Ferrum refuses any WOPI call the editor did not sign.
   # The editor runs as another user and must read it, so the file is readable by all; it signs calls
@@ -48,7 +52,7 @@ else
     ------) ok "deploy/.env is readable only by its owner" ;;
     *) warning "deploy/.env can be read by others" "chmod 600 deploy/.env" ;;
   esac
-  for name in POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
+  for name in POSTGRES_PASSWORD FERRUM_DB_PASSWORD AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
     if placeholder "$(value "$name")"; then
       blocker "$name is missing, or a placeholder" "Run deploy/preflight.sh --generate."
     else
