@@ -413,3 +413,59 @@ fn an_unvalidated_key_is_validated_at_the_next_start() {
         assert!(w.unvalidated().await.is_empty(), "{:?}", w.unvalidated().await);
     });
 }
+
+/// A foreign key is checked against every row, though the sync's connection belongs to no workspace and the table's
+/// policy hides the rows from it. A row that points at nothing does not fail the start: the key stays `not valid`, still
+/// refusing new such rows, a warning names it and counts the rows, `Kernel::unvalidated_keys` lists it; every start
+/// tries again (a current one too), and once the row is mended the key is validated.
+#[test]
+fn an_orphan_keeps_the_key_unvalidated_and_the_start_goes_on() {
+    run(async {
+        let w = world().await;
+        w.fill_and_strip(1_000).await;
+        let t = &w.table;
+        let ghost = Uuid::new_v4();
+        let mut conn = system_conn().await;
+        sqlx::query(AssertSqlSafe(format!("update {t} set from_currency = $1 where id = (select id from {t} limit 1)")))
+            .bind(ghost)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+        let report = w.sync().await.unwrap().expect("a row that points at nothing does not fail the start");
+        println!("K7: {:?}", report.warnings);
+        assert!(!report.skipped && report.warnings.len() == 1, "{report:?}");
+        let said = &report.warnings[0];
+        assert!(said.contains(t.as_str()) && said.contains("fk_") && said.contains("from_currency") && said.contains("1 rows"), "{said}");
+        let open = w.unvalidated().await;
+        assert!(open.len() == 1 && open[0].contains("from_currency"), "the key stays, not validated: {open:?}");
+        assert_eq!(w.k.unvalidated_keys().await.unwrap(), vec![(t.clone(), open[0].clone())]);
+        let insert_orphan = async || {
+            sqlx::query(AssertSqlSafe(format!(
+                "insert into {t} (tenant_id, id, from_currency, to_currency, valid_from) values ($1, gen_random_uuid(), $2, $3, date '1900-01-01')"
+            )))
+            .bind(w.tenant)
+            .bind(Uuid::new_v4())
+            .bind(w.to)
+            .execute(&mut system_conn().await)
+            .await
+        };
+        assert!(insert_orphan().await.unwrap_err().to_string().contains("foreign key"), "a new row that points at nothing is refused meanwhile");
+
+        // The next start: the schema is current, and the key is looked at again, still not validated.
+        let again = w.sync().await.unwrap().expect("the next start");
+        assert!(again.skipped && again.warnings.len() == 1, "{again:?}");
+        assert_eq!(w.unvalidated().await, open);
+
+        sqlx::query(AssertSqlSafe(format!("update {t} set from_currency = $1 where from_currency = $2")))
+            .bind(w.from)
+            .bind(ghost)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let mended = w.sync().await.unwrap().expect("the row is mended");
+        assert!(mended.skipped && mended.warnings.is_empty(), "{mended:?}");
+        assert!(w.unvalidated().await.is_empty() && w.k.unvalidated_keys().await.unwrap().is_empty());
+        assert!(insert_orphan().await.unwrap_err().to_string().contains("foreign key"), "and it refuses them once validated");
+    });
+}

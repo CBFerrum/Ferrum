@@ -738,7 +738,7 @@ the operators' install from one has not run on a cluster without internet.
   and indexes; nothing is dropped automatically (orphaned columns are reported in the logs). Servers of the release
   before keep running and restarting on the migrated database (*Rolling back and the two-version window*).
 * Indexes the sync adds to a table that exists are built concurrently, and a foreign key is added `not valid` and
-  validated in a statement of its own, so writes carry on. A build that failed (rows that repeat a value in a unique
+  validated in a statement of its own, so writes carry on. The validation reads every row (the sync's connection is no workspace's, so it asks for the system's view of the tables); rows that point at nothing do not fail the start: the key stays `not valid`, still refusing new such rows, a warning names it and counts them, `Kernel::unvalidated_keys` lists it, and each start tries again. A build that failed (rows that repeat a value in a unique
   index fail the start, naming the index) leaves nothing invalid: what a crash left is dropped and built again at the
   next start. A build waits for the transactions that began before it (a dump, a long report), at most five minutes,
   then fails the start, and says every 30 s which index it waits on; a replica that starts meanwhile waits for the

@@ -345,7 +345,7 @@ impl Ddl<'_> {
             self.index(table, &[&f.name], false, None).await?;
             let name = obj_name("fk", table, &[&f.name]);
             if self.constraints.contains(&name) {
-                self.validate(table, &name).await?;
+                self.validate(table, &name, &f.name, &target.table).await?;
                 continue;
             }
             let on_delete = match f.on_delete {
@@ -365,15 +365,48 @@ impl Ddl<'_> {
             .await?;
             self.constraints.insert(name.clone());
             self.unvalidated.insert(name.clone());
-            self.validate(table, &name).await?;
+            self.validate(table, &name, &f.name, &target.table).await?;
         }
         Ok(())
     }
 
-    /// A foreign key a start before this one left unvalidated (its validation failed on rows that point at nothing).
-    async fn validate(&mut self, table: &str, name: &str) -> Result<()> {
-        if self.unvalidated.remove(name) {
-            self.exec(format!("alter table {} validate constraint {}", q(table), q(name))).await?;
+    /// Checks a foreign key that was added `not valid` (or that a start before this one left so) against every row, and
+    /// validates it. The sync's connection belongs to no workspace, so the table's policy hides every row from it and
+    /// the check would pass on nothing: the statement runs with `ferrum.system` on, in a transaction of its own
+    /// (`set_config(..., true)`, as every system statement does; gone at its end). Rows that point at nothing do not fail
+    /// the start: the key stays `not valid`, still refusing new such rows, a warning names it and counts the rows, and
+    /// the next start tries again.
+    async fn validate(&mut self, table: &str, name: &str, column: &str, target: &str) -> Result<()> {
+        if !self.unvalidated.remove(name) {
+            return Ok(());
+        }
+        let sql = format!("alter table {} validate constraint {}", q(table), q(name));
+        let mut tx = sqlx::Connection::begin(&mut *self.conn).await?;
+        sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await?;
+        let checked = sqlx::raw_sql(AssertSqlSafe(sql.clone())).execute(&mut *tx).await;
+        match checked {
+            Ok(_) => {
+                tx.commit().await?;
+                self.report.statements += 1;
+            }
+            Err(e) if e.as_database_error().is_some_and(|d| d.code().as_deref() == Some("23503")) => {
+                tx.rollback().await?;
+                let mut tx = sqlx::Connection::begin(&mut *self.conn).await?;
+                sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await?;
+                let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                    "select count(*) from {t} r where r.{c} is not null and not exists (select 1 from {p} p where p.tenant_id = r.tenant_id and p.id = r.{c})",
+                    t = q(table),
+                    c = q(column),
+                    p = q(target)
+                )))
+                .fetch_one(&mut *tx)
+                .await?;
+                tx.rollback().await?;
+                self.report.warnings.push(format!(
+                    "{table}: foreign key {name} is not validated: {count} rows have {column} pointing at nothing (it still refuses new ones; mend the rows and the next start validates it)"
+                ));
+            }
+            Err(e) => return Err(Error::Internal(format!("schema sync failed on `{sql}`: {e}"))),
         }
         Ok(())
     }
@@ -581,6 +614,45 @@ pub async fn copy_ready(db: &Db) -> Result<Vec<String>> {
     Ok(problems)
 }
 
+/// The foreign keys the sync made that are not validated: rows point at nothing.
+async fn unvalidated(conn: &mut PgConnection) -> Result<Vec<(String, String)>> {
+    Ok(sqlx::query_as(
+        "select conrelid::regclass::text, conname::text from pg_constraint \
+         where contype = 'f' and not convalidated and conname like 'fk\\_%' and connamespace = current_schema()::regnamespace order by 1, 2",
+    )
+    .fetch_all(conn)
+    .await?)
+}
+
+impl crate::Kernel {
+    /// The foreign keys of the entity tables that are not validated, as (table, constraint): rows that point at nothing
+    /// kept the sync from validating them. They still refuse new such rows.
+    pub async fn unvalidated_keys(&self) -> Result<Vec<(String, String)>> {
+        unvalidated(&mut *self.db.pool.acquire().await?).await
+    }
+}
+
+/// A start that finds the schema current looks at those keys once more.
+async fn revalidate(conn: &mut PgConnection, schema: &Schema) -> Result<Vec<String>> {
+    if unvalidated(conn).await?.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ddl = Ddl::new(conn, false);
+    ddl.load_state().await?;
+    for ent in managed(schema) {
+        ddl.links(&ent.table, ent, schema).await?;
+        for child in ent.children.values() {
+            if let Some(cent) = schema.entity(&child.entity) {
+                ddl.links(&child.table, cent, schema).await?;
+            }
+        }
+    }
+    for w in &ddl.report.warnings {
+        tracing::warn!("schema sync: {w}");
+    }
+    Ok(ddl.report.warnings)
+}
+
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     // A session lock, and `create index concurrently` outside any transaction: the direct address.
     let mut conn = db.direct.acquire().await?;
@@ -613,7 +685,9 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
     if !force && current.as_deref() == Some(fingerprint.as_str()) {
         // A build with the same catalog still says that it is here, so older ones can tell.
         crate::window::record(conn).await?;
-        return Ok(SyncReport { skipped: true, ..Default::default() });
+        // And a foreign key that is still not validated, for rows that pointed at nothing, is tried again.
+        let warnings = revalidate(conn, &schema).await?;
+        return Ok(SyncReport { skipped: true, warnings, ..Default::default() });
     }
     let mut ddl = Ddl::new(conn, false);
     ddl.load_state().await?;
