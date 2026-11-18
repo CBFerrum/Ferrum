@@ -70,7 +70,7 @@ license: AGPL-3.0-only
 homepage: https://github.com/CBFerrum/ferrum-app-visits
 support: https://github.com/CBFerrum/ferrum-app-visits/issues
 runtime: native
-platform: ">=0.3.2, <0.4"
+platform: ">=0.4.0, <0.5"
 packages: [visits]
 uninstall: ask
 # Its own interface at /visits/.
@@ -94,9 +94,8 @@ contributes:
 Field by field, with what each check refuses, is [03-the-manifest.md](03-the-manifest.md). Three things to
 get right now:
 
-- `platform: ">=0.3.2, <0.4"`: an interface of its own needs 0.3.2 ([docs/plugins.md](../plugins.md), *Interfaces
-  of their own*). If the app will use its vault handle or `operator_settings`, it is `">=0.3.9, <0.4"`
-  (`PLATFORM_VERSION` in `crates/apps/src/lib.rs`).
+- `platform: ">=0.4.0, <0.5"`: the app API of today's contract (`PLATFORM_VERSION` in `crates/apps/src/lib.rs`),
+  which has everything earlier versions added (an interface of its own, the vault handle, `operator_settings`).
 - `icon` must be one the shell draws: `scripts/check_apps.py` reads the names from `const ICONS` in
   `server/shell/runtime.js` and fails `the shell draws no <name> icon`.
 - `version` must appear in `CHANGELOG.md` (step 7).
@@ -235,8 +234,8 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
     vec![]
 }
 
-/// Upkeep: none yet.
-pub async fn maintenance(_k: &Kernel) -> Result<()> {
+/// One workspace's upkeep (docs/app-contract.md, Upkeep): none yet.
+pub async fn maintenance(_k: &Kernel, _tenant: uuid::Uuid) -> Result<()> {
     Ok(())
 }
 ```

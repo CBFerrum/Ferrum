@@ -310,7 +310,7 @@ opens (`crates/kernel/src/db.rs`):
 | `k.db.read_tx(tenant, timeout_ms)` | read-only, on the read replica when it has caught up | reports and long reads |
 | `k.db.side_tenant_tx(tenant)` | a short write on the side pool while another transaction is open | a record that must stand whether or not the request's transaction commits |
 | `k.db.system_tenant_tx(tenant)` | the system's, pinned to one workspace | engine work that must see past a person's rights in one workspace |
-| `k.db.system_tx()` | crosses workspaces | finding which workspaces have work (GRC's `maintenance_on` lists active tenants with it, commits, then opens `tenant_tx` per workspace) |
+| `k.db.system_tx()` | crosses workspaces | the installation's own work, done once (a table every workspace writes; see app-contract.md, *Upkeep*) |
 
 The kernel's write calls come in two forms: `insert`, `update`, `submit`, `run_action`, `transition`, which open
 their own transaction, and `insert_tx`, `update_tx`, `submit_tx`, `transition_tx`, which run in the caller's. Inside a

@@ -30,7 +30,7 @@ contract (`docs/app-contract.md`) is the rule where they say the same.
 | Don't let a `requires` range stop below a sibling's new release | the platform cannot pin the two together | the server's `compiled_apps_fit_together` (`server/src/packages.rs`) |
 | Do give a launcher entry an icon the bar draws | otherwise the launcher has nothing to show | `scripts/check_apps.py` against `server/shell/runtime.js` |
 | Don't take a reserved route (`api assistant ws files mcp metrics oauth open data admin store account portal public accounts login logout s app home sw.js robots.txt favicon.ico manifest.webmanifest`, `_…`, `.…`) or another app's | the core and other apps own them | refused when a release is made available (`docs/plugins.md`) |
-| Do raise `platform` to the version that has what you use (0.3.9 for operator settings) | an older platform would not read it | `scripts/check_apps.py` (operator settings) |
+| Do raise `platform` to the version that has what you use (0.4.0 for today's contract) | an older platform would not read it | `scripts/check_apps.py` (operator settings) |
 
 ## Data, tables and migrations
 

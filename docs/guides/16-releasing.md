@@ -23,8 +23,8 @@ Most of this guide is about native apps, which is what every app in CBFerrum's r
   extension point's schema, an entity or field others link to, an intent's payload ([docs/plugins.md](../plugins.md):
   "An incompatible change to a point is a new major version of its owner, so `requires` ranges keep owners and add-ons
   in step"). Before 1.0, the minor is the major: 0.22 to 0.23 may break, 0.23.0 to 0.23.1 may not.
-- **`platform`** is the range of the platform's App API the app works with: `">=0.3.9, <0.4"` for an app that reads
-  operator settings and uses the vault (0.3.9). `scripts/check_apps.py` fails an app with operator settings whose range
+- **`platform`** is the range of the platform's App API the app works with: `">=0.4.0, <0.5"` for every app since 0.4.0
+  changed the contract (upkeep of one workspace; operator settings and the vault came in 0.3.9). `scripts/check_apps.py` fails an app with operator settings whose range
   starts below 0.3.9. An installation outside the range shows the app as blocked (`blocked: [{app: "platform", …}]`).
 - **`requires`** names each app the app needs, with a range. The platform's build test `compiled_apps_fit_together`
   (`server/src/packages.rs:589`) fails when a compiled app's range does not include the version compiled beside it:

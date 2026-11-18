@@ -1,31 +1,39 @@
 //! Functional packages compiled into the server (cargo features): their hooks, reports, web
 //! endpoints and periodic upkeep.
 
-use ferrum_kernel::{HookRegistry, Kernel};
-use ferrum_meta::{Catalog, Package};
+use ferrum_kernel::doctor::Finding;
+use ferrum_kernel::{Ctx, HookRegistry, Kernel};
+use ferrum_meta::{Catalog, MetaError, Package};
 use futures_util::future::BoxFuture;
-use sqlx::PgPool;
+use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
+use uuid::Uuid;
 
-/// How often package upkeep runs (expiring quotations, SLA clocks, mail polling...).
-const EVERY: Duration = Duration::from_secs(60);
-/// Upkeep's advisory locks are session locks of the two-key form (`pg_try_advisory_lock(int, int)`), a key space the
-/// kernel's other locks (one 64-bit key each) never touch: this is the first key, the second comes from the app's id.
-const UPKEEP_NAMESPACE: i32 = 0x6675_706b;
-/// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`); each holds a pooled connection.
-const DEFAULT_CONCURRENCY: usize = 2;
+/// An app's upkeep for one workspace: its crate's `maintenance(k, tenant)` (docs/app-contract.md, Upkeep).
+pub type Run = Arc<dyn for<'a> Fn(&'a Kernel, Uuid) -> BoxFuture<'a, ferrum_kernel::Result<()>> + Send + Sync>;
 
-/// One piece of upkeep: an app's (or the domain checks') name and what it runs.
-pub type Upkeep = (&'static str, Box<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>);
+/// An app as the upkeep runner knows it: its id, the packages that make a workspace one of its own, and its upkeep.
+pub struct UpkeepApp {
+    pub id: &'static str,
+    pub packages: Vec<String>,
+    pub run: Run,
+}
 
-/// The lock of one piece of upkeep: stable across replicas and releases, because it is made from the name alone
-/// (FNV-1a, which no library upgrade changes).
-fn lock_key(name: &str) -> (i32, i32) {
-    let h = name.bytes().fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
-    (UPKEEP_NAMESPACE, h as i32)
+/// [`Run`] from a function or a closure (the bound lets the compiler see the borrow it returns).
+pub fn run<F>(f: F) -> Run
+where
+    F: for<'a> Fn(&'a Kernel, Uuid) -> BoxFuture<'a, ferrum_kernel::Result<()>> + Send + Sync + 'static,
+{
+    Arc::new(f)
+}
+
+fn names(packages: Result<Vec<Package>, MetaError>) -> Vec<String> {
+    packages.map(|ps| ps.iter().map(|p| p.name().to_string()).collect()).unwrap_or_default()
 }
 
 // EU member states other than Germany are apps of one crate on the EU's (localization.md L2).
@@ -122,23 +130,18 @@ macro_rules! apps {
             ferrum_domain::reports::set_sources(sources)
         }
 
-        /// Every compiled app's upkeep, one job each, ERP's first (`round` runs them).
-        pub fn upkeep_jobs(k: &Arc<Kernel>) -> Vec<Upkeep> {
-            let mut jobs: Vec<Upkeep> = Vec::new();
-            let k1 = k.clone();
-            jobs.push(("erp", Box::new(move || { let k = k1.clone(); Box::pin(async move { ferrum_app_erp::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
+        /// Every compiled app's upkeep, with the packages that make a workspace one of its own ([`spawn`] runs them).
+        pub fn upkeep_apps() -> Vec<UpkeepApp> {
+            #[allow(unused_mut)]
+            let mut apps = vec![UpkeepApp { id: "erp", packages: names(ferrum_app_erp::packages()), run: run(|k, t| Box::pin(ferrum_app_erp::maintenance(k, t))) }];
             $(
                 #[cfg(feature = $nfeature)]
-                {
-                    let k1 = k.clone();
-                    jobs.push(($nfeature, Box::new(move || { let k = k1.clone(); Box::pin(async move { $nkrate::maintenance(&k).await.map_err(|e| e.to_string()) }) })));
-                }
+                apps.push(UpkeepApp { id: $nfeature, packages: names($nkrate::packages()), run: run(|k, t| Box::pin($nkrate::maintenance(k, t))) });
             )*
             for app in crate::extensions::all() {
-                let k1 = k.clone();
-                jobs.push((app.id, Box::new(move || { let k = k1.clone(); Box::pin(async move { (app.maintenance)(&k).await.map_err(|e| e.to_string()) }) })));
+                apps.push(UpkeepApp { id: app.id, packages: names((app.packages)()), run: run(move |k, t| (app.maintenance)(k, t)) });
             }
-            jobs
+            apps
         }
 
         /// Every compiled app's reports by name, with the app that gives each.
@@ -474,76 +477,347 @@ pub fn base_catalog(dir: &Path) -> Result<Catalog, String> {
     Catalog::from_packages(pkgs).map_err(|e| e.to_string())
 }
 
-/// One round of upkeep. Each piece has an advisory lock of its own, tried on a connection held while it runs: a replica
-/// that gets it runs it, one that does not leaves it to whoever has it. At most `concurrency` run at once here, in an
-/// order that differs between replicas, so a slow app delays no other and replicas share the work. A failure or a panic
-/// is logged with the app's name and stops nothing.
-pub async fn round(pool: &PgPool, mut jobs: Vec<Upkeep>, concurrency: usize, every: Duration) {
-    // Shuffled with one random key per job: a key that changed between comparisons would not be an order.
-    jobs.sort_by_cached_key(|_| uuid::Uuid::new_v4());
-    let slots = Arc::new(Semaphore::new(concurrency.max(1)));
-    let mut running = tokio::task::JoinSet::new();
-    for (name, run) in jobs {
-        let Ok(slot) = slots.clone().acquire_owned().await else { break };
-        let pool = pool.clone();
-        running.spawn(async move {
-            let _slot = slot;
-            let (a, b) = lock_key(name);
-            let mut conn = match pool.acquire().await {
-                Ok(c) => c,
-                Err(e) => return tracing::warn!(app = name, "upkeep: no connection: {e}"),
-            };
-            match sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1, $2)").bind(a).bind(b).fetch_one(&mut *conn).await {
-                Ok(true) => {}
-                Ok(false) => return,
-                Err(e) => return tracing::warn!(app = name, "upkeep: lock: {e}"),
-            }
-            let started = Instant::now();
-            // Its own task, so that a panic is caught here and the lock is released below.
-            match tokio::spawn(ferrum_kernel::sandbox::upkeep(run())).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => tracing::warn!(app = name, "app maintenance failed: {e}"),
-                Err(e) => tracing::error!(app = name, "app maintenance panicked: {e}"),
-            }
-            if started.elapsed() > every {
-                tracing::warn!(app = name, seconds = started.elapsed().as_secs(), "app maintenance took longer than the round's interval");
-            }
-            if sqlx::query("select pg_advisory_unlock($1, $2)").bind(a).bind(b).execute(&mut *conn).await.is_err() {
-                // The lock goes with the connection.
-                let _ = conn.close().await;
-            }
-        });
+/// How the upkeep runner paces itself: [`spawn`] takes the default, with the replica's slots; tests shorten it.
+#[derive(Clone, Copy, Debug)]
+pub struct Pace {
+    /// Workspaces' upkeep this replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`, `DbConfig::upkeep`).
+    pub slots: usize,
+    /// How often it looks for upkeep fallen due while none of its runs ends.
+    pub poll: Duration,
+    /// How often the rows are brought in line with what workspaces have installed ([`sync`]).
+    pub sync: Duration,
+    /// The longest one app's upkeep of one workspace may take: past it, the run is dropped (its open transaction rolls
+    /// back) and recorded as failed.
+    pub limit: Duration,
+    /// How long a claim holds its row: past it, a replica that is gone or late leaves the row to whichever is free.
+    pub lease: Duration,
+    /// The wait after a run, before the same app is due again in the same workspace.
+    pub every: Duration,
+    /// The longest wait after runs in a row that hit the limit: each doubles [`Pace::every`] up to it.
+    pub most: Duration,
+    /// How long a stopping replica lets its runs finish before it gives their rows back.
+    pub grace: Duration,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        let s = Duration::from_secs;
+        Pace {
+            slots: ferrum_kernel::db::UPKEEP_AT_ONCE as usize,
+            poll: s(5),
+            sync: s(60),
+            limit: s(270),
+            lease: s(300),
+            every: s(60),
+            most: s(3600),
+            grace: s(5),
+        }
     }
-    while running.join_next().await.is_some() {}
 }
 
-/// How many apps' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`): each holds a direct connection.
+/// How many workspaces' upkeep one replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`): each holds a connection of the
+/// main pool while it runs.
 pub fn upkeep_concurrency() -> usize {
-    ferrum_kernel::env::var("FERRUM_UPKEEP_CONCURRENCY").and_then(|v| v.trim().parse().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_CONCURRENCY)
+    ferrum_kernel::env::var("FERRUM_UPKEEP_CONCURRENCY")
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(ferrum_kernel::db::UPKEEP_AT_ONCE as usize)
 }
 
-pub fn spawn(k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
-    let concurrency = upkeep_concurrency();
+/// Every workspace that has the packages of `apps`, with each such app: a row of `upkeep` each (crates/kernel/migrations,
+/// the baseline).
+const WANTED: &str = "select distinct p.tenant_id, a.app from unnest($1::text[], $2::text[]) a(app, package) \
+     join installed_package p on p.name = a.package join tenant t on t.id = p.tenant_id and t.status = 'active'";
+
+/// Brings the rows in line with what workspaces have installed: one for each active workspace and each app of `apps`
+/// with one of its packages there, due at once when new; every other row goes (the app's packages uninstalled, the
+/// workspace suspended or gone, an app this build lacks). A workspace moving is left as it stands. One replica at a time:
+/// `false` when another holds the step.
+pub async fn sync(k: &Kernel, apps: &[UpkeepApp]) -> ferrum_kernel::Result<bool> {
+    let (ids, packages): (Vec<String>, Vec<String>) = apps.iter().flat_map(|a| a.packages.iter().map(move |p| (a.id.to_string(), p.clone()))).unzip();
+    let mut tx = k.db.system_tx().await?;
+    if !sqlx::query_scalar::<_, bool>("select pg_try_advisory_xact_lock(hashtext('ferrum:upkeep'))").fetch_one(&mut *tx).await? {
+        return Ok(false);
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "insert into upkeep (tenant_id, app) select w.tenant_id, w.app from ({WANTED}) w where not ferrum_workspace_held(w.tenant_id) on conflict do nothing"
+    )))
+    .bind(&ids)
+    .bind(&packages)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!("delete from upkeep u where not ferrum_workspace_held(u.tenant_id) and (u.tenant_id, u.app) not in ({WANTED})")))
+        .bind(&ids)
+        .bind(&packages)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// The custom domains due a check (docs/plan/apps-ui.md §7), checked once whichever replicas ask: under a transaction
+/// lock held while they are checked, so a replica that comes after finds them checked (each check records it on the
+/// domain) and one that comes meanwhile leaves them. The checks call outside, at most six domains of ten seconds each:
+/// this transaction may wait that long between its statements.
+async fn domain_checks(k: &Kernel) -> ferrum_kernel::Result<()> {
+    let mut tx = k.db.system_tx().await?;
+    sqlx::query("set local idle_in_transaction_session_timeout = '120s'").execute(&mut *tx).await?;
+    if sqlx::query_scalar::<_, bool>("select pg_try_advisory_xact_lock(hashtext('ferrum:domain_checks'))").fetch_one(&mut *tx).await? {
+        k.check_hosts().await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A row this replica holds, until its lease (the row's `due_at` while held) ends.
+struct Claim {
+    tenant: Uuid,
+    app: &'static str,
+    lease: chrono::DateTime<chrono::Utc>,
+}
+
+/// Takes up to `free` rows due, the longest waiting first, of the apps of `apps`, in workspaces that are not moving: each
+/// held until `lease` from now. The rows of `full` (apps holding their share of this replica's slots) come after every
+/// other app's, so that one app slow in many workspaces cannot hold every slot while others wait; with nothing else
+/// due they still run.
+async fn claim(k: &Kernel, apps: &[UpkeepApp], free: usize, lease: Duration, full: &[&str]) -> ferrum_kernel::Result<Vec<Claim>> {
+    let ids: Vec<&str> = apps.iter().map(|a| a.id).collect();
+    let mut tx = k.db.system_tx().await?;
+    let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "with due as (select tenant_id, app from upkeep where due_at <= now() and app = any($2) and not ferrum_workspace_held(tenant_id) \
+         order by app = any($4), due_at limit $1 for update skip locked) \
+         update upkeep u set due_at = now() + make_interval(secs => $3) from due where (u.tenant_id, u.app) = (due.tenant_id, due.app) \
+         returning u.tenant_id, u.app, u.due_at",
+    )
+    .bind(free as i64)
+    .bind(&ids)
+    .bind(lease.as_secs_f64())
+    .bind(full)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(rows.into_iter().filter_map(|(tenant, app, lease)| ids.iter().find(|i| **i == app).map(|&app| Claim { tenant, app, lease })).collect())
+}
+
+/// How a run ended, when it did not end well.
+enum Ended {
+    Failed(String),
+    TimedOut,
+}
+
+/// Records how a run ended, on its row: only while the row still holds this claim's lease, so a replica that finishes
+/// after its lease ended, once another has run the pair again, changes nothing; nor while the workspace moves.
+async fn record(k: &Kernel, c: &Claim, ended: Option<Ended>, pace: &Pace) -> ferrum_kernel::Result<()> {
+    let (error, timed_out) = match ended {
+        None => (None, false),
+        Some(Ended::Failed(e)) => (Some(e), false),
+        Some(Ended::TimedOut) => (Some(format!("took longer than {} s, and was stopped", pace.limit.as_secs())), true),
+    };
+    let mut tx = k.db.system_tx().await?;
+    sqlx::query(
+        "update upkeep set timeouts = case when $5 then timeouts + 1 else 0 end, \
+         due_at = now() + make_interval(secs => case when $5 then least($6 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
+         ran_at = case when $4::text is null then now() else ran_at end, failed_at = case when $4::text is null then failed_at else now() end, \
+         error = left($4, 2000) where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id)",
+    )
+    .bind(c.tenant)
+    .bind(c.app)
+    .bind(c.lease)
+    .bind(error)
+    .bind(timed_out)
+    .bind(pace.every.as_secs_f64())
+    .bind(pace.most.as_secs_f64())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Gives the rows of claims whose runs did not end back, due at once (a replica stopping).
+async fn hand_back(k: &Kernel, claims: Vec<Claim>) -> ferrum_kernel::Result<()> {
+    if claims.is_empty() {
+        return Ok(());
+    }
+    let tenants: Vec<Uuid> = claims.iter().map(|c| c.tenant).collect();
+    let apps: Vec<&str> = claims.iter().map(|c| c.app).collect();
+    let leases: Vec<chrono::DateTime<chrono::Utc>> = claims.iter().map(|c| c.lease).collect();
+    let mut tx = k.db.system_tx().await?;
+    sqlx::query(
+        "update upkeep u set due_at = now() from unnest($1::uuid[], $2::text[], $3::timestamptz[]) c(tenant, app, lease) \
+         where (u.tenant_id, u.app, u.due_at) = (c.tenant, c.app, c.lease)",
+    )
+    .bind(&tenants)
+    .bind(&apps)
+    .bind(&leases)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Every compiled app's upkeep, workspace by workspace, on this replica as its slots allow (`FERRUM_UPKEEP_CONCURRENCY`).
+pub fn spawn(k: Arc<Kernel>, shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+    let pace = Pace { slots: k.db.config.upkeep.max(1) as usize, ..Pace::default() };
+    spawn_with(k, upkeep_apps(), pace, shutdown)
+}
+
+/// The upkeep runner. Once a [`Pace::sync`] it brings the rows in line with what is installed ([`sync`], one replica at
+/// a time) and checks the custom domains due ([`domain_checks`], each once). Whenever a slot is free it claims the rows due, the longest
+/// waiting first (an app already holding half its slots after the others), and runs each app's upkeep for its workspace in a task of its own, as that workspace's work
+/// (`sandbox::in_hand`), within [`Pace::limit`]; then records the outcome on the row ([`record`]). Stopping, it lets
+/// its runs finish for [`Pace::grace`], stops the rest and gives their rows back.
+pub fn spawn_with(k: Arc<Kernel>, apps: Vec<UpkeepApp>, pace: Pace, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let runs: HashMap<&'static str, Run> = apps.iter().map(|a| (a.id, a.run.clone())).collect();
+        let mut running: JoinSet<Result<ferrum_kernel::Result<()>, tokio::time::error::Elapsed>> = JoinSet::new();
+        let mut held: HashMap<tokio::task::Id, Claim> = HashMap::new();
+        let mut poll = tokio::time::interval(pace.poll);
+        let mut synced: Option<Instant> = None;
+        let mut checks: Option<tokio::task::JoinHandle<()>> = None;
+        // The last claim found fewer rows due than it asked for: none is asked for until the next poll.
+        let mut drained = false;
         loop {
-            let mut jobs = upkeep_jobs(&k);
-            // Custom domains due a check (docs/plan/apps-ui.md §7): verified when they answer their token.
-            let k1 = k.clone();
-            jobs.push((
-                "domain-checks",
-                Box::new(move || {
-                    let k = k1.clone();
-                    Box::pin(async move { k.check_hosts().await.map(|_| ()).map_err(|e| e.to_string()) })
-                }),
-            ));
-            // Each running app's lock is a session's: on the direct address.
-            round(&k.db.direct, jobs, concurrency, EVERY).await;
+            if synced.is_none_or(|t| t.elapsed() >= pace.sync) {
+                synced = Some(Instant::now());
+                drained = false;
+                if let Err(e) = sync(&k, &apps).await {
+                    tracing::warn!("upkeep: bringing the rows in line with what is installed failed: {e}");
+                }
+                if checks.as_ref().is_none_or(|c| c.is_finished()) {
+                    let k = k.clone();
+                    checks = Some(tokio::spawn(async move {
+                        if let Err(e) = domain_checks(&k).await {
+                            tracing::warn!("checking custom domains failed: {e}");
+                        }
+                    }));
+                }
+            }
+            let free = pace.slots.saturating_sub(running.len());
+            if free > 0 && !drained {
+                // An app's share of the slots: half of them (one, with one or two).
+                let share = (pace.slots / 2).max(1);
+                let mut busy: HashMap<&str, usize> = HashMap::new();
+                for c in held.values() {
+                    *busy.entry(c.app).or_default() += 1;
+                }
+                let full: Vec<&str> = busy.into_iter().filter(|(_, n)| *n >= share).map(|(a, _)| a).collect();
+                match claim(&k, &apps, free, pace.lease, &full).await {
+                    Ok(claims) => {
+                        drained = claims.len() < free;
+                        for c in claims {
+                            let (k, run, tenant) = (k.clone(), runs[c.app].clone(), c.tenant);
+                            let task =
+                                running.spawn(async move { tokio::time::timeout(pace.limit, ferrum_kernel::sandbox::in_hand(tenant, run(&k, tenant))).await });
+                            held.insert(task.id(), c);
+                        }
+                    }
+                    Err(e) => {
+                        drained = true;
+                        tracing::warn!("upkeep: claiming what is due failed: {e}");
+                    }
+                }
+            }
             tokio::select! {
-                _ = shutdown.changed() => return,
-                _ = tokio::time::sleep(EVERY) => {}
+                _ = shutdown.changed() => break,
+                Some(done) = running.join_next_with_id(), if !running.is_empty() => ended(&k, &mut held, done, &pace).await,
+                _ = poll.tick() => drained = false,
             }
         }
+        let _ = tokio::time::timeout(pace.grace, async {
+            while let Some(done) = running.join_next_with_id().await {
+                ended(&k, &mut held, done, &pace).await;
+            }
+        })
+        .await;
+        running.abort_all();
+        if let Some(c) = checks {
+            c.abort();
+        }
+        if let Err(e) = hand_back(&k, held.into_values().collect()).await {
+            tracing::warn!("upkeep: giving back the rows of runs stopped failed (each is due again when its lease ends): {e}");
+        }
     })
+}
+
+/// One run's end, recorded on its row.
+async fn ended(
+    k: &Kernel,
+    held: &mut HashMap<tokio::task::Id, Claim>,
+    done: Result<(tokio::task::Id, Result<ferrum_kernel::Result<()>, tokio::time::error::Elapsed>), tokio::task::JoinError>,
+    pace: &Pace,
+) {
+    let (id, outcome) = match done {
+        Ok((id, Ok(Ok(())))) => (id, None),
+        Ok((id, Ok(Err(e)))) => (id, Some(Ended::Failed(e.to_string()))),
+        Ok((id, Err(_))) => (id, Some(Ended::TimedOut)),
+        Err(e) => (e.id(), Some(Ended::Failed(if e.is_panic() { "it panicked".to_string() } else { e.to_string() }))),
+    };
+    let Some(c) = held.remove(&id) else { return };
+    if let Some(Ended::Failed(e)) = &outcome {
+        tracing::warn!(app = c.app, tenant = %c.tenant, "app upkeep failed: {e}");
+    } else if let Some(Ended::TimedOut) = &outcome {
+        tracing::warn!(app = c.app, tenant = %c.tenant, "app upkeep took longer than {} s and was stopped", pace.limit.as_secs());
+    }
+    if let Err(e) = record(k, &c, outcome, pace).await {
+        tracing::warn!(app = c.app, "upkeep: recording a run failed (the row is due again when its lease ends): {e}");
+    }
+}
+
+/// Across every workspace, for `/metrics` and the doctor: how long the longest-waiting row has been due (0 when none
+/// is), how many rows failed their last run, and how many have been due for longer than a lease.
+pub async fn gauges(k: &Kernel) -> ferrum_kernel::Result<(f64, i64, i64)> {
+    let mut tx = k.db.system_tx().await?;
+    let row = sqlx::query_as(
+        "select coalesce(extract(epoch from now() - min(due_at) filter (where due_at <= now())), 0)::float8, \
+         count(*) filter (where failed_at > coalesce(ran_at, '-infinity')), count(*) filter (where due_at < now() - make_interval(secs => $1)) from upkeep",
+    )
+    .bind(Pace::default().lease.as_secs_f64())
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// The doctor's word on apps' upkeep: rows failing, and rows waiting longer than a lease (no slot free for them).
+pub async fn findings(k: &Kernel) -> ferrum_kernel::Result<Vec<Finding>> {
+    let (oldest, failing, late) = gauges(k).await?;
+    Ok(vec![if failing == 0 && late == 0 {
+        Finding::ok("upkeep", format!("no app's upkeep failed its last run in any workspace; the longest-waiting has been due {oldest:.0} s"))
+    } else {
+        Finding::warning(
+            "upkeep",
+            format!(
+                "{failing} workspaces' app upkeep failed its last run, {late} have waited longer than five minutes; the longest-waiting has been due {oldest:.0} s"
+            ),
+            "A workspace's administrator sees which app and why at GET /api/admin/upkeep, and the log names them. Upkeep waiting long: raise FERRUM_UPKEEP_CONCURRENCY or run more replicas.",
+        )
+    }])
+}
+
+/// A workspace's apps' upkeep, for its administrator: each app's last run, last failure and why, and when it is next
+/// due (while a replica runs it, the end of that replica's lease).
+pub async fn state(k: &Kernel, ctx: &Ctx) -> ferrum_kernel::Result<Vec<Value>> {
+    if !ctx.is_admin {
+        return Err(ferrum_kernel::Error::Forbidden("upkeep is for administrators".into()));
+    }
+    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    type Row = (String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>, Option<String>, i32);
+    let rows: Vec<Row> = sqlx::query_as("select app, due_at, ran_at, failed_at, error, timeouts from upkeep where tenant_id = $1 order by app")
+        .bind(ctx.tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(rows
+        .into_iter()
+        .map(|(app, due_at, ran_at, failed_at, error, timeouts)| {
+            let state = match (ran_at, failed_at) {
+                (_, Some(f)) if ran_at.is_none_or(|r| f > r) => "failing",
+                (Some(_), _) => "ok",
+                _ => "waiting",
+            };
+            json!({"app": app, "state": state, "due_at": due_at, "ran_at": ran_at, "failed_at": failed_at, "error": error, "timeouts": timeouts})
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -704,102 +978,5 @@ mod tests {
         let distinct: std::collections::BTreeSet<&String> = names.iter().collect();
         assert!(!names.is_empty());
         assert_eq!(names.len(), distinct.len(), "a report listed twice");
-    }
-
-    /// Every piece of upkeep has its own lock key.
-    #[test]
-    fn upkeep_locks_differ() {
-        assert_eq!(super::lock_key("erp"), super::lock_key("erp"));
-        let ids = ["erp", "crm", "hr", "domain-checks", "control", "field-service", "social", "forms"];
-        let keys: std::collections::HashSet<_> = ids.iter().map(|i| super::lock_key(i)).collect();
-        assert_eq!(keys.len(), ids.len());
-    }
-
-    use super::{Upkeep, round};
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
-
-    type Spans = Arc<Mutex<Vec<(&'static str, Instant, Instant)>>>;
-
-    /// An app whose upkeep takes 150 ms and is recorded; `Err` and panics for the ones that fail.
-    fn fake(name: &'static str, spans: &Spans, how: &'static str) -> Upkeep {
-        let spans = spans.clone();
-        (
-            name,
-            Box::new(move || {
-                let spans = spans.clone();
-                Box::pin(async move {
-                    let start = Instant::now();
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                    spans.lock().unwrap().push((name, start, Instant::now()));
-                    match how {
-                        "err" => Err("it failed".to_string()),
-                        "panic" => panic!("it panicked"),
-                        _ => Ok(()),
-                    }
-                })
-            }),
-        )
-    }
-
-    fn overlap(a: &(&str, Instant, Instant), b: &(&str, Instant, Instant)) -> bool {
-        a.1 < b.2 && b.1 < a.2
-    }
-
-    /// Upkeep with a lock per app (`FERRUM_TEST_DATABASE_URL`, nothing in it is touched): two replicas never run one app
-    /// at once, run different apps at once, are not stopped by an app that fails or panics (whose lock is let go), and
-    /// with a limit of one run one app after another.
-    #[tokio::test]
-    async fn replicas_share_upkeep_app_by_app() {
-        // The locks are sessions': on the direct address, as `spawn` gives them (`FERRUM_TEST_DATABASE_DIRECT_URL` when the
-        // suite runs through a pooler).
-        let url = std::env::var("FERRUM_TEST_DATABASE_DIRECT_URL")
-            .or_else(|_| std::env::var("FERRUM_TEST_DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-        let pool = || sqlx::postgres::PgPoolOptions::new().max_connections(8).connect(&url);
-        let (one, two) = (pool().await.expect("connect"), pool().await.expect("connect"));
-        // Each replica's connections open before its round, so its apps start together rather than one connection's
-        // set-up apart (on a busy machine that took longer than an app's 150 ms, and a and b never met).
-        for p in [&one, &two] {
-            let mut held = Vec::new();
-            for _ in 0..4 {
-                held.push(p.acquire().await.expect("connect"));
-            }
-        }
-        let spans: Spans = Default::default();
-        let jobs = || vec![fake("fake-a", &spans, "ok"), fake("fake-b", &spans, "ok"), fake("fake-err", &spans, "err"), fake("fake-panic", &spans, "panic")];
-        let every = Duration::from_secs(60);
-        tokio::join!(round(&one, jobs(), 4, every), round(&two, jobs(), 4, every));
-        let seen = spans.lock().unwrap().clone();
-        for name in ["fake-a", "fake-b", "fake-err", "fake-panic"] {
-            let runs: Vec<_> = seen.iter().filter(|s| s.0 == name).collect();
-            assert!(!runs.is_empty(), "{name} never ran");
-            for (i, x) in runs.iter().enumerate() {
-                assert!(runs[i + 1..].iter().all(|y| !overlap(x, y)), "{name} ran twice at once");
-            }
-        }
-        let a: Vec<_> = seen.iter().filter(|s| s.0 == "fake-a").collect();
-        let b: Vec<_> = seen.iter().filter(|s| s.0 == "fake-b").collect();
-        assert!(a.iter().any(|x| b.iter().any(|y| overlap(x, y))), "different apps did not run at once");
-        // The failed and the panicked apps let their locks go: free to a session of neither replica (one of a replica's
-        // own would take a lock it still held again), which gives them back before anything else runs. Dropping it
-        // instead freed them only when the server noticed, and the round below could find them taken.
-        use sqlx::Connection;
-        let mut probe = sqlx::postgres::PgConnection::connect(&url).await.expect("connect");
-        for name in ["fake-err", "fake-panic"] {
-            let (k1, k2) = super::lock_key(name);
-            let free: bool = sqlx::query_scalar("select pg_try_advisory_lock($1, $2)").bind(k1).bind(k2).fetch_one(&mut probe).await.unwrap();
-            assert!(free, "{name} kept its lock");
-            sqlx::query("select pg_advisory_unlock($1, $2)").bind(k1).bind(k2).execute(&mut probe).await.unwrap();
-        }
-        probe.close().await.unwrap();
-        // One at a time on a replica set to one.
-        spans.lock().unwrap().clear();
-        round(&one, jobs(), 1, every).await;
-        let seen = spans.lock().unwrap().clone();
-        assert_eq!(seen.len(), 4);
-        for (i, x) in seen.iter().enumerate() {
-            assert!(seen[i + 1..].iter().all(|y| !overlap(x, y)), "two apps ran at once with a limit of one");
-        }
     }
 }

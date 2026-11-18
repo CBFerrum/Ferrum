@@ -173,6 +173,23 @@ async fn scenario() {
     let text = json!(f).to_string();
     assert!(!text.contains(&url) && !text.contains("ferrum:ferrum"), "no connection string");
 
+    // A link whose key an older row kept from being validated is a warning naming it, until the row is mended.
+    assert_eq!(level(&f, "schema.keys"), Some(Level::Ok));
+    sqlx::raw_sql(
+        "create table doctor_parent (id uuid primary key); create table doctor_child (id uuid primary key, parent uuid); \
+         insert into doctor_child values (gen_random_uuid(), gen_random_uuid()); \
+         alter table doctor_child add constraint fk_doctor_child_parent foreign key (parent) references doctor_parent (id) not valid",
+    )
+    .execute(&k.db.pool)
+    .await
+    .unwrap();
+    let keys = k.doctor(30).await.unwrap().into_iter().find(|f| f.check == "schema.keys").unwrap();
+    assert_eq!(keys.level, Level::Warning);
+    assert!(keys.detail.contains("doctor_child (fk_doctor_child_parent)") && keys.detail.contains("still refused"), "{keys:?}");
+    sqlx::raw_sql("delete from doctor_child; alter table doctor_child validate constraint fk_doctor_child_parent").execute(&k.db.pool).await.unwrap();
+    assert_eq!(level(&k.doctor(30).await.unwrap(), "schema.keys"), Some(Level::Ok), "mended");
+    sqlx::raw_sql("drop table doctor_child, doctor_parent").execute(&k.db.pool).await.unwrap();
+
     // ───────────── scenario F7: an event burst does not starve requests ─────────────
     // A replica with a pool of 30, and one event waiting in each of 60 workspaces, each handled by a sink at work.
     let busy = Arc::new(Busy::default());
@@ -225,13 +242,14 @@ async fn scenario() {
     let most = busy.most.load(Ordering::SeqCst);
     assert!(most <= share, "events were handled at most {share} at once (a quarter of the pool): {most}");
     let pool = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.pool").unwrap();
-    let own = ferrum_kernel::doctor::background(30, 2);
-    assert_eq!(own, 17, "4 job workers + 7 for events and webhooks + 4 + 2 apps' upkeep at once");
+    let own = ferrum_kernel::doctor::background(30, ferrum_kernel::db::UPKEEP_AT_ONCE);
+    assert_eq!(own, 21, "4 job workers + 7 for events and webhooks + 6 + 4 workspaces' app upkeep at once");
     assert!(pool.detail.contains(&format!("can hold {own} at once")) && own as usize >= share + 4, "{pool:?}");
-    // The budget the doctor states is the sum of every pool's maximum: main, side, direct (and read, none here).
+    // The budget the doctor states is the sum of every pool's maximum, main, side and direct (and read, none here), and
+    // the locks on connections detached from the direct pool (2).
     let most = |p: &sqlx::PgPool| p.options().get_max_connections();
-    let beside = most(&r.db.side) + most(&r.db.direct);
-    assert_eq!(most(&r.db.direct), 8, "5 listeners, 1 session lock and 2 apps' upkeep");
+    let beside = most(&r.db.side) + most(&r.db.direct) + ferrum_kernel::db::DETACHED_LOCKS;
+    assert_eq!(most(&r.db.direct), 6, "5 listeners and 1 session lock: apps' upkeep holds none");
     let budget = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.connections").unwrap();
     assert!(budget.detail.contains(&format!("30 per replica and {beside} beside its pool")), "{budget:?}");
     let _ = stop.send(true);

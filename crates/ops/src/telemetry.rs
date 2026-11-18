@@ -66,10 +66,12 @@ pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
     Ok(())
 }
 
-/// Drops days past retention and rollup months wholly past theirs.
+/// Drops days past retention and rollup months wholly past theirs, one replica at a time (a transaction lock): replicas
+/// doing it at once drop each table once.
 pub async fn purge(k: &Kernel, now: DateTime<Utc>) -> Result<u64> {
     let oldest = (now - Duration::days(retention_days())).date_naive();
     let mut tx = k.db.system_tx().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.op_measurement'))").execute(&mut *tx).await?;
     let names: Vec<String> =
         sqlx::query_scalar("select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'op_measurement'::regclass")
             .fetch_all(&mut *tx)

@@ -105,7 +105,7 @@ def operator_settings(manifest: dict, root: Path) -> list:
     if manifest.get("runtime") != "native":
         out.append("operator_settings: only an app compiled into the server reads them")
     if not PLATFORM_WITH_SETTINGS.search(str(manifest.get("platform", ""))):
-        out.append('operator_settings need the platform that reads them: platform: ">=0.3.9, <0.4"')
+        out.append('operator_settings need the platform that reads them: platform: ">=0.4.0, <0.5"')
     for s in block:
         key, env = s.get("key"), s.get("env")
         if not key or not env or not str(s.get("doc", "")).strip():

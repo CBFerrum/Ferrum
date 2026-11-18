@@ -47,7 +47,7 @@ fn kit(id: &str) -> BTreeMap<String, Vec<u8>> {
             "app.yaml",
             &format!(
                 "id: {id}\nname: Kit\nversion: 1.0.0\npublisher: acme\nsummary: A starter kit\ndescription: README.md\ncategories: [industry]\n\
-                 runtime: meta\nplatform: \">=0.3, <0.4\"\npackages: [kit]\nprefix: Kt\n"
+                 runtime: meta\nplatform: \">=0.4, <0.5\"\npackages: [kit]\nprefix: Kt\n"
             ),
         ),
         ("README.md", "# Kit\nThings to track.\n"),
@@ -73,7 +73,7 @@ fn gw(version: &str, hosts: &[&str]) -> BTreeMap<String, Vec<u8>> {
             "app.yaml",
             &format!(
                 "id: gw\nname: Gateway\nversion: {version}\npublisher: acme\nsummary: Devices over WebSocket\ndescription: README.md\ncategories: [iot]\n\
-                 runtime: wasm\nplatform: \"^0.3\"\nrequires: {{kit: \"^1\"}}\npackages: [gw]\nplugin: plugin.json\nprefix: Gw\nuninstall: ask\n"
+                 runtime: wasm\nplatform: \"^0.4\"\nrequires: {{kit: \"^1\"}}\npackages: [gw]\nplugin: plugin.json\nprefix: Gw\nuninstall: ask\n"
             ),
         ),
         (
@@ -93,7 +93,7 @@ fn bad() -> BTreeMap<String, Vec<u8>> {
     files(&[
         (
             "app.yaml",
-            "id: bad\nname: Bad\nversion: 1.0.0\npublisher: acme\nsummary: Wants customers\ncategories: [crm]\nruntime: meta\nplatform: \"^0.3\"\npackages: [bad]\nprefix: Bd\n",
+            "id: bad\nname: Bad\nversion: 1.0.0\npublisher: acme\nsummary: Wants customers\ncategories: [crm]\nruntime: meta\nplatform: \"^0.4\"\npackages: [bad]\nprefix: Bd\n",
         ),
         (
             "packages/bad/package.yaml",
@@ -109,7 +109,7 @@ fn plugin_only(id: &str) -> BTreeMap<String, Vec<u8>> {
         (
             "app.yaml",
             &format!(
-                "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: Answers pings\ncategories: [developer]\nruntime: wasm\nplatform: \"^0.3\"\nplugin: plugin.json\n"
+                "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: Answers pings\ncategories: [developer]\nruntime: wasm\nplatform: \"^0.4\"\nplugin: plugin.json\n"
             ),
         ),
         ("plugin.json", &json!({"name": id, "routes": [{"path": "/ping"}]}).to_string()),
@@ -131,7 +131,7 @@ fn interface_app(id: &str, route: &str) -> BTreeMap<String, Vec<u8>> {
         (
             "app.yaml",
             &format!(
-                "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: An interface\ncategories: [developer]\nruntime: meta\nplatform: \">=0.3.1, <0.4\"\n\
+                "id: {id}\nname: {id}\nversion: 1.0.0\npublisher: acme\nsummary: An interface\ncategories: [developer]\nruntime: meta\nplatform: \">=0.4, <0.5\"\n\
                  ui:\n  dist: ui/dist\ncontributes:\n  shell.app:\n    - {{id: main, route: {route}, title: Main}}\n"
             ),
         ),
@@ -151,7 +151,7 @@ publisher: acme
 summary: A board of cards
 categories: [productivity]
 runtime: meta
-platform: "^0.3"
+platform: "^0.4"
 packages: [board]
 prefix: Bd
 extension_points:
@@ -185,7 +185,7 @@ fn board_card(label: &str, version: &str) -> BTreeMap<String, Vec<u8>> {
 }
 
 const NOTES_YAML: &str = "id: notes\nname: Notes\nversion: 0.2.0\npublisher: cbferrum\nsummary: Field notes\ndescription: README.md\ncategories: [productivity]\n\
-runtime: native\nplatform: \">=0.3, <0.4\"\npackages: [notes]\nuninstall: ask\n";
+runtime: native\nplatform: \">=0.4, <0.5\"\npackages: [notes]\nuninstall: ask\n";
 
 /// The package of the native app `notes` (compiled into this test's "build").
 fn notes_package() -> ferrum_meta::Package {

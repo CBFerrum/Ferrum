@@ -156,6 +156,8 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     .map_err(Error::from)?;
     tx.commit().await.map_err(Error::from)?;
     let (newer_events, newer_jobs) = st.kernel.waiting_for_newer().await?;
+    let (upkeep_oldest, upkeep_failing, _) = crate::packages::gauges(&st.kernel).await?;
+    let (schema_misses, live_dropped) = (st.kernel.registry.schema_cache_misses(), crate::live::dropped());
     let logic = format!(
         "# HELP ferrum_logic_runs Process runs by where they stand.\n# TYPE ferrum_logic_runs gauge\n\
          ferrum_logic_runs{{status=\"starting\"}} {runs_starting}\nferrum_logic_runs{{status=\"running\"}} {runs_running}\n\
@@ -228,6 +230,13 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
          # TYPE ferrum_jobs_running gauge\nferrum_jobs_running {jobs_running}\n\
          # HELP ferrum_jobs_failed_day Jobs that gave up in the last day.\n# TYPE ferrum_jobs_failed_day gauge\nferrum_jobs_failed_day {jobs_failed}\n\
          # TYPE ferrum_jobs_oldest_waiting_seconds gauge\nferrum_jobs_oldest_waiting_seconds {}\n\
+         # HELP ferrum_upkeep_oldest_due_seconds How long the longest-waiting app upkeep of any workspace has been due.\n\
+         # TYPE ferrum_upkeep_oldest_due_seconds gauge\nferrum_upkeep_oldest_due_seconds {upkeep_oldest}\n\
+         # HELP ferrum_upkeep_failing Workspaces' app upkeep whose last run failed.\n# TYPE ferrum_upkeep_failing gauge\nferrum_upkeep_failing {upkeep_failing}\n\
+         # HELP ferrum_schema_cache_misses_total Workspace schemas this replica built from the database since it started.\n\
+         # TYPE ferrum_schema_cache_misses_total counter\nferrum_schema_cache_misses_total {schema_misses}\n\
+         # HELP ferrum_live_dropped_total Live-update announcements this replica dropped, its queue to delivery being full.\n\
+         # TYPE ferrum_live_dropped_total counter\nferrum_live_dropped_total {live_dropped}\n\
          # HELP ferrum_outbox_waiting_newer_build Events a newer build wrote, which this build leaves for it.\n\
          # TYPE ferrum_outbox_waiting_newer_build gauge\nferrum_outbox_waiting_newer_build {newer_events}\n\
          # HELP ferrum_jobs_waiting_newer_build Jobs a newer build queued, which this build leaves for it.\n\

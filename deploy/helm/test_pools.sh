@@ -205,9 +205,9 @@ assert servers == ["ferrum", "ferrum-worker"], servers
 assert any(d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "ferrum-db-pooler" for d in docs)
 PY2
 refuses "maxPreparedStatements must be at least 1" --set database.pooler.enabled=true --set database.pooler.maxPreparedStatements=0 -f "$chart/presets/split.yaml"
-# (6 + 1) x 8 + (2 + 1) x 8 + 2 x 40 + 36 + 20 = 216 fits 220; one more instance does not.
-tpl --set database.pooler.enabled=true --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
-refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=220 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
+# (6 + 1) x 6 + (2 + 1) x 6 + 2 x 40 + 36 + 20 = 196 fits 200; one more instance does not.
+tpl --set database.pooler.enabled=true --set database.connectionLimit=200 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
+refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=200 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
 refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
 # Kept but not used: the server connects directly, and both count in the budget ((9 + 1) x 36 + 2 x 40 + 20 = 460).
 refuses "the pooler 2 x 40, ferrum (9 + 1 in a rollout) x (30 + 6)" --set database.pooler.enabled=true --set database.pooler.used=false

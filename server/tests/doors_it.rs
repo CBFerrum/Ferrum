@@ -44,7 +44,7 @@ summary: Pages of a site, as an app answers them
 categories: [developer]
 license: AGPL-3.0-or-later
 runtime: native
-platform: \">=0.3, <0.4\"
+platform: \">=0.4, <0.5\"
 packages: [doors]
 ";
 
@@ -103,7 +103,7 @@ fn doors_out_of_a_workspace() {
         packages,
         register,
         reports: Vec::new,
-        maintenance: |_| Box::pin(async { Ok(()) }),
+        maintenance: |_, _| Box::pin(async { Ok(()) }),
         manifest: MANIFEST,
         ui: &[],
         tasks: |_| {},

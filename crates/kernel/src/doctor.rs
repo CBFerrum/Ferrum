@@ -48,11 +48,12 @@ const STALE_EVENT_SECS: f64 = 300.0;
 const RESERVED_CONNECTIONS: i32 = 20;
 /// The most connections of the main pool (of `pool_size`) a replica's own work holds at once: one for each job worker,
 /// the events and webhooks it handles together ([`crate::db::background_connections`], a quarter of the pool), one each
-/// for the schedule scanner and the OpenID sweep, two for hourly maintenance (its lock and the step it is at) and one
-/// for each of `upkeep` apps' upkeep at once (the working transaction; its session lock and the LISTEN loops are on the
-/// direct pool, [`crate::db::Db::direct`]).
+/// for the schedule scanner and the OpenID sweep, two for hourly maintenance (its lock and the step it is at), two for
+/// the custom domains' check (its lock and the check it is at, server/src/packages.rs) and one for each of `upkeep`
+/// workspaces' app upkeep at once (its working transaction; the LISTEN loops are on the direct pool,
+/// [`crate::db::Db::direct`]).
 pub fn background(pool_size: u32, upkeep: u32) -> u32 {
-    crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 4 + upkeep
+    crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 6 + upkeep
 }
 
 /// The smallest pool the replica's own work cannot fill ([`background`]) with `upkeep` apps' upkeep at once: with fewer
@@ -63,11 +64,12 @@ pub fn pool_floor(upkeep: u32) -> u32 {
 }
 
 /// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]), the
-/// direct pool's `direct` (the listeners, session locks and upkeep at once: [`crate::db::DbConfig::direct_connections`]),
-/// and the read pool's `read` (none unless a read address is set; docs/operations.md, "Database role").
-/// Each pool is named in PostgreSQL's `pg_stat_activity` (`ferrum`, `ferrum-side`, `ferrum-direct`, `ferrum-read`).
+/// direct pool's `direct` (the listeners and session locks: [`crate::db::DbConfig::direct_connections`]),
+/// the read pool's `read` (none unless a read address is set; docs/operations.md, "Database role") and up to
+/// [`crate::db::DETACHED_LOCKS`] more during a version check, a bucket's set-up or a store move. Each pool is named in
+/// PostgreSQL's `pg_stat_activity` (`ferrum`, `ferrum-side`, `ferrum-direct`, `ferrum-read`).
 pub fn beside_pool(pool_size: u32, direct: u32, read: u32) -> u32 {
-    crate::db::side_connections(pool_size) + direct + read
+    crate::db::side_connections(pool_size) + direct + read + crate::db::DETACHED_LOCKS
 }
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
@@ -86,19 +88,21 @@ impl Kernel {
             Finding::warning("database.version", format!("PostgreSQL {}, and Ferrum is tested on 17", version / 10000), "Upgrade PostgreSQL to 17.")
         });
         let direct = self.db.config.direct_connections.max(crate::db::LISTENERS + crate::db::DIRECT_LOCKS);
-        let upkeep = direct - crate::db::LISTENERS - crate::db::DIRECT_LOCKS;
+        let upkeep = self.db.config.upkeep;
         let read = if self.db.read.is_some() { crate::replica::READ_CONNECTIONS } else { 0 };
         let beside = beside_pool(pool_size, direct, read);
         out.push(if ((pool_size + beside) * 2 + 20) as i32 <= max_connections {
             Finding::ok(
                 "database.connections",
-                format!("{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct and read)"),
+                format!(
+                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and up to 2 more during a version check or a store move)"
+                ),
             )
         } else {
             Finding::warning(
                 "database.connections",
                 format!(
-                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct and read): room for fewer than two replicas"
+                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and up to 2 more during a version check or a store move): room for fewer than two replicas"
                 ),
                 "Raise max_connections, or lower FERRUM_DB_MAX_CONNECTIONS (docs/operations.md, Database role).",
             )
@@ -324,6 +328,7 @@ impl Kernel {
         }
         out.push(self.floors_finding().await?);
         out.push(self.audit_months_finding().await?);
+        out.push(keys_finding(&self.unvalidated_keys().await?));
         Ok(out)
     }
 
@@ -381,6 +386,24 @@ impl Kernel {
     }
 }
 
+/// Links between records whose foreign key is not validated (`table`, `constraint`): rows that point at nothing kept the
+/// schema sync from validating it (crate::ddl). The key still refuses new such rows; each start tries again.
+fn keys_finding(keys: &[(String, String)]) -> Finding {
+    if keys.is_empty() {
+        return Finding::ok("schema.keys", "every link between records is validated");
+    }
+    let said: Vec<String> = keys.iter().map(|(t, c)| format!("{t} ({c})")).collect();
+    Finding::warning(
+        "schema.keys",
+        format!(
+            "{} links between records are not validated, because older rows point at records that are not there: {}. New rows are still refused such a link",
+            keys.len(),
+            said.join(", ")
+        ),
+        "Correct or clear those rows' links (the log of a server's start names each key); the next start validates the key once none points at nothing.",
+    )
+}
+
 /// Workspaces' packages (`name, version, workspaces`) newer than this build's: a server rolled back,
 /// or workspaces moved from a newer build. The App Manager offers no update for them (it would only
 /// stamp them older); their tables and seed data are the newer version's.
@@ -410,8 +433,8 @@ mod tests {
         let floor = super::pool_floor(2);
         assert!(super::background(floor, 2) < floor);
         assert!(super::background(floor - 1, 2) >= floor - 1);
-        assert_eq!(floor, 14);
-        assert_eq!(super::background(30, 2), 17, "4 job workers, 7 for events and webhooks, 4 more, 2 apps' upkeep at once");
+        assert_eq!(floor, 17);
+        assert_eq!(super::background(30, 2), 19, "4 job workers, 7 for events and webhooks, 6 more, 2 workspaces' upkeep at once");
     }
 
     #[test]

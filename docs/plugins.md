@@ -223,7 +223,7 @@ An app may own a whole interface at addresses of its own, as `/deals/…`: a web
 [docs/plan/apps-ui.md](plan/apps-ui.md); ferrum-sdk's `examples/customer-cards` is a small working one.
 
 ```yaml
-platform: ">=0.3.9, <0.4"
+platform: ">=0.4.0, <0.5"
 ui:
   dist: ui/dist                   # the built files, with an index.html
   family: Sales                   # optional: the family it heads (its add-ons with interfaces join it)

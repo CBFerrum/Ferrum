@@ -57,7 +57,7 @@ Each entry of `operator_settings` in `app.yaml` (the fields are `ferrum_apps::Op
 A real one, from Drive (`ferrum-app-drive/app.yaml`):
 
 ```yaml
-platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
+platform: ">=0.4.0, <0.5"        # the app API of this contract
 operator_settings:
   - key: max_file_mb
     env: FERRUM_DRIVE_MAX_FILE_MB
@@ -189,8 +189,8 @@ So, in an app's code:
 | A temporary table, a cursor or a prepared statement you name, kept across transactions | Gone, or on someone else's connection | Keep it within one transaction |
 | `CREATE INDEX CONCURRENTLY` in package SQL | Package SQL runs inside a transaction (`crates/kernel/src/ddl.rs`, pass 3), where `CONCURRENTLY` is refused | A plain `create index` in a new file; mind its lock on a large table ([14](14-operations-for-apps.md)) |
 
-An app's upkeep is the exception the platform makes for you: it holds a session lock per app on a direct connection
-while your `maintenance` runs (`round` in `server/src/packages.rs`), so you need none.
+An app's upkeep needs no lock of its own: the platform hands each workspace's run to one replica at a time through a
+row it claims with a lease (`upkeep`, `server/src/packages.rs`), so your `maintenance(k, tenant)` takes none.
 
 A connection an app opens to *another* database (Cloud to a customer's database, or to the forge's) is that app's
 business; Cloud's session lock there (`ferrum-app-cloud/src/resources/migrate.rs`) does not touch Ferrum's.

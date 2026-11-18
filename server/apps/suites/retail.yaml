@@ -7,5 +7,5 @@ publisher: cbferrum
 summary: ERP with an online store and point of sale
 categories: [suite, commerce, pos]
 runtime: meta
-platform: ">=0.3.2, <0.4"
+platform: ">=0.4.0, <0.5"
 requires: {erp: ">=0.1", commerce: ">=0.1", pos: ">=0.1"}

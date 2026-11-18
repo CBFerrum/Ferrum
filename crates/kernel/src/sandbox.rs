@@ -130,7 +130,7 @@ fn rewrite(v: &mut Value, ids: &HashMap<String, String>, workspace: (&str, &str)
 static KNOWN: LazyLock<RwLock<HashMap<Uuid, bool>>> = LazyLock::new(Default::default);
 
 tokio::task_local! {
-    /// The workspace whose background work is in hand (an event's handlers, a job): what [`Kernel::vetted_client`]
+    /// The workspace whose background work is in hand (an event's handlers, a job, an app's upkeep): what [`Kernel::vetted_client`]
     /// asks about when it is not told.
     static IN_HAND: Uuid;
 }
@@ -141,18 +141,20 @@ pub fn in_hand<F: std::future::Future>(tenant: Uuid, f: F) -> tokio::task::futur
 }
 
 tokio::task_local! {
-    /// In an app's upkeep, which goes through every workspace in turn: the one whose transaction it opened last.
+    /// In the hourly maintenance ([`Kernel::maintenance`]), which goes through every workspace in turn: the one whose
+    /// transaction it opened last.
     static UPKEEP: Arc<std::sync::Mutex<Option<Uuid>>>;
 }
 
-/// Runs an app's upkeep (one pass over every workspace): a call it makes outside is asked about the workspace whose
-/// transaction it opened last, so a sandbox's turn sends nothing and a live workspace's next turn still does.
+/// Runs the hourly maintenance (one pass over every workspace): a call it makes outside is asked about the workspace
+/// whose transaction it opened last, so a sandbox's turn sends nothing and a live workspace's next turn still does. An
+/// app's upkeep is one workspace's work, run under [`in_hand`] (server/src/packages.rs).
 pub fn upkeep<F: std::future::Future>(f: F) -> tokio::task::futures::TaskLocalFuture<Arc<std::sync::Mutex<Option<Uuid>>>, F> {
     UPKEEP.scope(Arc::default(), f)
 }
 
-/// Notes that the work in hand serves `tenant`: a request (every workspace it has served), an upkeep's turn (this
-/// one from now). Called where a request's context is made and where a workspace's transaction opens.
+/// Notes that the work in hand serves `tenant`: a request (every workspace it has served), the hourly maintenance's
+/// turn (this one from now). Called where a request's context is made and where a workspace's transaction opens.
 pub fn serving(tenant: Uuid) {
     crate::db::Trace::serving(tenant);
     let _ = UPKEEP.try_with(|u| {
@@ -162,8 +164,8 @@ pub fn serving(tenant: Uuid) {
     });
 }
 
-/// Every workspace the work in hand acts for, as far as anything says: an event's or a job's, a request's, an upkeep's
-/// turn. None at all (start-up, an operator's task): the installation's own work. A lock it cannot read gives the nil
+/// Every workspace the work in hand acts for, as far as anything says: an event's, a job's or an app's upkeep's, a
+/// request's, the hourly maintenance's turn. None at all (start-up, an operator's task): the installation's own work. A lock it cannot read gives the nil
 /// id, which no workspace has, so the check refuses.
 pub(crate) fn served() -> Vec<Uuid> {
     let mut all: Vec<Uuid> = IN_HAND.try_with(|t| *t).ok().into_iter().collect();

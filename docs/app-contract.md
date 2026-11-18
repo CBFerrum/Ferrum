@@ -240,6 +240,32 @@ false: it is true only while the workspace holds the domain and its owner's DNS 
 workspaces. The refusal tells the administrator to claim the domain under Administration → Addresses with the target
 `mail` and add the DNS record shown there (docs/operations.md, *Custom domains*, Domains for mail).
 
+## Upkeep
+
+An app's periodic work is `pub async fn maintenance(k: &Kernel, tenant: Uuid) -> Result<()>`: its upkeep of one
+workspace. The platform (`server/src/packages.rs`) keeps a row of `upkeep` for each active workspace that has at least
+one of the app's packages installed, and runs the app for it about once a minute, on whichever replica has a slot free.
+What it promises the app, and what it asks of it:
+
+- **One workspace a call.** It never lists workspaces. It is called wherever any one of its packages is installed: an
+  app that needs to know which asks `k.registry.schema(tenant)`, as before. A workspace suspended or moving is not
+  called; one uninstalled is called no more.
+- **Safe to run again.** It runs again after a replica stops or is lost, or ends a run after its lease (five minutes)
+  when another replica has run it since, and runs for different workspaces on several replicas at once. Each step must
+  be idempotent: claim rows with `for update skip locked`, compare and set, or take a transaction lock per workspace;
+  twice must be the same as once.
+- **Within 270 seconds.** Past it the call is dropped, its open transaction rolls back, and the run counts as failed;
+  each run in a row that hits the limit doubles the wait before the next, up to an hour. Keep budgets per step (Comms'
+  `RETRY_BUDGET`, `POLL_BUDGET`), and queue a job for work that takes longer or calls outside for long.
+- **Its error is recorded.** Return the first failure after logging it and running the other steps: it is kept on the
+  workspace's row, which its administrators read at `GET /api/admin/upkeep`, and counted by `/metrics`
+  (`ferrum_upkeep_failing`) and the doctor. A returned error is due again after the usual minute.
+- **As that workspace's work.** A call outside is the workspace's (a sandbox's sends nothing).
+- **Work of the whole installation has no hook of its own** (a partition of a table every workspace writes, a purge
+  across workspaces): do it from the call for whichever workspace comes first, at most once a day on a replica (a
+  `static` day) and under `pg_try_advisory_xact_lock`, so that replicas do not do it together. ERP's journal
+  partitions and Operations' telemetry partitions are done so.
+
 ## Operator settings
 
 What an operator chooses for the whole installation and an app's code in the server reads (an address of a service, a
@@ -249,7 +275,7 @@ the operations guide under the app (docs/operations.md, *Configuration*). It is 
 each workspace's administrators fill.
 
 ```yaml
-platform: ">=0.3.9, <0.4"        # the platform that reads operator settings
+platform: ">=0.4.0, <0.5"        # the app API of this contract (0.4.0)
 operator_settings:
   - key: office_url              # kept as drive.office_url
     env: FERRUM_OFFICE_URL       # the variable that sets it: the environment's value wins over the table's

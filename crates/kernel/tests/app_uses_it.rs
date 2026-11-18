@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use ferrum_kernel::capability::{Invocation, Receipt};
 use ferrum_kernel::vault::Vault;
 use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
-use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, Result};
+use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, HookRegistry, Result};
 use ferrum_meta::{MetaError, Package};
-use ferrum_testkit::{App, Kit, Upkeep, Workspace, database, obj, refused, run, uid};
+use ferrum_testkit::{App, Kit, Workspace, database, obj, refused, run, uid};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -152,12 +152,8 @@ fn mall_register(h: &mut HookRegistry) {
 
 fn nothing_registered(_: &mut HookRegistry) {}
 
-fn no_upkeep(_: &Kernel) -> Upkeep<'_> {
-    Box::pin(async { Ok(()) })
-}
-
 fn app(id: &'static str, packages: fn() -> Result<Vec<Package>, MetaError>, register: fn(&mut HookRegistry)) -> App {
-    App { id, packages, register, reports: Vec::new, maintenance: no_upkeep }
+    App { id, packages, register, reports: Vec::new }
 }
 
 /// App `app`'s call for `ctx`'s person in a transaction of its own, committed when it is done.

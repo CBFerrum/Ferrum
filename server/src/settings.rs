@@ -1401,6 +1401,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "drive")]
     fn declared(key: &str, env: &str) -> ferrum_apps::OperatorSetting {
         ferrum_apps::OperatorSetting {
             key: key.into(),
@@ -1414,6 +1415,9 @@ mod tests {
         }
     }
 
+    /// Needs Drive compiled in: the platform's file no longer has `FERRUM_DRIVE_MAX_FILE_MB` (it moved to Drive's manifest),
+    /// so the registry this test starts from holds it only as Drive's declaration.
+    #[cfg(feature = "drive")]
     #[test]
     fn an_apps_declaration_replaces_the_entry_that_moves_to_it_and_a_clash_names_both() {
         let platform = || registry().to_vec();

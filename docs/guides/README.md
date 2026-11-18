@@ -67,7 +67,7 @@ a person does, at review. Scripts run on the developer's machine (`scripts/local
 | No field the server does not know | [03](03-the-manifest.md) | `AppManifest::parse` (`deny_unknown_fields`) |
 | An add-on names its `parent` in `requires` | [01](01-what-an-app-is.md), [03](03-the-manifest.md) | `AppManifest::validate` |
 | `requires` ranges meet the releases compiled beside them | [03](03-the-manifest.md), [16](16-releasing.md) | `compiled_apps_fit_together` (`server/src/packages.rs`) |
-| `platform` covers the app API it uses (0.3.9 for the vault and operator settings) | [03](03-the-manifest.md) | `scripts/check_apps.py` for operator settings; the App Manager (`blocked`) at install; otherwise reviewed |
+| `platform` covers the app API it uses (0.4.0 for today's contract) | [03](03-the-manifest.md) | `scripts/check_apps.py` for operator settings; the App Manager (`blocked`) at install; otherwise reviewed |
 | Engines general; a country's or a sector's rules are data or an add-on | [01](01-what-an-app-is.md), [11](11-integrations.md) | reviewed |
 | Look for a mature open-source project to run, depend on or adapt first (AGPL-compatible only) | [01](01-what-an-app-is.md), [13](13-security-rules.md) | reviewed; `scripts/licenses.py` for what is compiled in |
 

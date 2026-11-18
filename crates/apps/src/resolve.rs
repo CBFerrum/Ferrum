@@ -249,11 +249,11 @@ mod tests {
             .map_err(|e| e.to_string())
     }
 
-    const P: &str = ">=0.3, <0.4";
+    const P: &str = ">=0.4, <0.5";
 
     #[test]
     fn chooses_the_highest_compatible_version() {
-        let store = [rel("crm", "1.0.0", &[], P), rel("crm", "1.5.0", &[], P), rel("crm", "2.0.0", &[], ">=0.4"), rel("crm", "1.6.0-beta.1", &[], P)];
+        let store = [rel("crm", "1.0.0", &[], P), rel("crm", "1.5.0", &[], P), rel("crm", "2.0.0", &[], ">=0.5"), rel("crm", "1.6.0-beta.1", &[], P)];
         assert_eq!(run(&store, &[], &[("crm", "*")]).unwrap(), ["crm 1.5.0"]);
         assert_eq!(run(&store, &[], &[("crm", "~1.0")]).unwrap(), ["crm 1.0.0"]);
         assert_eq!(run(&store, &[], &[("crm", ">=1.6.0-beta.1")]).unwrap(), ["crm 1.6.0-beta.1"], "pre-releases only on request");
@@ -295,11 +295,11 @@ mod tests {
 
     #[test]
     fn platform_incompatibility() {
-        let store = [rel("iot", "1.0.0", &[], ">=0.4"), rel("iot", "0.9.0", &[], "<0.3")];
+        let store = [rel("iot", "1.0.0", &[], ">=0.5"), rel("iot", "0.9.0", &[], "<0.4")];
         let err = run(&store, &[], &[("iot", "*")]).unwrap_err();
-        assert!(err.contains("iot 1.0.0 needs platform >=0.4, but this server provides 0.3.9"), "{err}");
+        assert!(err.contains("iot 1.0.0 needs platform >=0.5, but this server provides 0.4.0"), "{err}");
         // A dependency that does not fit the platform stops its dependent.
-        let store = [rel("app", "1.0.0", &[("iot", "*")], P), rel("iot", "1.0.0", &[], ">=0.4")];
+        let store = [rel("app", "1.0.0", &[("iot", "*")], P), rel("iot", "1.0.0", &[], ">=0.5")];
         assert!(run(&store, &[], &[("app", "*")]).unwrap_err().contains("needs platform"));
     }
 
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn release_from_manifest() {
-        let m = AppManifest::parse("id: kit\nname: Kit\nversion: 1.2.3\npublisher: acme\nsummary: Kit\ncategories: [industry]\nruntime: meta\nplatform: '^0.3'\nrequires: {crm: '^1'}\npackages: [kit]\n").unwrap();
+        let m = AppManifest::parse("id: kit\nname: Kit\nversion: 1.2.3\npublisher: acme\nsummary: Kit\ncategories: [industry]\nruntime: meta\nplatform: '^0.4'\nrequires: {crm: '^1'}\npackages: [kit]\n").unwrap();
         let r = Release::from(&m);
         assert_eq!((r.id.as_str(), r.version.to_string(), r.requires.len()), ("kit", "1.2.3".to_string(), 1));
     }
