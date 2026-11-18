@@ -109,6 +109,19 @@ permission checks, within the zone the person is limited to; `Ctx::system` is th
 elevate to do for a person what they may not do themselves: decide first, with their context, then elevate only
 the engine's part.
 
+**One read path for a caller's list.** Filters, sort and grouping a caller chose reveal the values of the fields they
+read, so whoever asks (the list route, the `{entity}.list` capability, MCP, a plugin's `data.query`, an export) goes
+through `Kernel::list_tx(ctx, tx, entity, q, action)`: a filter or sort on a field the caller cannot read is refused, a
+filter through a link reaches only the linked records the caller reads, each row is masked. `Kernel::find_tx` is code's
+own lookup: its filters and sort are the code's, never a caller's. An app report's caller-chosen grouping or filter
+passes `ferrum_domain::reports::readable_choice`; a default the caller cannot read falls back through
+`readable_default`; output columns go through `readable_columns`. What leaves the workspace (an export, a mailed
+record, a document's data file) holds only records reached by rules that grant **export** (`list_tx(…, Action::Export)`,
+`Kernel::get_for_export`), not every record the person reads. A form preview of a stored record reads only one the
+caller reads; a save or preview fetches nothing from a `reference: restricted` record the caller does not read (the
+link stands, its fields stay empty, a refusal names none of its values). A query one app asks another
+(`Kernel::call_tx` of a capability that changes nothing) answers as the caller, never as the system.
+
 Never a role named in code to decide what a person may do (`if ctx.has_role("Manager")`) where a rule or an action's
 `roles` would say it: a workspace renames and splits roles. `ctx.has_role` is for a configured action's `roles` and
 the like, which the kernel already checks (`action_gate` in `crates/kernel/src/ctx.rs`). Reviewed, not checked.

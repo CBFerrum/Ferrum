@@ -458,6 +458,18 @@ pub(crate) async fn title_map(tx: &mut Tx, ctx: &Ctx, target: &str, ids: &[Uuid]
             return Ok(HashMap::new());
         }
         let title = ent.def.title_field.as_deref().and_then(|f| field_expr(ent, f, "a")).map(|e| format!("{e}::text")).unwrap_or_else(|| "null".into());
+        // A restricted entity names itself only to those who may read that very record, as the kernel's titles do.
+        if ent.def.reference == ferrum_meta::Reference::Restricted {
+            let Ok(scope) = ferrum_kernel::row_scope(ctx, ent, ferrum_kernel::Action::Read) else { return Ok(HashMap::new()) };
+            let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(format!(
+                "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = ",
+                q(&ent.table)
+            ));
+            qb.push_bind(ctx.tenant).push(" and a.id = any(").push_bind(ids.to_vec()).push(")").push(entity_predicate(ent, "a"));
+            scope.push_sql(&mut qb, "a");
+            let rows: Vec<(Uuid, String)> = qb.build_query_as().fetch_all(&mut **tx).await?;
+            return Ok(rows.into_iter().collect());
+        }
         format!(
             "select a.id, coalesce(nullif({title}, ''), a.number, a.id::text) from {} a where a.tenant_id = $1 and a.id = any($2){}",
             q(&ent.table),

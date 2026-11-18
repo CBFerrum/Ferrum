@@ -64,8 +64,9 @@ pub const GROUPS_KIND: &str = "platform.document.groups";
 #[async_trait::async_trait]
 pub trait QueryRows: Send + Sync {
     /// The rows of the saved report labelled `report`, with `params` (`filters`, `from`, `to`, `limit`), read as `ctx`
-    /// may read them: `{columns: [{name, type, to?}], rows: [{..}], meta: {entity, truncated}}`.
-    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value>;
+    /// may read them (`export`: as `ctx` may export them, for a file of data that leaves the workspace):
+    /// `{columns: [{name, type, to?}], rows: [{..}], meta: {entity, truncated}}`.
+    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value, export: bool) -> Result<Value>;
     /// What a template about `report` is checked against, read in the caller's transaction (a pack's install, which
     /// may have just made the report) as `ctx` may run it: `{columns, meta: {entity}}`, however many rows it has.
     async fn shape(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, report: &str) -> Result<Value>;
@@ -585,7 +586,8 @@ async fn query_rows(k: &Kernel, ctx: &Ctx, def: &DocumentDef, q: &DocumentQuery,
     let source = k.hooks.query_rows().ok_or_else(|| Error::invalid("documents about a query need the analytics engine, which this server does not have"))?;
     let mut params = if params.is_object() { params.clone() } else { json!({}) };
     params.as_object_mut().map(|m| m.entry("limit").or_insert(json!(MAX_QUERY_ROWS)));
-    let out = source.rows(k, ctx, &q.report, &params).await?;
+    // A file of data leaves the workspace: its rows are only those reached by rules that grant export.
+    let out = source.rows(k, ctx, &q.report, &params, def.output != DocumentOutput::Page).await?;
     let columns = reads(def, q, &out)?;
     let rows: Vec<Map<String, Value>> = out["rows"].as_array().into_iter().flatten().filter_map(|r| r.as_object().cloned()).collect();
     if out["meta"]["truncated"] == json!(true) || rows.len() > MAX_QUERY_ROWS {

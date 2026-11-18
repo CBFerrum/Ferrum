@@ -154,6 +154,37 @@ fn may_run(ctx: &Ctx, entity: &str, narrows: Narrows) -> Result<()> {
     Ok(())
 }
 
+/// A grouping, filter or order a report's caller chose (`field` of `entity`): refused when the caller may not read the
+/// field, as a list refuses filtering or sorting on it (its groups, totals or order would reveal its values). Apps'
+/// reports call this for every caller-chosen field (docs/guides/05, S9 T9).
+pub fn readable_choice(ctx: &Ctx, entity: &str, field: &str) -> Result<()> {
+    let ent = ctx.schema.entity(entity).ok_or_else(|| Error::NotFound(format!("{entity} is not installed")))?;
+    if ent.field(field).is_none() && !ferrum_kernel::query::system_keys().contains(&field) {
+        return Err(Error::field(field, format!("{entity} has no field {field}")));
+    }
+    if ferrum_kernel::query::readable(ctx, ent, field) { Ok(()) } else { Err(Error::Forbidden(format!("you cannot group or filter by '{field}'"))) }
+}
+
+/// A report's default grouping when the caller has chosen none: the first of `options` (fields of `entity`, its
+/// default first) the caller may read; none when they may read none of them.
+pub fn readable_default<'a>(ctx: &Ctx, entity: &str, options: &[&'a str]) -> Option<&'a str> {
+    let ent = ctx.schema.entity(entity)?;
+    options.iter().copied().find(|f| ferrum_kernel::query::readable(ctx, ent, f))
+}
+
+/// Of a report's output `columns` (`[{name, ..}]`, each naming the field of `entity` it reads, `field` when it differs
+/// from `name`), those the caller may read: a column of a field they cannot read is left out.
+pub fn readable_columns(ctx: &Ctx, entity: &str, columns: Vec<Value>) -> Vec<Value> {
+    let Some(ent) = ctx.schema.entity(entity) else { return columns };
+    columns
+        .into_iter()
+        .filter(|c| {
+            let name = c["field"].as_str().or_else(|| c["name"].as_str()).unwrap_or_default();
+            ent.field(name).is_none() || ferrum_kernel::query::readable(ctx, ent, name)
+        })
+        .collect()
+}
+
 /// [`catalog`] for one caller: only reports of installed packages that the caller may run.
 pub fn catalog_for(ctx: &Ctx) -> Value {
     let allowed = |entity: &str, n: Narrows| may_run(ctx, entity, n).is_ok();

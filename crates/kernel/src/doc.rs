@@ -187,12 +187,30 @@ impl Kernel {
         self.list_with_timeout(ctx, entity, q, self.db.config.statement_timeout_ms).await
     }
 
-    /// [`Kernel::list`] with the caller's statement timeout: what reports and exports read, page after page,
-    /// passes `DbConfig::report_timeout_ms`.
+    /// [`Kernel::list`] with the caller's statement timeout: what reports read, page after page, passes
+    /// `DbConfig::report_timeout_ms`.
     pub async fn list_with_timeout(&self, ctx: &Ctx, entity: &str, q: &ListQuery, timeout_ms: u64) -> Result<Page> {
+        self.list_as(ctx, entity, q, timeout_ms, Action::Read).await
+    }
+
+    /// A page of what `ctx` may do `action` with ([`Kernel::list_tx`]) in a transaction of its own: `Action::Export` for
+    /// an export's pages, which hold only records reached by rules that grant export.
+    pub async fn list_as(&self, ctx: &Ctx, entity: &str, q: &ListQuery, timeout_ms: u64, action: Action) -> Result<Page> {
+        let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, timeout_ms).await?;
+        let page = self.list_tx(ctx, &mut tx, entity, q, action).await?;
+        tx.commit().await?;
+        Ok(page)
+    }
+
+    /// The one path a caller's list takes, whoever asks (a list route, the `.list` capability, a plugin's query, an export):
+    /// the records `action`'s rules reach (`Action::Read`, or `Action::Export` for what leaves the workspace), filtered and
+    /// sorted only by fields the caller may read (a filter or sort on another would reveal its values), a filter through a
+    /// link only within what the caller reads of the linked entity, each row masked. Code's own lookups use
+    /// [`Kernel::find_tx`].
+    pub async fn list_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, q: &ListQuery, action: Action) -> Result<Page> {
         let ent = self.entity(ctx, entity)?;
         guard_kind(&ent)?;
-        let scope = row_scope(ctx, &ent, Action::Read)?;
+        let scope = row_scope(ctx, &ent, action)?;
         let limit = q.limit.unwrap_or(20).clamp(1, MAX_LIMIT) as i64;
         let offset = q.offset.unwrap_or(0);
         if offset > MAX_OFFSET {
@@ -214,7 +232,6 @@ impl Kernel {
                 }
             }
         }
-        let mut tx = self.db.tenant_tx_with_timeout(ctx.tenant, timeout_ms).await?;
         let mut qb = QueryBuilder::new(format!("select to_jsonb(x) from (select {}", store::select_list(&ent, "a")));
         query::push_from_where_for(&mut qb, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
         let dir = if desc { "desc" } else { "asc" };
@@ -232,7 +249,7 @@ impl Kernel {
             qb.push(" offset ").push_bind(offset as i64);
         }
         qb.push(") x");
-        let rows: Vec<Value> = qb.build_query_scalar().fetch_all(&mut *tx).await?;
+        let rows: Vec<Value> = qb.build_query_scalar().fetch_all(&mut **tx).await?;
         let has_more = rows.len() as i64 > limit;
         // From the row, not the document: documents show milliseconds, and a cursor rounded to one
         // would repeat a record at the edge of a page, or skip those created within that millisecond.
@@ -243,17 +260,17 @@ impl Kernel {
         });
         let mut docs: Vec<Doc> = Vec::with_capacity(rows.len());
         for r in rows.into_iter().take(limit as usize) {
-            docs.push(self.mask_record(ctx, &mut tx, &ent, store::row_to_doc(&ent, &ctx.schema, r)).await?);
+            docs.push(self.mask_record(ctx, tx, &ent, store::row_to_doc(&ent, &ctx.schema, r)).await?);
         }
         let total = if q.with_count {
             let mut cq = QueryBuilder::new("select count(*)");
             query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
-            Some(cq.build_query_scalar::<i64>().fetch_one(&mut *tx).await?)
+            Some(cq.build_query_scalar::<i64>().fetch_one(&mut **tx).await?)
         } else {
             None
         };
         if q.with_titles {
-            self.add_titles(ctx, &mut tx, &ent, &mut docs).await?;
+            self.add_titles(ctx, tx, &ent, &mut docs).await?;
         }
         let read = crate::controls::Read::Many {
             how: if q.search.is_some() { "search" } else { "list" },
@@ -262,8 +279,10 @@ impl Kernel {
             rows: docs.len() as i64,
             to: None,
         };
-        crate::controls::record_read(&mut tx, ctx, entity, read).await?;
-        tx.commit().await?;
+        // An export is recorded once, before its first page ([`Kernel::record_export`]).
+        if action != Action::Export {
+            crate::controls::record_read(tx, ctx, entity, read).await?;
+        }
         if let Some(fields) = &q.fields {
             for d in docs.iter_mut() {
                 d.retain(|k, _| k == "id" || k == "_titles" || fields.iter().any(|f| f == k));
@@ -280,7 +299,7 @@ impl Kernel {
             return Ok(());
         }
         let ent = self.entity(ctx, entity)?;
-        let scope = row_scope(ctx, &ent, Action::Read)?;
+        let scope = row_scope(ctx, &ent, Action::Export)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let mut cq = QueryBuilder::new("select count(*)");
         query::push_from_where_for(&mut cq, ctx, &ent, &scope, &q.filters, q.search.as_deref())?;
@@ -291,7 +310,22 @@ impl Kernel {
         Ok(())
     }
 
-    /// Permission-checked lookup inside a transaction (for hooks and domain engines).
+    /// Record `id` of `entity` as `ctx` may send it out of the workspace (mail it): reached by a rule that grants export,
+    /// not only one that grants reading; not found otherwise, as for a record the caller does not read.
+    pub async fn get_for_export(&self, ctx: &Ctx, entity: &str, id: Uuid) -> Result<Doc> {
+        ctx.require(entity, Action::Export)?;
+        let ent = self.entity(ctx, entity)?;
+        let scope = row_scope(ctx, &ent, Action::Export)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let doc = self.get_tx(ctx, &mut tx, entity, id, false).await?;
+        let reached = scope.admits(&mut tx, ctx.tenant, &doc).await?;
+        tx.commit().await?;
+        if reached { Ok(doc) } else { Err(Error::NotFound(ent.def.label.clone())) }
+    }
+
+    /// Permission-checked lookup inside a transaction for hooks and domain engines: within the caller's read scope, but
+    /// its filters and sort are code's own, never a caller's (they are not checked against what the caller may read, and
+    /// a filter through a link is not scoped). A caller's list goes through [`Kernel::list_tx`].
     pub async fn find_tx(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, filters: &[Filter], sort: Option<&str>, limit: u32) -> Result<Vec<Doc>> {
         let ent = self.entity(ctx, entity)?;
         let scope = row_scope(ctx, &ent, Action::Read)?;
@@ -446,8 +480,13 @@ impl Kernel {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let held = crate::settings::with(self, ctx, &mut tx, ctx.schema.settings_read(&ent)).await?;
         let ctx: &Ctx = &held;
+        // A stored record previewed is one the caller reads: one outside their reach is not found, as when reading it.
         let existing = match uuid_of(input.get("id")) {
-            Some(id) => self.load_marked(&mut tx, ctx, &ent, id, false).await?,
+            Some(id) => match self.load_marked(&mut tx, ctx, &ent, id, false).await? {
+                Some(d) if row_scope(ctx, &ent, Action::Read)?.admits(&mut tx, ctx.tenant, &d).await? => Some(d),
+                Some(_) => return Err(Error::NotFound(ent.def.label.clone())),
+                None => None,
+            },
             None => None,
         };
         let mut doc = existing.clone().unwrap_or_default();
@@ -2088,6 +2127,20 @@ impl Linked {
             };
             let mut found: HashMap<Uuid, Doc> =
                 store::load_many(tx, &ctx.schema, target, ctx.tenant, &ids).await?.into_iter().filter_map(|d| Some((uuid_of(d.get("id"))?, d))).collect();
+            // A restricted entity's record the caller does not read is held as found but empty: the link stands, and
+            // nothing of it is fetched or named (a link filter's refusal included).
+            if target.def.reference == Reference::Restricted {
+                let scope = row_scope(ctx, target, Action::Read).ok();
+                for (id, d) in found.iter_mut() {
+                    let reached = match &scope {
+                        Some(s) => s.admits(tx, ctx.tenant, d).await?,
+                        None => false,
+                    };
+                    if !reached {
+                        *d = Map::from_iter([("id".to_string(), json!(id.to_string()))]);
+                    }
+                }
+            }
             for id in ids {
                 self.0.insert((entity.clone(), id), found.remove(&id));
             }

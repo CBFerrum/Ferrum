@@ -611,7 +611,10 @@ impl Kernel {
         // A refusal takes back all the call wrote, its receipt too, and nothing the caller wrote before it: a caller that
         // carries on commits none of it. Savepoints nest, so a call made inside another's operation is undone alone.
         sqlx::query("savepoint app_call").execute(&mut **tx).await?;
-        let done = match self.run_capability(&system, tx, cap, &Invocation { effect_key: key, ..inv.clone() }, Some(app)).await {
+        // A query answers as the caller (the person, a records key, an agent): it never reads past their reach. What
+        // changes something runs as the system for the person, as approved at install.
+        let runner = if cap.effect.changes() { &system } else { ctx };
+        let done = match self.run_capability(runner, tx, cap, &Invocation { effect_key: key, ..inv.clone() }, Some(app)).await {
             Ok(done) if done.result.get("_approval").is_some() => {
                 Err(refused(Code::PermissionDenied, format!("{} waits for an approval here, and a call from {app} does it or fails", done.capability)))
             }
@@ -764,11 +767,11 @@ impl Kernel {
             Operation::List => {
                 let filters = crate::query::parse_filters(input.get("filters").unwrap_or(&Value::Null))?;
                 let limit = input.get("limit").and_then(Value::as_u64).map_or(LIST_LIMIT, |n| (n as u32).clamp(1, LIST_LIMIT));
-                let sort = input.get("sort").and_then(Value::as_str);
-                // `find_tx` is the engines' lookup and masks nothing: each row is masked here as a list masks it.
-                let ent = self.entity(ctx, entity)?;
-                let rows = self.find_tx(ctx, tx, entity, &filters, sort, limit).await?;
-                Value::Array(rows.into_iter().map(|d| Value::Object(self.mask(ctx, &ent, d))).collect())
+                let sort = input.get("sort").and_then(Value::as_str).map(str::to_string);
+                // A caller's list: the one path, which refuses a filter or sort on a field the caller cannot read.
+                let q = crate::query::ListQuery { filters, sort, limit: Some(limit), ..Default::default() };
+                let page = self.list_tx(ctx, tx, entity, &q, crate::ctx::Action::Read).await?;
+                Value::Array(page.rows.into_iter().map(Value::Object).collect())
             }
             Operation::Create => {
                 let doc = self.insert_tx(ctx, tx, entity, object("values")?).await?;

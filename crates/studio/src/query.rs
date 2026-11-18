@@ -189,7 +189,8 @@ impl<'a> Resolver<'a> {
     }
 
     fn can_read(&self, ent: &EffEntity, f: &FieldDef, at: &str) -> Result<()> {
-        if self.ctx.perms.can_read_field(&ent.def.name, f) {
+        // As every list reads a field: the caller's field rights and the data policy their requests carry.
+        if ferrum_kernel::query::readable(self.ctx, ent, &f.name) {
             Ok(())
         } else {
             Err(Error::Forbidden(format!("{at}: you are not permitted to read {} of {}", f.label(), ent.def.label)))
@@ -295,9 +296,23 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// The caller must be able to read `ent` (own records count).
+tokio::task_local! {
+    /// What a query's rows are for: `Action::Export` when they leave the workspace (a data file a document makes,
+    /// [`as_export`]); reading otherwise.
+    static ASKED: Action;
+}
+
+/// Runs `f` with every scope it builds for exporting (`Action::Export`): its rows are only those reached by rules that
+/// grant export. ponytail: a task-local beside the spec rather than an action threaded through every builder; thread
+/// it when a second action is asked for.
+pub async fn as_export<F: std::future::Future>(f: F) -> F::Output {
+    ASKED.scope(Action::Export, f).await
+}
+
+/// The caller must be able to read `ent` (own records count): its scope for what the rows are for ([`as_export`]).
 pub(crate) fn readable(ctx: &Ctx, ent: &EffEntity, at: &str) -> Result<RowScope> {
-    row_scope(ctx, ent, Action::Read).map_err(|_| Error::Forbidden(format!("{at}: you are not permitted to read {}", ent.def.label)))
+    let action = ASKED.try_with(|a| *a).unwrap_or(Action::Read);
+    row_scope(ctx, ent, action).map_err(|_| Error::Forbidden(format!("{at}: you are not permitted to read {}", ent.def.label)))
 }
 
 struct Join {
