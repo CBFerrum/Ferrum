@@ -14,7 +14,7 @@ anyone, and what it must write down for the people who run it. The operator's ow
 | A workspace's Administration, *Secrets* | The app's secrets in that workspace; `managed_by` where the app manages one | The handle; `Vault::manage` |
 | `ferrum task doctor` | Nothing app-specific | Nothing: an app adds no doctor line |
 | The support report | Per workspace that installed the package: the app's counts and problems in words | `HookRegistry::add_health(package, Arc<dyn support::Health>)` |
-| The log | The app's `tracing` lines, its upkeep failures and panics with its name, upkeep that took longer than its round | `tracing::warn!`, `error!`; the upkeep runner adds the app's name |
+| The log | The app's `tracing` lines, its upkeep failures, panics and runs stopped at the time limit, with its name and the workspace | `tracing::warn!`, `error!`; the upkeep runner adds the app's name and the workspace, and keeps the last failure on the workspace's row (`GET /api/admin/upkeep`) |
 | `ferrum task deps_report` | Every entity a package names that another defines, and hooks that run on another package's records or in every workspace | The registrations themselves |
 | `/metrics` | The platform's metrics. A compiled-in app adds none of its own; an app built into a server of its own (an extension, `ferrum_server::extensions::extend`) gives a `metrics` function | `Extension::metrics` (`server/src/extensions.rs`) |
 
@@ -37,8 +37,8 @@ needs attention and how many, never whose.
 
 The chart has no alert rules for the server ([docs/operations.md](../operations.md), *Object storage*). An app has none
 either. What an operator alerts on is the platform's metrics and the log; an app helps by logging a failure once, at
-`warn` or `error`, with what failed and what to do, and not again every second (a failing upkeep is logged each round:
-make each round's line worth reading).
+`warn` or `error`, with what failed and what to do, and not again every second (a failing upkeep is logged each run, about once a
+minute per workspace: make each line worth reading).
 
 ## Limits and performance
 
@@ -52,7 +52,7 @@ The platform's limits are the app's ([docs/limits.md](../limits.md), [docs/opera
 | Idle in a transaction | 60 s | A transaction held open while waiting on the network is cut. Never call out inside one |
 | Request time | `request_timeout_ms`, 2 minutes by default | A request is not a job: queue what takes longer ([06](06-events-jobs-and-logic.md)) |
 | The pool | `FERRUM_DB_MAX_CONNECTIONS` (30) per replica, plus the side pool | Past it a request waits for a connection and answers 503. Do not hold two connections at once in one request |
-| Upkeep | Every 60 s, one replica per app, `FERRUM_UPKEEP_CONCURRENCY` (2) apps at once per replica | A slow app delays no other, but a round longer than 60 s is logged. Keep a round bounded: budgets per step, as Comms does (`RETRY_BUDGET`, `POLL_BUDGET`, … in `src/lib.rs`) |
+| Upkeep | One workspace a call, a minute after its last run ended, `FERRUM_UPKEEP_CONCURRENCY` (4) workspaces at once per replica, 270 s each | A run past 270 s is stopped and counts as failed, and the wait doubles while that repeats. Keep a call bounded: budgets per step, as Comms does (`RETRY_BUDGET`, `POLL_BUDGET`, … in `src/lib.rs`) |
 | A file read whole | 256 MiB (`files::MAX_READ_WHOLE`) | Stream larger ones ([09](09-files-and-storage.md)) |
 | A site's request body | `Site::max_body`, 1 MiB by default, at most 1 GiB | Raise it per route only (`max_body_for`) |
 | A job attempt | `JobHandler::timeout`, an hour by default | Make long work resumable (`Job::resumed`) |

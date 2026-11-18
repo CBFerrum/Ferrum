@@ -60,7 +60,7 @@ A Rust crate compiled into the server. It exposes the same entry points every na
 | `packages()` | its packages, embedded at build time by `build.rs` | `ferrum_meta::catalog::load_embedded(EMBEDDED)` |
 | `register(&mut HookRegistry)` | its document hooks, event sinks, endpoints, jobs | five `DocHook`s, one per entity |
 | `reports()` | its reports (`ReportSource`s) | none yet |
-| `maintenance(&Kernel)` | its upkeep, run every minute by one replica at a time | expires acceptances, keeps controls' standing |
+| `maintenance(&Kernel, tenant)` | its upkeep of one workspace, run about every minute where its packages are, on any replica | expires acceptances, keeps controls' standing |
 | `UI` | its built interface (`ui/dist`), when it has one | embedded by `build.rs` |
 
 The server registers each as itself: `hooks.app(id, &packages, |h| krate::register(h))`, then

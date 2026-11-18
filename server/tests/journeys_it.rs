@@ -103,7 +103,6 @@ async fn kernel() -> Arc<Kernel> {
     ferrum_server::packages::register(&mut hooks).unwrap();
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), Some(Arc::new(Captured))).await.expect("boot");
     ferrum_domain::maintenance(&k).await.expect("maintenance");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     k
 }
 

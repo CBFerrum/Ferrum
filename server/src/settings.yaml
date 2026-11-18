@@ -292,10 +292,10 @@
 - key: upkeep_concurrency
   env: FERRUM_UPKEEP_CONCURRENCY
   type: int
-  default: "2"
+  default: "4"
   doc: >-
-    How many apps' periodic upkeep one replica runs at once (default 2). Each app's upkeep has a lock of its own
-    across replicas, so replicas share the apps between them; each running app holds one database connection.
+    How many workspaces' app upkeep one replica runs at once (default 4). Replicas claim what is due from one table,
+    the longest waiting first, so they share the workspaces between them; each run holds one connection of the pool.
 - key: hold_on_timeline
   env: FERRUM_HOLD_ON_TIMELINE
   type: bool

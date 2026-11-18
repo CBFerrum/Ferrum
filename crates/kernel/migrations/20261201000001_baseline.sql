@@ -2057,6 +2057,25 @@ create index job_active on job (tenant_id, priority, run_at) where status in ('q
 create unique index job_dedupe on job (tenant_id, kind, dedupe_key) where (dedupe_key is not null) and (status in ('queued', 'running'));
 create index job_finished on job (finished_at) where finished_at is not null;
 
+-- Apps' upkeep (server/src/packages.rs): a row for each workspace and each app with one of its packages installed there,
+-- kept by a sync once a minute. A replica with a free slot claims the rows due, oldest first, by moving `due_at` to the
+-- end of its lease, and records the outcome only while `due_at` still holds that lease. `timeouts` counts the runs in a
+-- row that hit the time limit: each doubles the wait before the next.
+create table upkeep (
+  tenant_id uuid not null references tenant(id) on delete cascade,
+  app text not null,
+  due_at timestamptz not null default now(),
+  ran_at timestamptz,
+  failed_at timestamptz,
+  error text,
+  timeouts int not null default 0,
+  primary key (tenant_id, app)
+);
+create index upkeep_due on upkeep (due_at);
+alter table upkeep enable row level security;
+alter table upkeep force row level security;
+create policy tenant_isolation on upkeep using (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system())) with check (tenant_id = (select ferrum_tenant()) or (select ferrum_is_system()));
+
 -- What a consumer has done about an event, in the transaction that did it. Delivery is at least once, so
 -- this is what makes an effect happen once, and the count is what a repeat leaves behind.
 create table event_receipt (

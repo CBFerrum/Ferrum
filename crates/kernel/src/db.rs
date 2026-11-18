@@ -33,10 +33,15 @@ pub fn background_connections(main: u32) -> u32 {
 /// (kernel), plugin sockets, live updates and co-editing (server).
 pub const LISTENERS: u32 = 5;
 
-/// What [`Db::direct`] holds besides the listeners and apps' upkeep: one session lock at a time (app revocations; at
-/// start the migrations and the schema sync, one after the other). Its pool opens at most
-/// `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
+/// What [`Db::direct`] holds besides the listeners: one session lock at a time (app stores' revocations; at start the
+/// migrations, the schema sync and the copy set-up, one after the other). Its pool opens at most `LISTENERS +
+/// DIRECT_LOCKS` ([`DbConfig::direct_connections`]). The locks taken on a connection detached from it (the two-version
+/// window's, a bucket's set-up, the old files directory's rescue and move, a workspace's move) are outside that count.
 pub const DIRECT_LOCKS: u32 = 1;
+
+/// How many workspaces' app upkeep a replica runs at once unless `FERRUM_UPKEEP_CONCURRENCY` says otherwise
+/// ([`DbConfig::upkeep`]).
+pub const UPKEEP_AT_ONCE: u32 = 4;
 
 /// The most rows one statement of a purge deletes ([`Db::in_batches`]).
 pub const PURGE_BATCH: u64 = 5000;
@@ -202,9 +207,11 @@ pub struct DbConfig {
     /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` at `FERRUM_TEST_DATABASE_DIRECT_HOST`
     /// when a test sets that, else `url` itself (the server always says).
     pub direct_url: Option<String>,
-    /// The most connections the direct pool opens:
-    /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
+    /// The most connections the direct pool opens: [`LISTENERS`] + [`DIRECT_LOCKS`].
     pub direct_connections: u32,
+    /// How many workspaces' app upkeep the replica runs at once (`FERRUM_UPKEEP_CONCURRENCY`, [`UPKEEP_AT_ONCE`]): each
+    /// holds a connection of the main pool while it runs, which the doctor counts ([`crate::doctor::background`]).
+    pub upkeep: u32,
     /// `FERRUM_DATABASE_READ_URL`: a replica that reports and exports may read from ([`Db::read_tx`]). `None`: none.
     pub read_url: Option<String>,
     /// `FERRUM_DATABASE_READ_MAX_LAG_SECS`: past this replay lag those reads go to the primary.
@@ -223,7 +230,8 @@ impl Default for DbConfig {
             statement_timeout_ms: 15_000,
             report_timeout_ms: 60_000,
             direct_url: None,
-            direct_connections: LISTENERS + DIRECT_LOCKS + 2,
+            direct_connections: LISTENERS + DIRECT_LOCKS,
+            upkeep: UPKEEP_AT_ONCE,
             read_url: None,
             read_max_lag: Duration::from_secs(10),
         }

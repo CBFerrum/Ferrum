@@ -255,6 +255,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
     out.extend(st.kernel.vault_findings().await?);
+    out.extend(crate::packages::findings(&st.kernel).await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
     out.push(if st.kernel.restore_held().await? {
         Finding::blocker(

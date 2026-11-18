@@ -29,8 +29,8 @@ What else never goes in a request:
 - **A task spawned on its own** (`tokio::spawn`) for work that matters: it starts without the request's trace or
   zone, nothing retries it, and a restart loses it. Use a job, or run it under a `Trace` scope when its events matter
   ([docs/events.md](../events.md), first section).
-- **A loop over every workspace or every record in one transaction**: upkeep goes workspace by workspace in a
-  transaction each (GRC's `maintenance_on`); a release's data change is a backfill in batches
+- **A loop over every workspace or every record in one transaction**: upkeep is one workspace's, in transactions
+  of its own (GRC's `maintenance_on`); a release's data change is a backfill in batches
   ([04-data-and-records.md](04-data-and-records.md)).
 
 ## Events
@@ -184,17 +184,18 @@ from it.
 
 ## Schedules and upkeep
 
-An app's `maintenance(&Kernel)` runs every 60 seconds (`EVERY` in `server/src/packages.rs`). Each app's upkeep holds an
-advisory lock of its own while it runs, so one replica runs it at a time and the others leave it; a replica runs two
-apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`), in an order that differs between replicas. A failure or a panic is
-logged with the app's name and stops nothing; a round longer than the interval is warned about.
+An app's `maintenance(&Kernel, tenant)` is its upkeep of one workspace ([docs/app-contract.md](../app-contract.md),
+*Upkeep*). The platform keeps a row for each workspace and app with one of its packages there (`upkeep`), and each
+replica claims the rows due, the longest waiting first, four at a time (`FERRUM_UPKEEP_CONCURRENCY`): a workspace's run
+is due again a minute after the last ended. A run that fails or panics is recorded on its row and stops nothing; one
+past 270 seconds is stopped, and those that keep hitting that limit wait longer each time.
 
 So upkeep:
 
-- **Goes workspace by workspace**, each in a transaction of its own, and skips workspaces without the app's package.
-  GRC's `maintenance_on` lists active workspaces in a system transaction, commits it, then opens `tenant_tx` for each
-  that has `grc` installed, and keeps the first error to return after the rest ran.
-- **Takes the day as a parameter** (`maintenance_on(k, today)`), so the scenario test can run it at a chosen date.
+- **Does one workspace**, in transactions of its own, and lists no workspaces: the platform calls it only where its
+  package is. GRC's `maintenance_on(k, tenant, today)` opens `tenant_tx` for the workspace, and keeps the first error to
+  return after the rest ran.
+- **Takes the day as a parameter** (`maintenance_on(k, tenant, today)`), so the scenario test can run it at a chosen date.
 - **Is cheap when there is nothing to do**, and idempotent: it runs every minute, and twice is the same as once.
 - **Calls nothing outside for a long time**: it holds a database connection while it runs. Work that does is a job
   upkeep queues (with a `dedupe_key`).

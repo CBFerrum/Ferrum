@@ -820,12 +820,13 @@ pub async fn cancels(tx: &mut Tx, tenant: Uuid, domain: &str) -> Result<Vec<Uuid
 
 /// Commands no site ever received whose deadline passed. One a site may hold is left for the site
 /// to expire, because only the site knows whether it started.
-pub async fn expire_unsent(k: &Kernel) -> Result<u64> {
+pub async fn expire_unsent(k: &Kernel, tenant: Uuid) -> Result<u64> {
     let mut tx = k.db.system_tx().await?;
     let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "select tenant_id, id from op_command where state in ('Proposed', 'Authorized', 'Queued') and sent_at is null and expires_at <= now() \
-         and not ferrum_workspace_held(tenant_id) limit 500 for update skip locked",
+        "select tenant_id, id from op_command where tenant_id = $1 and state in ('Proposed', 'Authorized', 'Queued') and sent_at is null \
+         and expires_at <= now() and not ferrum_workspace_held(tenant_id) limit 500 for update skip locked",
     )
+    .bind(tenant)
     .fetch_all(&mut *tx)
     .await?;
     for (tenant, id) in &due {

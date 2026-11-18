@@ -52,7 +52,6 @@ async fn scenario() {
     let studio: Vec<String> = ferrum_studio::packages().expect("studio packages").iter().map(|p| p.name().to_string()).collect();
     hooks.app("studio", &studio, ferrum_studio::register).own("studio", &studio);
     let k = Kernel::boot(db, Catalog::from_packages(packages).expect("catalog"), hooks, KernelSettings::default(), None).await.expect("boot");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "cat".into(),

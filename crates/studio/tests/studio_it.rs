@@ -119,8 +119,6 @@ async fn scenario() {
         ferrum_domain::reports::add_source(source);
     }
     let k = Kernel::boot(db, catalog, hooks, KernelSettings::default(), None).await.expect("boot");
-    ferrum_app_erp::maintenance(&k).await.expect("partitions");
-    ferrum_studio::maintenance(&k).await.expect("studio upkeep");
     let tenant = k
         .create_tenant(NewTenant {
             slug: "studio".into(),

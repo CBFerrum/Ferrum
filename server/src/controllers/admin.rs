@@ -626,6 +626,12 @@ async fn list_backfills(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiRe
     Ok(Json(json!({"backfills": app_state(&app)?.kernel.backfills(&ctx).await?})).into_response())
 }
 
+// ── apps' upkeep in this workspace ──
+
+async fn list_upkeep(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {
+    Ok(Json(json!({"upkeep": crate::packages::state(&app_state(&app)?.kernel, &ctx).await?})).into_response())
+}
+
 async fn rerun_backfill(Auth(ctx): Auth, State(app): State<AppContext>, Path((package, name)): Path<(String, String)>) -> ApiResult<Response> {
     app_state(&app)?.kernel.rerun_backfill(&ctx, &package, &name).await?;
     Ok(StatusCode::ACCEPTED.into_response())
@@ -1008,6 +1014,7 @@ pub fn routes() -> Routes {
         .add("/admin/role-conflicts", get(list_role_conflicts).put(set_role_conflict).delete(delete_role_conflict))
         .add("/admin/backfills", get(list_backfills))
         .add("/admin/backfills/{package}/{name}/rerun", post(rerun_backfill))
+        .add("/admin/upkeep", get(list_upkeep))
         .add("/admin/users/{id}/deprovision", post(deprovision_user))
         .add("/admin/users/{id}/hand-over", post(hand_over_work))
         .add("/admin/scim/groups", get(scim_groups))

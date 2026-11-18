@@ -477,18 +477,18 @@ impl Task for Migrate {
     }
 }
 
-/// `run_maintenance` — anchor audit trails and purge expired events (also runs hourly in-process).
+/// `run_maintenance` — the hourly maintenance: anchor audit trails, purge expired events (also runs hourly in-process).
+/// Apps' upkeep is not in it: it runs workspace by workspace on whichever replica is free (crate::packages::spawn).
 pub struct RunMaintenance;
 
 #[async_trait]
 impl Task for RunMaintenance {
     fn task(&self) -> TaskInfo {
-        TaskInfo { name: "run_maintenance".into(), detail: "Anchor audit trails, purge expired events, extend ledger partitions".into() }
+        TaskInfo { name: "run_maintenance".into(), detail: "Anchor audit trails, purge expired events".into() }
     }
     async fn run(&self, ctx: &AppContext, _vars: &Vars) -> Result<()> {
         let k = kernel(ctx)?;
         k.maintenance().await.map_err(refused)?;
-        ferrum_app_erp::maintenance(&k).await.map_err(refused)?;
         println!("maintenance done");
         Ok(())
     }

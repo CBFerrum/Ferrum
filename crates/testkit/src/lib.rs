@@ -19,7 +19,6 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -37,9 +36,6 @@ pub const DRAIN_LIMIT: Duration = Duration::from_secs(120);
 /// build on its documents see its totals, postings and open items.
 const FIRST: &str = "erp";
 
-/// An app's upkeep, as [`App::maintenance`] gives it.
-pub type Upkeep<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
-
 /// An app as the server compiles it in: the functions its crate exports, by the names the server calls them. Made by
 /// [`app!`].
 #[derive(Clone, Copy)]
@@ -48,18 +44,12 @@ pub struct App {
     pub packages: fn() -> std::result::Result<Vec<Package>, MetaError>,
     pub register: fn(&mut HookRegistry),
     pub reports: fn() -> Vec<Arc<dyn ReportSource>>,
-    pub maintenance: for<'a> fn(&'a Kernel) -> Upkeep<'a>,
 }
 
 /// An [`App`] from its id and its crate, as the server lists it: `app!("hr", ferrum_app_hr)`.
 #[macro_export]
 macro_rules! app {
-    ($id:literal, $krate:ident) => {{
-        fn maintenance(k: &$crate::ferrum_kernel::Kernel) -> $crate::Upkeep<'_> {
-            Box::pin($krate::maintenance(k))
-        }
-        $crate::App { id: $id, packages: $krate::packages, register: $krate::register, reports: $krate::reports, maintenance }
-    }};
+    ($id:literal, $krate:ident) => {{ $crate::App { id: $id, packages: $krate::packages, register: $krate::register, reports: $krate::reports } }};
 }
 
 /// The database a suite runs on, which the kit empties: `var` from the environment, else `ferrum_<name>` on the local
@@ -113,9 +103,6 @@ impl Kit {
         reset(&db.pool).await;
         let (files, mail) = (Arc::new(MemFiles::default()), Arc::new(Mailbox::default()));
         let (k, vaults) = start(db, url, apps, &packages, &settings, &files, &mail).await;
-        for app in ordered(apps) {
-            (app.maintenance)(&k).await.unwrap_or_else(|e| panic!("{}'s upkeep: {e}", app.id));
-        }
         Kit { k, files, mail, vaults, url: url.into(), apps: apps.to_vec(), packages, settings }
     }
 

@@ -235,8 +235,8 @@ pub fn reports() -> Vec<Arc<dyn ReportSource>> {
     vec![]
 }
 
-/// Upkeep: none yet.
-pub async fn maintenance(_k: &Kernel) -> Result<()> {
+/// One workspace's upkeep (docs/app-contract.md, Upkeep): none yet.
+pub async fn maintenance(_k: &Kernel, _tenant: uuid::Uuid) -> Result<()> {
     Ok(())
 }
 ```

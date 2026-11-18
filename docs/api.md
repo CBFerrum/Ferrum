@@ -1182,6 +1182,11 @@ Backfills (data a release moves in batches, [operations](operations.md#upgrades)
 failed at once from where it got (409 while it runs). A failed one is also queued again, once, when its package's
 installed version changes ([BD-39](builder/decisions.md#bd-39-faults-a-walk-of-a-live-server-found)).
 
+Apps' upkeep in this workspace (administrators): `GET /api/admin/upkeep` → `{upkeep: [{app, state (waiting|ok|failing),
+due_at, ran_at, failed_at, error, timeouts}]}`: each app with a package here, its last run, its last failure and why, and
+when it is next due (while a replica runs it, the end of that replica's lease). `timeouts` counts the runs in a row that
+hit the time limit ([app contract](app-contract.md#upkeep)).
+
 Handing over work: `POST /api/admin/users/{id}/hand-over` `{to, reason}` → `{user, to, assignments_moved}` moves
 what the installed packages' `handover` declarations name, and the person's open assignments, to a successor
 (also queued when `deprovision` names one).

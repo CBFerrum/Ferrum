@@ -13,7 +13,8 @@ What it does, as `server/src/app.rs` and `server/src/packages.rs` do:
 - registers the platform's hooks, then each app as itself (`HookRegistry::app`): ERP first and for every workspace, every
   other app only for the workspaces that installed one of its packages, each owning its packages and taking its own
   vault handle; then sets every app's reports at once, with who gives each;
-- keeps mail and files in memory, and runs each app's upkeep once.
+- keeps mail and files in memory. It runs no app's upkeep: a suite calls `maintenance(k, tenant)` for the workspace it
+  means, as the server's runner does (docs/app-contract.md, Upkeep).
 
 It fails when the vault does not open.
 
@@ -45,7 +46,7 @@ async fn scenario() {
 |---|---|
 | `run(scenario)` | the scenario as a task of one runtime per test binary, with the server's 16 MiB thread stacks; a kernel booted under one test serves the next |
 | `database("FERRUM_X_TEST_DATABASE_URL")` | the variable's address, else `ferrum_x_test` on the local server as `ferrum` (the kit empties it) |
-| `app!("id", crate)` | an app as the server lists it: its crate's `packages`, `register`, `reports` and `maintenance` |
+| `app!("id", crate)` | an app as the server lists it: its crate's `packages`, `register` and `reports` |
 | `Kit::boot(url, &apps)` | the database emptied and a kernel booted on it, as above |
 | `Kit::boot_with(url, &apps, packages, settings)` | with packages no app brings (a stand-in for another app's package, a package as it was) and the kernel's settings (`public_url`, `webhooks_allow_private`, `pdf_url`) |
 | `kit.k` | the kernel |
@@ -77,7 +78,7 @@ async fn scenario() {
 2. Every app the suite registers is an `app!` entry, ERP and the siblings included: `app!("x", ferrum_app_x)` scopes its
    hooks to its packages as the server does. A suite that needs the app's vault handle from its registration takes
    `kit.vault("x")`.
-3. The kit runs every app's upkeep once after boot. Calls later in a scenario stay.
+3. The kit runs no app's upkeep. A scenario calls `ferrum_app_x::maintenance(&kit.k, ws.tenant)` where it needs one.
 4. Events are delivered with `ws.drain().await`.
 5. The variable a suite gives `database("FERRUM_X_TEST_DATABASE_URL")` is the one `scripts/app_ci.sh` finds: it gives it
    a database of its own (`ferrum_x_test_localci`).

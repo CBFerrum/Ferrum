@@ -71,7 +71,7 @@ fn an_app_built_in_elsewhere_reaches_the_server() {
         packages,
         register,
         reports: Vec::new,
-        maintenance: |_| Box::pin(async { Ok(()) }),
+        maintenance: |_, _| Box::pin(async { Ok(()) }),
         manifest: MANIFEST,
         ui: UI,
         tasks: |t| t.register(Errand),

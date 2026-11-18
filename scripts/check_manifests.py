@@ -54,7 +54,7 @@ def per_replica(spec, pooler):
     if size is None:
         return None
     if pooler and through_pooler(spec):
-        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 8))
+        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 6))
     return size + beside(size)
 
 

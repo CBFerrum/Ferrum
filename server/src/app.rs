@@ -220,7 +220,7 @@ impl Hooks for App {
             max_connections: settings.db_max_connections,
             // Unset: the same address as DATABASE_URL, one pool for everything as before.
             direct_url: Some(direct.unwrap_or_else(|| crate::settings::database_url(&ctx.config).to_string())),
-            direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
+            upkeep: crate::packages::upkeep_concurrency() as u32,
             read_url: read,
             read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
             ..Default::default()
@@ -566,7 +566,7 @@ impl Hooks for App {
             let mut handles = state.kernel.spawn_background(state.shutdown.subscribe());
             // The operator's audit sink, where background work runs.
             handles.extend(state.kernel.spawn_audit_sink(state.shutdown.subscribe()));
-            // Every app's upkeep, ERP's first: one replica at a time, under each app's lock (crate::packages::round).
+            // Apps' upkeep, workspace by workspace, on whichever replica has a slot free (crate::packages::spawn).
             handles.push(crate::packages::spawn(state.kernel.clone(), state.shutdown.subscribe()));
             if let Some(worker) = crate::process::spawn(state.kernel.clone(), state.shutdown.subscribe()).await.map_err(Error::Message)? {
                 handles.push(worker);

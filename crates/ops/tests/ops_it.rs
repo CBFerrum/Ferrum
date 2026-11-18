@@ -538,7 +538,7 @@ async fn scenario() {
     // ───── deadlines ─────
     let late = issue(&t, &t.admin, NewCommand { expires_in_secs: 1, ..move_tote(bot) }).await.unwrap().id;
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    assert!(commands::expire_unsent(&k).await.unwrap() >= 1);
+    assert!(commands::expire_unsent(&k, t.tenant).await.unwrap() >= 1);
     assert_eq!(state(&t, late).await, "Expired");
     assert_eq!(gw.sync(&t, gw.sync_request()).await.commands.len(), 0, "a stale intent never reaches the floor");
 

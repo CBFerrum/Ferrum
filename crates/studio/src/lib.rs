@@ -107,8 +107,8 @@ impl ReportSource for StudioReports {
     }
 }
 
-/// Periodic upkeep: every minute, on one replica at a time (advisory lock); must be idempotent and cheap.
-pub async fn maintenance(_k: &Kernel) -> Result<()> {
+/// One workspace's upkeep (docs/app-contract.md, Upkeep): none.
+pub async fn maintenance(_k: &Kernel, _tenant: uuid::Uuid) -> Result<()> {
     // Nothing is cached or scheduled: every query runs live with the viewer's permissions.
     Ok(())
 }

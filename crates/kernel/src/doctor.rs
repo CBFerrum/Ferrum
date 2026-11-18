@@ -49,8 +49,8 @@ const RESERVED_CONNECTIONS: i32 = 20;
 /// The most connections of the main pool (of `pool_size`) a replica's own work holds at once: one for each job worker,
 /// the events and webhooks it handles together ([`crate::db::background_connections`], a quarter of the pool), one each
 /// for the schedule scanner and the OpenID sweep, two for hourly maintenance (its lock and the step it is at) and one
-/// for each of `upkeep` apps' upkeep at once (the working transaction; its session lock and the LISTEN loops are on the
-/// direct pool, [`crate::db::Db::direct`]).
+/// for each of `upkeep` workspaces' app upkeep at once (its working transaction; the LISTEN loops are on the direct
+/// pool, [`crate::db::Db::direct`]).
 pub fn background(pool_size: u32, upkeep: u32) -> u32 {
     crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 4 + upkeep
 }
@@ -63,7 +63,7 @@ pub fn pool_floor(upkeep: u32) -> u32 {
 }
 
 /// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]), the
-/// direct pool's `direct` (the listeners, session locks and upkeep at once: [`crate::db::DbConfig::direct_connections`]),
+/// direct pool's `direct` (the listeners and session locks: [`crate::db::DbConfig::direct_connections`]),
 /// and the read pool's `read` (none unless a read address is set; docs/operations.md, "Database role").
 /// Each pool is named in PostgreSQL's `pg_stat_activity` (`ferrum`, `ferrum-side`, `ferrum-direct`, `ferrum-read`).
 pub fn beside_pool(pool_size: u32, direct: u32, read: u32) -> u32 {
@@ -86,7 +86,7 @@ impl Kernel {
             Finding::warning("database.version", format!("PostgreSQL {}, and Ferrum is tested on 17", version / 10000), "Upgrade PostgreSQL to 17.")
         });
         let direct = self.db.config.direct_connections.max(crate::db::LISTENERS + crate::db::DIRECT_LOCKS);
-        let upkeep = direct - crate::db::LISTENERS - crate::db::DIRECT_LOCKS;
+        let upkeep = self.db.config.upkeep;
         let read = if self.db.read.is_some() { crate::replica::READ_CONNECTIONS } else { 0 };
         let beside = beside_pool(pool_size, direct, read);
         out.push(if ((pool_size + beside) * 2 + 20) as i32 <= max_connections {

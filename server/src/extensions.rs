@@ -15,7 +15,8 @@ pub struct Extension {
     pub packages: fn() -> Result<Vec<Package>, MetaError>,
     pub register: fn(&mut HookRegistry),
     pub reports: fn() -> Vec<Arc<dyn ferrum_domain::reports::ReportSource>>,
-    pub maintenance: for<'a> fn(&'a Kernel) -> BoxFuture<'a, ferrum_kernel::Result<()>>,
+    /// Its upkeep for one workspace that has one of its packages (crate::packages::spawn; docs/app-contract.md, Upkeep).
+    pub maintenance: for<'a> fn(&'a Kernel, uuid::Uuid) -> BoxFuture<'a, ferrum_kernel::Result<()>>,
     /// Its `app.yaml`.
     pub manifest: &'static str,
     /// Its built interface, as an app crate's `UI`. Empty: it has none.

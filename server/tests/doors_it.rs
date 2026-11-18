@@ -103,7 +103,7 @@ fn doors_out_of_a_workspace() {
         packages,
         register,
         reports: Vec::new,
-        maintenance: |_| Box::pin(async { Ok(()) }),
+        maintenance: |_, _| Box::pin(async { Ok(()) }),
         manifest: MANIFEST,
         ui: &[],
         tasks: |_| {},
