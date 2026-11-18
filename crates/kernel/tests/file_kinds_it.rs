@@ -74,7 +74,7 @@ fn not_found<T: std::fmt::Debug>(r: Result<T>) -> bool {
 }
 
 /// The manifest and the names of what an export holds, as an administrator downloads it.
-async fn export(k: &Kernel, admin: &Ctx) -> (Value, HashMap<String, Vec<u8>>) {
+async fn export(k: &Kernel, store: &Memory, admin: &Ctx) -> (Value, HashMap<String, Vec<u8>>) {
     let job = k.export_workspace(admin).await.expect("queued");
     while k.run_jobs_once(4).await.unwrap() > 0 {}
     let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
@@ -82,7 +82,8 @@ async fn export(k: &Kernel, admin: &Ctx) -> (Value, HashMap<String, Vec<u8>>) {
     tx.commit().await.unwrap();
     assert_eq!(status, "done", "{result:?}");
     let part: Uuid = result.unwrap()["parts"][0]["id"].as_str().unwrap().parse().unwrap();
-    let (_, bytes) = k.export_part(admin, job, part).await.expect("an administrator's copy");
+    let (_, key) = k.export_part(admin, job, part).await.expect("an administrator's copy");
+    let bytes = store.0.lock().unwrap()[&key].clone();
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("a zip");
     let mut contents = HashMap::new();
     for i in 0..zip.len() {
@@ -152,7 +153,7 @@ async fn scenario() {
     tx.commit().await.unwrap();
 
     // ── the workspace's export: its records and files as before, the backup left out and said so ──
-    let (manifest, contents) = export(&k, &admin).await;
+    let (manifest, contents) = export(&k, &store, &admin).await;
     assert_eq!(
         manifest["files_left_out"],
         json!([{"kind": "cloud.backup", "files": 1, "bytes": 20, "why": "its app keeps them for its own work and hands them out its own way"}]),
@@ -170,7 +171,7 @@ async fn scenario() {
     assert!(not_found(bare.file_info(&admin, file).await), "downloaded with no app declaring the kind");
     assert!(not_found(bare.delete_file(&admin, file).await), "deleted with no app declaring the kind");
     assert!(matches!(backup.read(&bare, tenant, file).await, Err(Error::Forbidden(_))), "a handle this server did not give out");
-    let (manifest, _) = export(&bare, &admin).await;
+    let (manifest, _) = export(&bare, &store, &admin).await;
     assert_eq!(manifest["files_left_out"][0]["kind"], json!("cloud.backup"), "{manifest}");
 
     // ── its app lets it go: the row now, the bytes after the deletion lag ──

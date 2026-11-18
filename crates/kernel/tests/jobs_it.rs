@@ -544,7 +544,8 @@ async fn scenario() {
     assert!(matches!(k.export_part(&outsider, job, part).await, Err(Error::Forbidden(_) | Error::NotFound(_))));
     assert!(matches!(k.export_part(&admin, Uuid::now_v7(), part).await, Err(Error::NotFound(_))));
     assert!(k.read_file(&admin, part).await.is_err(), "the ordinary file route serves it to nobody");
-    let (name, bytes) = k.export_part(&admin, job, part).await.expect("an administrator's copy");
+    let (name, key) = k.export_part(&admin, job, part).await.expect("an administrator's copy");
+    let bytes = files.0.lock().unwrap()[&key].clone();
     assert!(name.ends_with(".zip"));
 
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("a zip");

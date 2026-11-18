@@ -6,7 +6,7 @@ use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use loco_rs::app::AppContext;
 use loco_rs::controller::Routes;
@@ -37,11 +37,13 @@ async fn retry(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<Uu
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// One zip of a finished export; the job's result lists them.
-async fn export_part(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, part)): Path<(Uuid, Uuid)>) -> ApiResult<Response> {
-    let (name, bytes) = app_state(&app)?.kernel.export_part(&ctx, id, part).await?;
-    Ok(([(header::CONTENT_TYPE, "application/zip".to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))], bytes)
-        .into_response())
+/// One zip of a finished export, streamed as stored files are (a range of it when asked); the job's result lists them.
+async fn export_part(Auth(ctx): Auth, State(app): State<AppContext>, Path((id, part)): Path<(Uuid, Uuid)>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let (name, key) = st.kernel.export_part(&ctx, id, part).await?;
+    let mut resp = crate::objects::streamed_response(StatusCode::OK, st.objects.stream(&key, super::sites::range(&headers)).await?);
+    super::system::file_headers(resp.headers_mut(), "application/zip", &name, false);
+    Ok(resp)
 }
 
 async fn export(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<Response> {

@@ -184,7 +184,8 @@ async fn scenario() {
     let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
     let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
-    k.set_file_store(Arc::new(MemFiles::default()));
+    let stored = Arc::new(MemFiles::default());
+    k.set_file_store(stored.clone());
     let w = workspace(&k, "acme").await;
     let admin = w.admin().await;
 
@@ -441,7 +442,8 @@ async fn scenario() {
     let v = k.job(&admin, job).await.unwrap();
     assert_eq!(v["status"], json!("done"), "{v}");
     let part: Uuid = v["result"]["parts"][0]["id"].as_str().unwrap().parse().unwrap();
-    let (_, bytes) = k.export_part(&admin, job, part).await.unwrap();
+    let (_, key) = k.export_part(&admin, job, part).await.unwrap();
+    let bytes = stored.0.lock().unwrap()[&key].clone();
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut files = HashMap::new();
     for i in 0..zip.len() {

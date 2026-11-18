@@ -16,6 +16,7 @@ use crate::ctx::Ctx;
 use crate::db::Tx;
 use crate::ddl::q;
 use crate::error::{Error, Result};
+use crate::files::{FileStore, ObjectWriter, object_key};
 use crate::jobs::{Job, JobHandler, NewJob, enqueue};
 use crate::outbox::{PRIORITY_BULK, release_objects};
 use crate::query::{ListQuery, MAX_LIMIT, parse_filters};
@@ -25,12 +26,13 @@ use ferrum_meta::EntityKind;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::io::{Cursor, Write};
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
-use zip::write::SimpleFileOptions;
+use zip::write::{SimpleFileOptions, StreamWriter};
 
 pub const BULK_KIND: &str = "platform.bulk";
 pub const EXPORT_KIND: &str = "platform.export";
@@ -63,8 +65,14 @@ pub(crate) async fn drop_exports(tx: &mut Tx, tenant: Uuid, job: Option<Uuid>) -
 }
 
 /// A part of an export closes at about this much before compression (a larger file gets a part to
-/// itself, held in memory while it is written).
-const PART_BYTES: usize = 128 << 20;
+/// itself). A part is written to storage as it grows, and a stored file read [`CHUNK`] at a time, so
+/// an export holds a few chunks whatever the size of the files.
+const PART_BYTES: u64 = 128 << 20;
+/// How much of a stored file is read at once.
+const CHUNK: u64 = 8 << 20;
+/// A file from this size goes into the export as it is: most large files are compressed already
+/// (images, video, PDFs, archives).
+const STORED_FROM: u64 = 1 << 20;
 /// How long a finished export stays.
 const EXPORT_DAYS: i32 = 7;
 /// Stored parts are `file_object` rows of this "entity", with the job as their record: nothing
@@ -162,39 +170,184 @@ impl JobHandler for BulkJob {
     }
 }
 
-/// The open part of an export.
+/// What the zip writer writes, taken away a piece at a time to the open part's object.
+#[derive(Clone, Default)]
+struct Spool(Arc<Mutex<Vec<u8>>>);
+
+impl Spool {
+    fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl Write for Spool {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn written(e: impl std::fmt::Display) -> Error {
+    Error::internal(format!("writing the export: {e}"))
+}
+
+/// The part being written: a zip with no going back (each entry's sizes after its bytes), sent to its object as it grows.
+struct Open<'a> {
+    id: Uuid,
+    zip: zip::ZipWriter<StreamWriter<Spool>>,
+    out: Box<dyn ObjectWriter + 'a>,
+    sha: Sha256,
+    bytes: u64,
+}
+
+impl Open<'_> {
+    /// What the zip wrote since last time, to the object.
+    async fn send(&mut self, spool: &Spool) -> Result<()> {
+        let piece = spool.take();
+        if piece.is_empty() {
+            return Ok(());
+        }
+        self.sha.update(&piece);
+        self.bytes += piece.len() as u64;
+        self.out.write(piece).await
+    }
+}
+
+/// The parts of an export.
 struct Parts<'a> {
     k: &'a Kernel,
     ctx: &'a Ctx,
-    job: Uuid,
-    zip: zip::ZipWriter<Cursor<Vec<u8>>>,
-    size: usize,
+    job: &'a Job,
+    spool: Spool,
+    open: Option<Open<'a>>,
+    /// Bytes put into the open part, before compression.
+    size: u64,
     stored: Vec<Value>,
+    /// The progress last said.
+    said: Value,
 }
 
 impl<'a> Parts<'a> {
-    fn new(k: &'a Kernel, ctx: &'a Ctx, job: Uuid) -> Self {
-        Parts { k, ctx, job, zip: zip::ZipWriter::new(Cursor::new(Vec::new())), size: 0, stored: Vec::new() }
+    fn new(k: &'a Kernel, ctx: &'a Ctx, job: &'a Job) -> Self {
+        Parts { k, ctx, job, spool: Spool::default(), open: None, size: 0, stored: Vec::new(), said: json!({}) }
+    }
+
+    /// Says how far the export has got, and which object the open part is written to: when its worker dies with it
+    /// unfinished, the next attempt deletes it (a disk keeps what was written so far).
+    async fn progress(&mut self, said: Value) -> Result<()> {
+        self.said = said;
+        let mut said = self.said.clone();
+        if let (Some(open), Some(m)) = (&self.open, said.as_object_mut()) {
+            m.insert("open".into(), json!(object_key(self.ctx.tenant, open.id)));
+        }
+        self.job.progress(self.k, said).await.map(drop)
+    }
+
+    /// Begins entry `name` of `size` bytes, in a new part when the open one is full.
+    async fn begin(&mut self, name: &str, size: u64) -> Result<()> {
+        if self.size > 0 && self.size + size > PART_BYTES {
+            self.close().await?;
+        }
+        if self.open.is_none() {
+            let id = Uuid::now_v7();
+            let out = self.k.file_store()?.writer(&object_key(self.ctx.tenant, id)).await?;
+            self.open = Some(Open { id, zip: zip::ZipWriter::new_stream(self.spool.clone()), out, sha: Sha256::new(), bytes: 0 });
+            self.progress(self.said.clone()).await?;
+        }
+        let method = if size >= STORED_FROM { zip::CompressionMethod::Stored } else { zip::CompressionMethod::Deflated };
+        let options = SimpleFileOptions::default().compression_method(method).large_file(size >= u32::MAX as u64);
+        let open = self.open.as_mut().ok_or_else(|| Error::internal("no part is open"))?;
+        open.zip.start_file(name, options).map_err(written)?;
+        self.size += size;
+        Ok(())
+    }
+
+    /// More of the entry begun last.
+    async fn write(&mut self, data: &[u8]) -> Result<()> {
+        let open = self.open.as_mut().ok_or_else(|| Error::internal("no part is open"))?;
+        open.zip.write_all(data).map_err(written)?;
+        open.send(&self.spool).await
     }
 
     async fn add(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        if self.size > 0 && self.size + data.len() > PART_BYTES {
-            self.close().await?;
-        }
-        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).large_file(data.len() >= u32::MAX as usize);
-        self.zip.start_file(name, options).map_err(|e| Error::internal(format!("writing the export: {e}")))?;
-        self.zip.write_all(data).map_err(|e| Error::internal(format!("writing the export: {e}")))?;
-        self.size += data.len();
-        Ok(())
+        self.begin(name, data.len() as u64).await?;
+        self.write(data).await
     }
 
+    /// Finishes the open part, its object and its file; nothing is left of it when that fails.
     async fn close(&mut self) -> Result<()> {
-        let finished = std::mem::replace(&mut self.zip, zip::ZipWriter::new(Cursor::new(Vec::new())));
-        let bytes = finished.finish().map_err(|e| Error::internal(format!("writing the export: {e}")))?.into_inner();
-        let name = format!("workspace-export-{}-part-{}.zip", self.job, self.stored.len() + 1);
-        self.stored.push(self.k.keep_file(self.ctx, Some((EXPORT_ENTITY, self.job)), &name, "application/zip", &bytes, "unscanned").await?);
-        self.size = 0;
-        Ok(())
+        let Some(mut open) = self.open.take() else { return Ok(()) };
+        let (k, ctx, job, spool) = (self.k, self.ctx, self.job, self.spool.clone());
+        let name = format!("workspace-export-{}-part-{}.zip", job.id, self.stored.len() + 1);
+        let key = object_key(ctx.tenant, open.id);
+        let kept = async move {
+            std::mem::replace(&mut open.zip, zip::ZipWriter::new_stream(Spool::default())).finish().map_err(written)?;
+            open.send(&spool).await?;
+            open.out.close().await?;
+            let sha = hex::encode(open.sha.finalize());
+            k.record_file(ctx, Some((EXPORT_ENTITY, job.id)), open.id, &name, "application/zip", open.bytes, &sha, "unscanned").await
+        }
+        .await;
+        match kept {
+            Ok(file) => {
+                self.stored.push(file);
+                self.size = 0;
+                Ok(())
+            }
+            Err(e) => {
+                if let Err(gone) = self.k.file_store()?.delete(&key).await {
+                    tracing::warn!(%key, "could not delete an unfinished part of an export: {gone}");
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
+impl Drop for Parts<'_> {
+    /// A part left open (the export failed, was cancelled, ran out of time, or its worker was stopped) is deleted. An
+    /// object store never showed it: S3 drops the unfinished upload by the bucket's rule (server/src/store.rs); a disk
+    /// keeps what was written, which goes here.
+    fn drop(&mut self) {
+        let (Some(open), Ok(store), Ok(rt)) = (self.open.take(), self.k.file_store(), tokio::runtime::Handle::try_current()) else { return };
+        let (store, key) = (store.clone(), object_key(self.ctx.tenant, open.id));
+        drop(open);
+        rt.spawn(async move {
+            if let Err(e) = store.delete(&key).await {
+                tracing::warn!(%key, "could not delete an unfinished part of an export: {e}");
+            }
+        });
+    }
+}
+
+/// Copies stored object `key` (`size` bytes, as recorded) into entry `name`, [`CHUNK`] at a time. False when storage
+/// has lost it: before its first byte, or while it was read, when the entry holds what was read before and the
+/// manifest names the file missing. One shorter than recorded goes as it is.
+async fn copy_file(parts: &mut Parts<'_>, store: &dyn FileStore, name: &str, key: &str, size: u64) -> Result<bool> {
+    if size == 0 {
+        if !store.exists(key).await? {
+            return Ok(false);
+        }
+        parts.add(name, &[]).await?;
+        return Ok(true);
+    }
+    let mut at = 0;
+    loop {
+        let piece = match store.get_range(key, at..size.min(at + CHUNK)).await {
+            Err(Error::NotFound(_)) => return Ok(false),
+            piece => piece?,
+        };
+        if at == 0 {
+            parts.begin(name, size).await?;
+        }
+        at += piece.len() as u64;
+        parts.write(&piece).await?;
+        if piece.is_empty() || at >= size {
+            return Ok(true);
+        }
     }
 }
 
@@ -257,17 +410,18 @@ impl JobHandler for ExportJob {
         if !ctx.is_admin {
             return Err(Error::Forbidden("exporting a workspace is for administrators".into()));
         }
-        // A read that fails on a replica makes the export once more from the primary, without what it had stored.
-        let mut first = true;
+        // A part an earlier attempt's worker died writing (its progress names it) goes first.
+        if let Some(open) = job.resumed["open"].as_str().filter(|key| key.starts_with(&format!("tenants/{}/", ctx.tenant))) {
+            k.file_store()?.delete(open).await?;
+        }
+        // What an earlier attempt stored, or a read that failed on a replica (made once more from the primary), goes:
+        // each attempt makes the whole export.
         k.db.reading(|| {
-            let again = !std::mem::replace(&mut first, false);
             let ctx = &ctx;
             async move {
-                if again {
-                    let mut tx = k.db.tenant_tx(ctx.tenant).await?;
-                    drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
-                    tx.commit().await?;
-                }
+                let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+                drop_exports(&mut tx, ctx.tenant, Some(job.id)).await?;
+                tx.commit().await?;
                 make(k, job, ctx).await
             }
         })
@@ -281,7 +435,7 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
     // administrator admitted where a zone limits staff to some apps exports those apps').
     let all = Ctx::system_for(ctx);
     let erasures = k.last_erasure(ctx.tenant).await?;
-    let mut parts = Parts::new(k, ctx, job.id);
+    let mut parts = Parts::new(k, ctx, job);
     let mut entities = Vec::new();
     let total = all.schema.entities.len();
     for (i, (name, ent)) in all.schema.entities.iter().enumerate() {
@@ -307,7 +461,7 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
             let read = crate::controls::Read::Many { how: "export", filters: &[], search: false, rows: count as i64, to: Some("workspace export") };
             crate::controls::record_read_alone(k, &ctx.recorded_via("workspace export job"), name, read).await?;
         }
-        job.progress(k, json!({"step": "records", "done": i + 1, "total": total})).await?;
+        parts.progress(json!({"step": "records", "done": i + 1, "total": total})).await?;
     }
 
     // What the API does not read: each table in one snapshot, so a journal comes out balanced.
@@ -364,13 +518,13 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
         parts.add(&format!("audit/{file:06}.jsonl"), &lines(&events)?).await?;
         file += 1;
     }
-    job.progress(k, json!({"step": "files", "done": 0})).await?;
+    parts.progress(json!({"step": "files", "done": 0})).await?;
 
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
     // The workspace's files, not the kinds the platform and apps keep for their own work (`<owner>.<name>`, which no
     // entity's name is: crate::files::FileKind), which their apps hand out their own way.
-    let files: Vec<(Uuid, String, String, String, Option<String>, Option<Uuid>)> = sqlx::query_as(
-        "select id, file_name, content_type, storage_key, entity, record_id from file_object where tenant_id = $1 \
+    let files: Vec<(Uuid, String, String, String, Option<String>, Option<Uuid>, i64)> = sqlx::query_as(
+        "select id, file_name, content_type, storage_key, entity, record_id, size_bytes from file_object where tenant_id = $1 \
            and (entity is null or strpos(entity, '.') = 0) order by id",
     )
     .bind(ctx.tenant)
@@ -406,18 +560,15 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
     tx.commit().await?;
     let store = k.file_store()?.clone();
     let (mut index, mut missing) = (Vec::with_capacity(files.len()), Vec::new());
-    for (i, (id, name, ctype, key, entity, record)) in files.iter().enumerate() {
+    for (i, (id, name, ctype, key, entity, record, size)) in files.iter().enumerate() {
         // A file storage has lost is named, not a reason to give the customer nothing.
-        match store.get(key).await {
-            Ok(bytes) => {
-                parts.add(&format!("files/{id}"), &bytes).await?;
-                index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
-            }
-            Err(Error::NotFound(_)) => missing.push(json!({"id": id, "file_name": name, "entity": entity, "record_id": record})),
-            Err(e) => return Err(e),
+        if copy_file(&mut parts, &*store, &format!("files/{id}"), key, *size as u64).await? {
+            index.push(json!({"id": id, "file_name": name, "content_type": ctype, "entity": entity, "record_id": record}));
+        } else {
+            missing.push(json!({"id": id, "file_name": name, "entity": entity, "record_id": record}));
         }
         if i % 100 == 99 {
-            job.progress(k, json!({"step": "files", "done": i + 1, "total": files.len()})).await?;
+            parts.progress(json!({"step": "files", "done": i + 1, "total": files.len()})).await?;
         }
     }
     parts.add("files/index.jsonl", &lines(&index)?).await?;
@@ -499,8 +650,9 @@ impl Kernel {
         Ok(id)
     }
 
-    /// One part of a finished export, to an administrator. Each download is on the audit trail.
-    pub async fn export_part(&self, ctx: &Ctx, job: Uuid, part: Uuid) -> Result<(String, Vec<u8>)> {
+    /// One part of a finished export, to an administrator: its name and the object to stream it from. Each download is on
+    /// the audit trail.
+    pub async fn export_part(&self, ctx: &Ctx, job: Uuid, part: Uuid) -> Result<(String, String)> {
         if !ctx.is_admin {
             return Err(Error::Forbidden("exports are for administrators".into()));
         }
@@ -516,7 +668,7 @@ impl Kernel {
         let (name, key) = row.ok_or_else(|| Error::NotFound("export".into()))?;
         audit::record_admin(&mut tx, ctx, "Workspace", ctx.tenant, "export_download", None, json!({"job": job, "part": part})).await?;
         tx.commit().await?;
-        Ok((name, self.file_store()?.get(&key).await?))
+        Ok((name, key))
     }
 
     /// Deletes exports past their time, and jobs long over.
