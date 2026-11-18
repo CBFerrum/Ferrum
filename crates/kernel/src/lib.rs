@@ -91,6 +91,7 @@ pub mod support;
 pub mod targets;
 pub mod tenant;
 pub mod twofactor;
+pub mod upkeep;
 pub mod value;
 pub mod vault;
 pub mod views;

@@ -183,6 +183,8 @@ impl Trace {
 /// (`ferrum_moving()`, asked when `moves` is set; see crates/kernel/src/moves.rs), and `frozen` whether the workspace in
 /// `$5` is moving to another installation (`ferrum_workspace_frozen`, asked when `frozen` is set: workspace_move.rs).
 fn carrying(settings: &str, moves: bool, frozen: bool) -> Query<'static, Postgres, PgArguments> {
+    // Every kernel transaction starts here: a run of an app's upkeep that opens none did nothing (crate::upkeep).
+    crate::upkeep::opened();
     let t = TRACE.try_with(Trace::clone).unwrap_or_default();
     // The depth is a number and the zone a name of lowercase letters, digits and dashes (crate::zones checks them; any
     // other is left out), written in place, so the settings' parameters still start at $5.

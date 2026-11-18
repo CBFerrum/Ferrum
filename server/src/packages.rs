@@ -574,6 +574,13 @@ struct Claim {
     tenant: Uuid,
     app: &'static str,
     lease: chrono::DateTime<chrono::Utc>,
+    /// What its run did, as the kernel saw it (`ferrum_kernel::upkeep`).
+    watch: Arc<ferrum_kernel::upkeep::Watch>,
+}
+
+/// The wait after a run that ended well: a day when it opened no transaction (it did nothing), else the usual.
+fn wait_after(c: &Claim, pace: &Pace) -> Duration {
+    if c.watch.opened() == 0 { ferrum_kernel::upkeep::IDLE } else { pace.every }
 }
 
 /// How a run ended, when it did not end well.
@@ -591,7 +598,8 @@ type Finished<'a> = (&'a Claim, Option<&'a Ended>);
 /// rows due, the longest waiting first, of the apps of `apps`, in workspaces that are not moving: each held until
 /// `lease` from now. The rows of `full` (apps holding their share of this replica's slots) come after every other
 /// app's, so that one app slow in many workspaces cannot hold every slot while others wait; with nothing else due they
-/// still run. The row just recorded is not taken again by the same statement (one statement may change a row once).
+/// still run. The row just recorded is not taken again by the same statement (one statement may change a row once). A run
+/// that ended well waits [`wait_after`]: a day when it opened no transaction.
 async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], free: usize, full: &[&str], pace: &Pace) -> ferrum_kernel::Result<Vec<Claim>> {
     let ids: Vec<&str> = apps.iter().map(|a| a.id).collect();
     let (claim, error, timed_out) = match finished {
@@ -600,10 +608,14 @@ async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], fr
         Some((c, Some(Ended::Failed(e)))) => (Some(c), Some(e.clone()), false),
         Some((c, Some(Ended::TimedOut))) => (Some(c), Some(format!("took longer than {} s, and was stopped", pace.limit.as_secs())), true),
     };
+    let wait = match (claim, &error) {
+        (Some(c), None) => wait_after(c, pace).as_secs_f64(),
+        _ => pace.every.as_secs_f64(),
+    };
     let mut tx = k.db.system_tx().await?;
     let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "with recorded as (update upkeep set timeouts = case when $5 then timeouts + 1 else 0 end, \
-           due_at = now() + make_interval(secs => case when $5 then least($6 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
+           due_at = now() + make_interval(secs => case when $5 then least($12 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
            ran_at = case when $4::text is null then now() else ran_at end, failed_at = case when $4::text is null then failed_at else now() end, \
            error = left($4, 2000) where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id) returning 1), \
          due as (select tenant_id, app from upkeep where due_at <= now() and app = any($9) and not ferrum_workspace_held(tenant_id) \
@@ -616,16 +628,20 @@ async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], fr
     .bind(claim.map(|c| c.lease))
     .bind(error)
     .bind(timed_out)
-    .bind(pace.every.as_secs_f64())
+    .bind(wait)
     .bind(pace.most.as_secs_f64())
     .bind(free as i64)
     .bind(&ids)
     .bind(pace.lease.as_secs_f64())
     .bind(full)
+    .bind(pace.every.as_secs_f64())
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(rows.into_iter().filter_map(|(tenant, app, lease)| ids.iter().find(|i| **i == app).map(|&app| Claim { tenant, app, lease })).collect())
+    Ok(rows
+        .into_iter()
+        .filter_map(|(tenant, app, lease)| ids.iter().find(|i| **i == app).map(|&app| Claim { tenant, app, lease, watch: Arc::default() }))
+        .collect())
 }
 
 /// Gives the rows of claims whose runs did not end back, due at once (a replica stopping).
@@ -768,8 +784,11 @@ async fn turn(
         Ok(claims) => {
             let drained = claims.len() < free;
             for c in claims {
-                let (k, run, tenant, limit) = (k.clone(), runs[c.app].clone(), c.tenant, pace.limit);
-                let task = running.spawn(async move { tokio::time::timeout(limit, ferrum_kernel::sandbox::in_hand(tenant, run(&k, tenant))).await });
+                let (k, run, tenant, limit, watch) = (k.clone(), runs[c.app].clone(), c.tenant, pace.limit, c.watch.clone());
+                let task = running.spawn(async move {
+                    let work = ferrum_kernel::sandbox::in_hand(tenant, run(&k, tenant));
+                    tokio::time::timeout(limit, ferrum_kernel::upkeep::watching(watch, work)).await
+                });
                 held.insert(task.id(), c);
             }
             drained

@@ -389,7 +389,8 @@ impl Registry {
     pub async fn bump_version(tx: &mut Tx, tenant: Uuid) -> Result<()> {
         sqlx::query("update tenant set meta_version = meta_version + 1 where id = $1").bind(tenant).execute(&mut **tx).await?;
         sqlx::query("select pg_notify($1, $2)").bind(META_CHANNEL).bind(tenant.to_string()).execute(&mut **tx).await?;
-        Ok(())
+        // What an app's upkeep has to do here may have changed (a package installed): those that did nothing run again.
+        crate::upkeep::wake_idle(tx, Some(tenant)).await
     }
 
     /// Listens for metadata and settings changes from any replica. Whenever some may have been missed (at the start, a

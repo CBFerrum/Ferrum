@@ -96,7 +96,8 @@ async fn rows(k: &Kernel) -> Rows {
 /// What the stand-in apps did: (workspace, app, which runner, started, ended).
 type Runs = Arc<Mutex<Vec<(Uuid, &'static str, usize, Instant, Instant)>>>;
 
-/// An app that records each run, which takes `took(tenant)` and ends as `ends(tenant)` says.
+/// An app that records each run, which takes `took(tenant)` and ends as `ends(tenant)` says. It opens a transaction as
+/// it starts, as an app with work to do does: one that opens none did nothing, and waits a day ([`noop`]).
 fn app(
     id: &'static str,
     packages: &[&str],
@@ -109,10 +110,11 @@ fn app(
     UpkeepApp {
         id,
         packages: packages.iter().map(|p| p.to_string()).collect(),
-        run: packages::run(move |_k, tenant| {
+        run: packages::run(move |k, tenant| {
             let (runs, took, ends) = (runs.clone(), took.clone(), ends.clone());
             Box::pin(async move {
                 let start = Instant::now();
+                k.db.tenant_tx(tenant).await?.commit().await?;
                 tokio::time::sleep(took(tenant)).await;
                 runs.lock().unwrap().push((tenant, id, runner, start, Instant::now()));
                 match ends(tenant) {
@@ -121,6 +123,20 @@ fn app(
                     Err(e) => Err(ferrum_kernel::Error::Internal(e)),
                 }
             })
+        }),
+    }
+}
+
+/// An app whose upkeep does nothing (no transaction), as about nine apps' and every country add-on's does, counting its
+/// runs.
+fn noop(id: &'static str, packages: &[&str], calls: &Arc<std::sync::atomic::AtomicUsize>) -> UpkeepApp {
+    let calls = calls.clone();
+    UpkeepApp {
+        id,
+        packages: packages.iter().map(|p| p.to_string()).collect(),
+        run: packages::run(move |_k, _tenant| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
         }),
     }
 }
@@ -284,6 +300,55 @@ fn a_run_and_the_next_claim_are_one_transaction() {
         let xacts: i64 = sqlx::query_scalar("select count(*) from upkeep_xact").fetch_one(&k.db.pool).await.unwrap();
         eprintln!("upkeep: 20 runs on one slot took {xacts} transactions of the runner's");
         assert!(xacts <= 20 + 2, "one transaction to start and one per run ending (one more for a poll): {xacts}");
+    });
+}
+
+/// A run that opened no transaction did nothing: it is recorded with its next run a day away, in the same single write,
+/// beside an app that worked (the usual minute). A change of the workspace's metadata (a package installed) and a
+/// changed catalog make it due again.
+#[test]
+fn a_run_that_did_nothing_waits_a_day() {
+    scenario(async {
+        let k = replica(true).await;
+        let ws = workspaces(&k, 2, &["fake_a"]).await;
+        let runs: Runs = Default::default();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let apps = || vec![noop("idle", &["fake_a"], &calls), app("busy", &["fake_a"], 0, &runs, |_| Duration::ZERO, ok)];
+        let (tx, rx) = watch::channel(false);
+        let h = packages::spawn_with(k.clone(), apps(), Pace { every: Duration::from_secs(60), ..pace(2) }, rx);
+        let r = until(&k, "every row recorded", |r| r.len() == 4 && r.values().all(|v| v.0)).await;
+        stop(tx, vec![h]).await;
+        for t in &ws {
+            assert_eq!(r[&(*t, "idle".to_string())].5, 86_400.0, "nothing done: due a day away");
+            assert_eq!(r[&(*t, "busy".to_string())].5, 60.0, "work done: due after the usual minute");
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // One workspace's metadata changes (as a package installed bumps it): its idle row is due again, the other's not.
+        let mut t = k.db.system_tx().await.unwrap();
+        ferrum_kernel::Registry::bump_version(&mut t, ws[0]).await.unwrap();
+        t.commit().await.unwrap();
+        let r = rows(&k).await;
+        assert!(r[&(ws[0], "idle".to_string())].3 <= 0.0, "due again where the metadata changed: {r:?}");
+        assert!(r[&(ws[1], "idle".to_string())].3 > 80_000.0, "still a day away elsewhere");
+        assert!(r[&(ws[0], "busy".to_string())].3 > 50.0, "a row that worked keeps its wait");
+        // A changed catalog (a sync that applies something): every idle row is due again.
+        let mut packages = ferrum_domain::packages().unwrap();
+        packages.push(
+            ferrum_meta::catalog::load_embedded(&[("upkeep_probe", "package.yaml", "package: upkeep_probe\nversion: 0.1.0\ndepends: [core]\n")])
+                .unwrap()
+                .remove(0),
+        );
+        ferrum_kernel::ddl::sync(&k.db, &ferrum_meta::Catalog::from_packages(packages).unwrap(), false).await.unwrap();
+        let r = rows(&k).await;
+        assert!(r[&(ws[1], "idle".to_string())].3 <= 0.0, "due again once the catalog changed: {r:?}");
+        let (tx, rx) = watch::channel(false);
+        let h = packages::spawn_with(k.clone(), apps(), Pace { every: Duration::from_secs(60), ..pace(2) }, rx);
+        let start = Instant::now();
+        while calls.load(std::sync::atomic::Ordering::SeqCst) < 4 {
+            assert!(start.elapsed() < HANG, "the idle rows ran again: not within {HANG:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        stop(tx, vec![h]).await;
     });
 }
 

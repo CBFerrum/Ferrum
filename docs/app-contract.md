@@ -266,6 +266,11 @@ What it promises the app, and what it asks of it:
   workspace's row, which its administrators read at `GET /api/admin/upkeep`, and counted by `/metrics`
   (`ferrum_upkeep_failing`) and the doctor. A returned error is due again after the usual minute.
 - **As that workspace's work.** A call outside is the workspace's (a sandbox's sends nothing).
+- **Nothing done waits a day.** The kernel counts the transactions a run opens (every way an app reaches the database
+  goes through `Db`'s constructors). A run that returns `Ok` having opened none did nothing, and is next due a day away;
+  it is due again sooner when the workspace's metadata changes (a package installed) or the catalog does (an app's new
+  release, a build whose packages changed). An app whose upkeep has nothing to do in a workspace should return before
+  it opens a transaction, so that it costs nothing there.
 - **Work of the whole installation has no hook of its own** (a partition of a table every workspace writes, a purge
   across workspaces): do it from the call for whichever workspace comes first, at most once a day on a replica (a
   `static` day) and under `pg_try_advisory_xact_lock`, so that replicas do not do it together. ERP's journal
