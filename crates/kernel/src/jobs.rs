@@ -233,7 +233,17 @@ impl Kernel {
     /// Settles jobs nobody will come back for, then claims up to `slots`, fairly: see the module
     /// documentation.
     pub async fn claim_jobs(&self, slots: usize) -> Result<Vec<Job>> {
-        if self.db.fenced() || self.holding().await? {
+        match self.claim_jobs_now(slots).await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => Ok(Vec::new()),
+            claimed => claimed,
+        }
+    }
+
+    async fn claim_jobs_now(&self, slots: usize) -> Result<Vec<Job>> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding); settling what nobody comes back
+        // for is no outward work.
+        if self.db.fenced() || self.marker_waiting() {
             return Ok(Vec::new());
         }
         let mut tx = self.db.system_tx().await?;
@@ -262,7 +272,8 @@ impl Kernel {
                select (select j.tenant_id from job j where j.tenant_id > w.tenant_id and j.status in ('queued', 'running') order by j.tenant_id limit 1) \
                from waiting w where w.tenant_id is not null), \
              picked as ( \
-               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
+               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) \
+                 and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) order by random()) w \
                cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
                  and j.build_date <= $5 \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \

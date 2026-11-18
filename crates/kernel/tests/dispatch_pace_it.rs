@@ -157,17 +157,11 @@ async fn scenario() {
     // Another replica notices a restore (its identity changed) and holds; this one is resting.
     let db = Db::connect(DbConfig { url, max_connections: 4, ..Default::default() }).await.expect("connect");
     let other = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
-    assert!(!k.holding().await.unwrap());
     tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(!k.holding().await.unwrap());
     sqlx::query("update platform_incarnation set system_identifier = system_identifier + 1").execute(&other.db.pool).await.unwrap();
     other.look_again().await.unwrap();
-    assert!(other.restore_held().await.unwrap());
-    let since = Instant::now();
-    while !k.holding().await.unwrap() && since.elapsed() < Duration::from_secs(2) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    eprintln!("the hold reached this replica in {} ms", since.elapsed().as_millis());
-    assert!(k.holding().await.unwrap(), "this replica heard of the hold");
+    assert!(other.restore_held().await.unwrap() && k.holding().await.unwrap(), "held, for every replica at once");
     written_elsewhere("paced.held").await;
     let before = k.outbox_empty_looks();
     assert!(until(|| k.outbox_empty_looks() > before, 10).await, "it looked");
@@ -179,6 +173,15 @@ async fn scenario() {
     };
     other.release_hold(&admin, "checked: nothing went out twice").await.unwrap();
     assert!(until(|| seen.has("paced.held"), 10).await, "released: it goes out");
+
+    // A hold written by hand stops the next look too: the claim asks for it itself.
+    sqlx::query("update platform_incarnation set held_since = now(), held_because = 'by hand'").execute(&other.db.pool).await.unwrap();
+    written_elsewhere("paced.by_hand").await;
+    let before = k.outbox_empty_looks();
+    assert!(until(|| k.outbox_empty_looks() > before + 1, 15).await, "it looked, twice");
+    assert!(!seen.has("paced.by_hand"), "nothing went out while held by hand");
+    sqlx::query("update platform_incarnation set held_since = null, held_because = null").execute(&other.db.pool).await.unwrap();
+    assert!(until(|| seen.has("paced.by_hand"), 10).await, "and it goes once the hold is gone");
 
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(20), dispatcher).await.expect("it stops").unwrap();

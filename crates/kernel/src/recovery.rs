@@ -753,6 +753,9 @@ impl Kernel {
     /// Whether a restore is waiting for a person, or a move is planned (moves.rs), or this replica started and has not yet
     /// compared the database with the restore marker in a store that answers. Everything that reaches outside asks this
     /// first.
+    /// The loops that claim work (events, webhook deliveries, jobs) ask [`Kernel::marker_waiting`] here and the rest in
+    /// their claim's own statement (`not exists (... platform_incarnation where held_since is not null) and not exists
+    /// (... platform_move)`), so an idle look is one statement.
     pub async fn holding(&self) -> Result<bool> {
         if self.marker.waiting.load(Ordering::SeqCst) {
             return Ok(true);
@@ -760,6 +763,12 @@ impl Kernel {
         Ok(sqlx::query_scalar("select exists (select 1 from platform_incarnation where held_since is not null) or exists (select 1 from platform_move)")
             .fetch_one(&self.db.pool)
             .await?)
+    }
+
+    /// The part of [`Kernel::holding`] this process knows without asking the database: it started and has not yet
+    /// compared the database with the restore marker.
+    pub(crate) fn marker_waiting(&self) -> bool {
+        self.marker.waiting.load(Ordering::SeqCst)
     }
 
     /// A person has looked at what came back. What was set aside stays where it is, to replay or not.

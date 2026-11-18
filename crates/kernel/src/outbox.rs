@@ -535,7 +535,19 @@ impl Kernel {
     /// Claims a batch, each workspace's share apart, leaving out the workspaces in `busy` (this replica is still at their
     /// earlier events).
     async fn claim_events(&self, busy: &[Uuid]) -> Result<Vec<Vec<Event>>> {
-        if self.db.fenced() || self.holding().await? {
+        match self.claim_events_now(busy).await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => {
+                self.sinks.empty.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            }
+            claimed => claimed,
+        }
+    }
+
+    async fn claim_events_now(&self, busy: &[Uuid]) -> Result<Vec<Vec<Event>>> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding).
+        if self.db.fenced() || self.marker_waiting() {
             self.sinks.empty.fetch_add(1, Ordering::SeqCst);
             return Ok(vec![]);
         }
@@ -556,6 +568,7 @@ impl Kernel {
                from waiting w where w.tenant_id is not null), \
              taken as (update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) \
+                 and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) \
                  and tenant_id <> all($5) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() and o.build_date <= $4 \
@@ -1110,7 +1123,16 @@ impl Kernel {
     /// open across a request: a slow endpoint holds no row, no connection and no turn at the pool,
     /// and the batch's requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
-        if self.db.fenced() || self.holding().await? {
+        match self.deliver_webhooks_now().await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => Ok(0),
+            sent => sent,
+        }
+    }
+
+    async fn deliver_webhooks_now(&self) -> Result<usize> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding).
+        if self.db.fenced() || self.marker_waiting() {
             return Ok(0);
         }
         #[derive(sqlx::FromRow)]
@@ -1127,7 +1149,8 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
             "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
-               and not ferrum_workspace_held(tenant_id) order by next_attempt_at limit 20 for update skip locked), \
+               and not ferrum_workspace_held(tenant_id) and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) \
+               order by next_attempt_at limit 20 for update skip locked), \
              leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
                where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
              select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url from leased l \
