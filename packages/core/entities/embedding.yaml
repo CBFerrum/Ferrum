@@ -1,0 +1,15 @@
+# Outside sites that may show a public page of the workspace in a frame (docs/builder/decisions.md BD-80). None by
+# default: a page with no Embedding is framed only by the workspace's own addresses. Administrators keep these; apps
+# write them from their own actions (a form's "Allow embedding"), for their own pages alone.
+- name: Embedding
+  label: Embedding
+  label_plural: Embeddings
+  kind: master
+  module: setup
+  title_field: page
+  description: "A public page, or every page under a path, that the sites named may show in a frame."
+  fields:
+    - {name: page, type: data, required: true, unique: true, in_list: true, max_length: 200, description: "The page's address after the workspace, or its start: forms/f/contact, bookings/book, sign/s"}
+    - {name: origins, type: text, required: true, max_length: 1000, in_list: true, description: "One per line, as https://www.example.com (at most ten; http only for localhost)"}
+    - {name: note, type: data, max_length: 200}
+  list: {columns: [page, origins], sort: page asc}

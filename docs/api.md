@@ -1095,9 +1095,13 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
   what anyone sends for them is ignored.
 * **Framing** ([BD-24](builder/decisions.md#bd-24-frame-headers-per-page)). `"frame_origins": ["https://town.example"]`
   (at most 10, `https://host[:port]`) lets those sites frame the list's pages; without it they send `frame-ancestors
-  'none'` and `X-Frame-Options: DENY`. An action link takes `frame_origins` alike, and an app's public page gets them
-  from `Kernel::set_public_frame(ctx, app, "forms/f/{form}", origins)` (an administrator or the app as the system), or a
-  site page from its answer's `x-ferrum-frame-ancestors` header; every other page stays unframeable.
+  'none'` and `X-Frame-Options: DENY`. An action link takes `frame_origins` alike. An app's public page (`shell.public`)
+  is framed by the workspace's own live addresses and by the origins of the core package's `Embedding` record whose
+  `page` is its address after the workspace (`forms/f/contact`) or the longest start of it at a `/`
+  ([BD-80](builder/decisions.md#bd-80-who-may-frame-a-public-page)); opened with `?embed=1` its bootstrap carries
+  `embed: {origins}` and it posts its height to those origins, which `/_shell/v1/embed.js` on the framing site reads to
+  size `<iframe data-ferrum-embed>` (and `ferrum:done` when the page calls `ferrum.embedDone()`). A site page is framed by
+  nobody (it may show the workspace's own pages in frames); every other page stays unframeable.
 * Later changes: a field that goes from the entity (its `add_field` switched off, a package upgrade), or may no longer be published, drops out of the list with a schema warning and the list stands (a customization that would do it, such as a `redefine_entity` without the field, is refused while the list names the field); a field added to the entity shows only once listed. A list whose filter or order names a field that went is taken down with a warning instead, as it would show more than was chosen. Switching the list's customization off takes it down.
 * Served, read as the workspace, for an active workspace only:
   * `GET /api/public/{workspace}/lists/{name}` → `{"label", "description", "fields": [{"name", "label", "type"}], "rows": [{…the listed fields…}], "more": bool}`: the first `limit` rows, and whether there are more. There is no next page: a cursor would carry the last record's id and time, which the list does not show.

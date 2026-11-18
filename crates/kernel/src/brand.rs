@@ -6,7 +6,8 @@
 //! accent is nudged until it reads at 4.5:1 on each of them in light and dark ([`tokens`]), so no combination can fail.
 //! Its stylesheet is written only from `#rrggbb` values and fixed font stacks: no record text reaches it. Its files
 //! (logo, favicon, typeface) are files uploaded for the brand, served to strangers only through the brand's own route
-//! ([`Kernel::brand_file`]) with the type their bytes show.
+//! ([`Kernel::brand_file`]) with the type their bytes show. Beside it, who may frame a public page ([`Kernel::embedders`],
+//! BD-80).
 
 use crate::{Error, Kernel, Result};
 use chrono::{DateTime, Utc};
@@ -352,6 +353,45 @@ impl Kernel {
         tx.commit().await?;
         self.hosts.remove(&host);
         Ok(())
+    }
+}
+
+impl Kernel {
+    /// The origins of the Embedding of `tenant` whose page is `path` or its longest start at a `/`
+    /// (docs/builder/decisions.md BD-80): the outside sites that may frame that public page. Compared as text, so no
+    /// character of a page is a wildcard. None when there is none, or the workspace's packages have no Embedding.
+    pub async fn embedders(&self, tenant: Uuid, path: &str) -> Result<Vec<String>> {
+        if self.registry.schema(tenant).await?.entity("Embedding").is_none() {
+            return Ok(vec![]);
+        }
+        let path = path.trim_matches('/');
+        let mut tx = self.db.tenant_tx(tenant).await?;
+        let origins: Option<String> = sqlx::query_scalar(
+            "select origins from e_embedding where tenant_id = $1 and ($2 = page or left($2, length(page) + 1) = page || '/') \
+             order by length(page) desc limit 1",
+        )
+        .bind(tenant)
+        .bind(path)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        // Each was checked when saved; checked again, so a row written otherwise names nothing that is not an origin.
+        Ok(origins.unwrap_or_default().lines().filter_map(ferrum_meta::published::frame_origin).take(10).collect())
+    }
+
+    /// The live addresses of `tenant` that serve pages (every target but `mail`): proven or under the base domain, not
+    /// released, not forwarding. Its own public pages may be framed by each.
+    pub async fn page_hosts(&self, tenant: Uuid) -> Result<Vec<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let hosts = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target <> 'mail' and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) and not forward order by host",
+        )
+        .bind(tenant)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(hosts)
     }
 }
 
