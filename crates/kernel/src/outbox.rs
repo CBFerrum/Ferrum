@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use hmac::{Hmac, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -342,14 +342,19 @@ impl Kernel {
     /// another replica picks the events up — delivery stays at least once, never stuck behind a lock.
     pub async fn dispatch_outbox_once(&self) -> Result<usize> {
         let (_running, stopping) = watch::channel(false);
-        self.dispatch_outbox(&stopping).await
+        let batch = self.claim_events(&[]).await?;
+        let claimed = batch.iter().map(Vec::len).sum();
+        for outcome in futures::future::join_all(batch.into_iter().map(|events| self.handle_events(events, &stopping))).await {
+            outcome?;
+        }
+        Ok(claimed)
     }
 
-    /// [`Kernel::dispatch_outbox_once`] for a dispatcher that may be told to stop: from then on it
-    /// begins nothing, and hands back at once what it had claimed and not begun.
-    async fn dispatch_outbox(&self, stopping: &watch::Receiver<bool>) -> Result<usize> {
+    /// Claims a batch, each workspace's share apart, leaving out the workspaces in `busy` (this replica is still at their
+    /// earlier events).
+    async fn claim_events(&self, busy: &[Uuid]) -> Result<Vec<Vec<Event>>> {
         if self.db.fenced() || self.holding().await? {
-            return Ok(0);
+            return Ok(vec![]);
         }
         let turn = self.turn().await?;
         let mut tx = self.db.system_tx().await?;
@@ -367,7 +372,8 @@ impl Kernel {
                        order by o.tenant_id limit 1) \
                from waiting w where w.tenant_id is not null), \
              taken as (update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
-               select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
+               select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) \
+                 and tenant_id <> all($5) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() and o.build_date <= $4 \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
@@ -379,19 +385,16 @@ impl Kernel {
         .bind(TENANT_SHARE)
         .bind(BATCH)
         .bind(crate::window::build_date())
+        .bind(busy)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
         drop(turn);
-        let claimed = events.len();
         let mut by_tenant: BTreeMap<Uuid, Vec<Event>> = BTreeMap::new();
         for ev in events {
             by_tenant.entry(ev.tenant_id).or_default().push(ev);
         }
-        for outcome in futures::future::join_all(by_tenant.into_values().map(|events| self.handle_events(events, stopping))).await {
-            outcome?;
-        }
-        Ok(claimed)
+        Ok(by_tenant.into_values().collect())
     }
 
     /// One workspace's share of a batch, one event at a time, in the order the claim gave it: most urgent first, then oldest.
@@ -808,30 +811,62 @@ impl Kernel {
         if failed.is_empty() { Ok(()) } else { Err(Error::Unavailable(failed.join("; "))) }
     }
 
-    /// Drains the outbox until shutdown, looking again every 250 ms when it is empty. Told to stop, it
-    /// finishes the events it has begun and hands back the rest of its batch.
+    /// Drains the outbox until shutdown. Each workspace's share of a claim is handled in a task of its own, and the next
+    /// claim does not wait for the slowest share: it leaves out the workspaces still in hand, so each one's events stay one
+    /// at a time and in order, and it is made while fewer shares are in hand than the replica has turns. A sink held at
+    /// a provider for its 120 seconds so holds its own workspace and one turn, not the replica. Idle, it looks again every
+    /// 250 ms. Told to stop, each share finishes the event it is at and hands back the rest.
     pub fn spawn_outbox_dispatcher(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        type Ended = std::result::Result<(tokio::task::Id, Result<()>), tokio::task::JoinError>;
+        fn ended(done: Ended, in_hand: &mut HashMap<tokio::task::Id, Uuid>) {
+            let id = match done {
+                Ok((id, Ok(()))) => id,
+                Ok((id, Err(e))) => {
+                    tracing::warn!("outbox dispatch error: {e}");
+                    id
+                }
+                Err(e) => {
+                    tracing::warn!("outbox dispatch error: {e}");
+                    e.id()
+                }
+            };
+            in_hand.remove(&id);
+        }
         let k = self.clone();
         tokio::spawn(async move {
-            loop {
-                // Batch after batch while there is work, and none once the replica is stopping.
-                while !*shutdown.borrow() {
-                    match k.dispatch_outbox(&shutdown).await {
-                        Ok(0) => break,
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("outbox dispatch error: {e}");
-                            break;
+            let room = crate::db::background_connections(k.db.config.max_connections) as usize;
+            let mut running = tokio::task::JoinSet::new();
+            let mut in_hand = HashMap::new();
+            while !*shutdown.borrow() {
+                while let Some(done) = running.try_join_next_with_id() {
+                    ended(done, &mut in_hand);
+                }
+                let mut claimed = 0;
+                if running.len() < room {
+                    let busy: Vec<Uuid> = in_hand.values().copied().collect();
+                    match k.claim_events(&busy).await {
+                        Ok(batch) => {
+                            for events in batch {
+                                claimed += events.len();
+                                let (k, stopping, tenant) = (k.clone(), shutdown.clone(), events[0].tenant_id);
+                                in_hand.insert(running.spawn(async move { k.handle_events(events, &stopping).await }).id(), tenant);
+                            }
                         }
+                        Err(e) => tracing::warn!("outbox dispatch error: {e}"),
                     }
                 }
-                if *shutdown.borrow() {
-                    return;
+                // Claim again at once while there is work and room; otherwise when a share is done, or after a pause.
+                if claimed > 0 && running.len() < room {
+                    continue;
                 }
                 tokio::select! {
-                    _ = shutdown.changed() => return,
-                    _ = tokio::time::sleep(OUTBOX_POLL) => {}
+                    changed = shutdown.changed() => if changed.is_err() { break },
+                    Some(done) = running.join_next_with_id(), if !running.is_empty() => ended(done, &mut in_hand),
+                    _ = tokio::time::sleep(OUTBOX_POLL), if claimed == 0 => {}
                 }
+            }
+            while let Some(done) = running.join_next_with_id().await {
+                ended(done, &mut in_hand);
             }
         })
     }

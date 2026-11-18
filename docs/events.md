@@ -60,13 +60,15 @@ workspace's events at once; and during an upgrade or after a rollback, an event 
 delivered after later events of the same workspace (an older server leaves it for a newer one, docs/operations.md).
 Anything that depends on order compares `source_version`.
 
-**Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
-side by side. So one workspace's backlog, or its slow provider, does not delay another's events. Side by
-side means as many events at once as a quarter of the replica's database pool (7 of the default 30), shared
-with the webhook sender's reads, so that a backlog never takes the connections requests need; slow providers
-holding all of those at once delay the rest by up to their handlers' 120 seconds. A replica's whole budget
-is its main pool, the side pool, the direct pool (the listening connection and session locks, which never take a request's
-connection), and the read pool when a read address is set (docs/operations.md, "Database role").
+**Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles each workspace's
+share on its own, side by side. The next batch does not wait for the slowest share: it is claimed while shares are
+still at work, leaving out their workspaces. So one workspace's backlog, or its slow provider, delays its own events
+and no one else's. Side by side means as many events at once as a quarter of the replica's database pool (7 of the
+default 30), shared with the webhook sender's reads, so that a backlog never takes the connections requests need;
+slow providers holding all of those at once (one app's portal that is down, called from seven workspaces) delay the
+rest by up to their handlers' 120 seconds. A replica's whole budget
+is its main pool, the side pool, the direct pool (the listening connection and session locks, which never take a request's connection),
+and the read pool when a read address is set (docs/operations.md, "Database role").
 Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
 bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
 campaign messages do not stand in front of someone's password reset. Run anything of the kind under
