@@ -210,10 +210,20 @@ async fn scenario() {
             d["id"].as_str().unwrap().parse::<Uuid>().unwrap()
         }
     };
+    // A webhook hears every change, the record with it.
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'everything', 'https://hooks.test/all', '{*}')")
+        .bind(tenant)
+        .bind(Uuid::now_v7())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let gone = enquiry("gone", "Closed", old.into()).await;
     let open = enquiry("open", "Open", old.into()).await;
     let recent = enquiry("recent", "Closed", today.clone()).await;
     let held = enquiry("held", "Closed", old.into()).await;
+    while k.dispatch_outbox_once().await.unwrap() > 0 {}
     k.place_legal_hold(&admin, None, Some(("Enquiry", held)), "Litigation").await.unwrap();
 
     let delete = k.save_retention_rule(&admin, None, rule("Enquiry", "delete", json!({"status": "Closed"}))).await.expect("a rule");
@@ -223,6 +233,26 @@ async fn scenario() {
     k.maintenance().await.unwrap();
     runs(k.clone()).await;
     assert!(k.get(&admin, "Enquiry", gone, false).await.is_err(), "past its time, and matching");
+    // What its earlier events carried of it went with it, from the outbox and from the webhook's deliveries, as an
+    // erasure's would; the deletion's own event still says what was deleted, for those who hear of it.
+    let mut tx = k.db.system_tx().await.unwrap();
+    let carried: Vec<(String, String)> = sqlx::query_as(
+        "select 'outbox', topic from outbox where record_id = $1 and topic <> 'Enquiry.deleted' and payload ?| array['doc', 'was'] \
+         union all select 'delivery', topic from webhook_delivery where payload->>'id' = $1::text and payload ?| array['doc', 'was']",
+    )
+    .bind(gone)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let deleted: i64 =
+        sqlx::query_scalar("select count(*) from outbox where record_id = $1 and topic = 'Enquiry.deleted' and payload ? 'doc' and not payload ? 'erased'")
+            .bind(gone)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert!(carried.is_empty(), "a record a rule deleted is still in its events: {carried:?}");
+    assert_eq!(deleted, 1, "its deletion is heard");
     assert!(k.get(&admin, "Enquiry", open, false).await.is_ok(), "does not match");
     assert!(k.get(&admin, "Enquiry", recent, false).await.is_ok(), "not yet");
     assert!(k.get(&admin, "Enquiry", held, false).await.is_ok(), "a legal hold stops it");

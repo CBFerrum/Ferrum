@@ -7,7 +7,8 @@
 //! from reading the records.
 //!
 //! **Retention rules** say how long records of an entity are kept: after so many days, records that
-//! match are deleted or anonymized. A rule runs daily as a job, as the system, a bounded number of
+//! match are deleted or anonymized, and either way what their events carried of them goes as an erasure takes it
+//! (the outbox's events and webhook deliveries, the receipts of operations). A rule runs daily as a job, as the system, a bounded number of
 //! records at a time. It never overrides what says otherwise: a legal hold stops it, what a package
 //! retains for a stated reason cannot have a rule that deletes it, and a record that cannot be
 //! deleted (a submitted document, one others link to) is counted, not forced. Immutable financial
@@ -196,7 +197,18 @@ impl Kernel {
                 continue;
             }
             let outcome = match rule.action.as_str() {
-                "delete" => self.delete(sys, &rule.entity, *id, None).await,
+                // What its events carried of it goes first, through what an erasure uses (crate::privacy); then the record,
+                // whose own deleted event still says what went, for those who hear of it.
+                "delete" => {
+                    crate::db::with_retry(|| async {
+                        let mut tx = self.db.system_tenant_tx(sys.tenant).await?;
+                        crate::privacy::forget_copies(&mut tx, sys.tenant, &rule.entity, *id).await?;
+                        self.delete_tx(sys, &mut tx, &rule.entity, *id, None).await?;
+                        tx.commit().await?;
+                        Ok(())
+                    })
+                    .await
+                }
                 _ => self.anonymize_record(sys, &rule.entity, *id, &rule.reason).await,
             };
             match outcome {
