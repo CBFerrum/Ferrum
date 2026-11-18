@@ -1252,7 +1252,6 @@ create table custom_record (
   primary key (tenant_id, id)
 );
 create index custom_record_entity on custom_record (tenant_id, entity, created_at desc);
-create index custom_record_ext on custom_record using gin (ext jsonb_path_ops);
 create index custom_record_lines on custom_record (tenant_id, parent_id, idx) where parent_id is not null;
 create unique index custom_record_number on custom_record (tenant_id, entity, number) where number is not null;
 
