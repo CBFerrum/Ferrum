@@ -198,6 +198,13 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
             why => reads.push_str(&format!("ferrum_db_reads_total{{to=\"primary\",why=\"{}\"}} {n}\n", why.label())),
         }
     }
+    let mut deferrals = String::from(
+        "# HELP ferrum_event_sink_deferrals_total Events an event sink was put off for at its share of this replica's dispatcher turns.\n# TYPE ferrum_event_sink_deferrals_total counter\n",
+    );
+    // Sink names are the code's (`{app}.{EventSink::name}`), never a workspace's data.
+    for (sink, n) in st.kernel.sink_deferrals() {
+        deferrals.push_str(&format!("ferrum_event_sink_deferrals_total{{sink=\"{sink}\"}} {n}\n"));
+    }
     let (socket_dropped, socket_closed_slow) = st.plugins.sockets.overflow_counts();
     let socket_queued = st.plugins.sockets.queued_bytes();
     let mut apps = String::new();
@@ -212,6 +219,7 @@ async fn metrics(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult
     apps.push_str(&crate::zone::audit_sink_metrics_text(&st.kernel).await);
     apps.push_str(&logic);
     apps.push_str(&reads);
+    apps.push_str(&deferrals);
     apps.push_str(&st.objects.health.metrics_text());
     let body = format!(
         "# HELP ferrum_up 1 when the process is serving.\n# TYPE ferrum_up gauge\nferrum_up 1\n{apps}\
