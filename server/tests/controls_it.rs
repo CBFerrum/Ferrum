@@ -67,6 +67,9 @@ async fn call(s: &Server, method: Method, host: &str, path: &str, cred: Cred<'_>
                 .header(header::ORIGIN, format!("http://{host}"))
         }
     }
+    if path == "/mcp" {
+        req = req.header("mcp-protocol-version", "2025-11-25");
+    }
     let req = match body {
         Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
         None => req.body(Body::empty()),

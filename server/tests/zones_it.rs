@@ -77,6 +77,9 @@ async fn call(s: &Server, method: Method, host: &str, path: &str, ip: &str, cred
         }
         Cred::Basic(u, p) => req = req.header(header::AUTHORIZATION, format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}")))),
     }
+    if path == "/mcp" {
+        req = req.header("mcp-protocol-version", "2025-11-25");
+    }
     let req = match body {
         Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
         None => req.body(Body::empty()),
@@ -352,7 +355,9 @@ async fn scenario() {
                 let tried: Vec<_> = if how == "by host" { routes() } else { routes().into_iter().take(3).collect() };
                 for (method, path, body) in tried {
                     let (status, answer) = call(&walled, method, host, path, ip, cred, body).await;
-                    if staff {
+                    if path == "/mcp" && name == "cookie" {
+                        assert_eq!(status, StatusCode::UNAUTHORIZED, "{how}: {kind}'s cookie is never taken at /mcp: {answer}");
+                    } else if staff {
                         assert!(refused_by_zone(status, &answer), "{how}: {kind}'s {name} on {path}: {status} {answer}");
                     } else {
                         assert_eq!(
