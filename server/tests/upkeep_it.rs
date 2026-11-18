@@ -74,19 +74,23 @@ async fn sql(k: &Kernel, statement: &str, ids: &[Uuid]) {
     tx.commit().await.unwrap();
 }
 
-/// Each row: (workspace, app) → (ran, failed, error, seconds from now to due, timeouts).
-type Rows = HashMap<(Uuid, String), (bool, bool, Option<String>, f64, i32)>;
+/// Each row: (workspace, app) → (ran, failed, error, seconds from now to due, timeouts, the wait its last record set).
+/// The wait is `due_at` less the time of the last run or failure, which one statement sets from one `now()`: exactly
+/// the configured wait, whatever the machine's load, until a claim moves `due_at` to its lease.
+type Rows = HashMap<(Uuid, String), (bool, bool, Option<String>, f64, i32, f64)>;
 
 async fn rows(k: &Kernel) -> Rows {
     let mut tx = k.db.system_tx().await.unwrap();
-    let all: Vec<(Uuid, String, bool, bool, Option<String>, f64, i32)> = sqlx::query_as(
-        "select tenant_id, app, ran_at is not null, failed_at is not null, error, extract(epoch from due_at - now())::float8, timeouts from upkeep",
+    type Row = (Uuid, String, bool, bool, Option<String>, f64, i32, f64);
+    let all: Vec<Row> = sqlx::query_as(
+        "select tenant_id, app, ran_at is not null, failed_at is not null, error, extract(epoch from due_at - now())::float8, timeouts, \
+         coalesce(extract(epoch from due_at - greatest(ran_at, failed_at))::float8, -1) from upkeep",
     )
     .fetch_all(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    all.into_iter().map(|(t, a, r, f, e, d, n)| ((t, a), (r, f, e, d, n))).collect()
+    all.into_iter().map(|(t, a, r, f, e, d, n, w)| ((t, a), (r, f, e, d, n, w))).collect()
 }
 
 /// What the stand-in apps did: (workspace, app, which runner, started, ended).
@@ -139,17 +143,45 @@ fn pace(slots: usize) -> Pace {
     }
 }
 
-/// Waits until `done` holds of the rows, at most `within`.
-async fn until(k: &Kernel, within: Duration, what: &str, done: impl Fn(&Rows) -> bool) -> Rows {
+/// Waits until `done` holds of the rows. The two minutes are a guard against a hang, never a verdict on speed: every
+/// wait here is for something a few seconds of work bring about on an idle machine.
+async fn until(k: &Kernel, what: &str, done: impl Fn(&Rows) -> bool) -> Rows {
     let start = Instant::now();
     loop {
         let r = rows(k).await;
         if done(&r) {
             return r;
         }
-        assert!(start.elapsed() < within, "{what}: not within {within:?}");
+        assert!(start.elapsed() < HANG, "{what}: not within {HANG:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// How long a test waits for what must happen before it calls it a hang.
+const HANG: Duration = Duration::from_secs(120);
+
+/// Waits until `done` holds of what the stand-in apps ran.
+async fn until_runs(runs: &Runs, what: &str, done: impl Fn(&[(Uuid, &'static str, usize, Instant, Instant)]) -> bool) {
+    let start = Instant::now();
+    while !done(&runs.lock().unwrap()) {
+        assert!(start.elapsed() < HANG, "{what}: not within {HANG:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The most runs in flight at once among `spans` (start, end).
+fn peak(spans: impl Iterator<Item = (Instant, Instant)>) -> usize {
+    let mut edges: Vec<(Instant, i32)> = spans.flat_map(|(a, b)| [(a, 1), (b, -1)]).collect();
+    // An end before a start at the same instant: a slot handed on is not two at once.
+    edges.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.cmp(&y.1)));
+    edges
+        .iter()
+        .scan(0, |n, e| {
+            *n += e.1;
+            Some(*n)
+        })
+        .max()
+        .unwrap_or(0) as usize
 }
 
 async fn stop(stop: watch::Sender<bool>, handles: Vec<tokio::task::JoinHandle<()>>) {
@@ -160,9 +192,13 @@ async fn stop(stop: watch::Sender<bool>, handles: Vec<tokio::task::JoinHandle<()
 }
 
 /// One round over 200 workspaces whose upkeep takes 50 ms, two at a time per replica: with one replica and with two.
-/// Every pair runs once a round, never twice, and the two replicas share the round. Before this runner, an app's round
-/// went through every workspace in turn on the one replica holding its lock: 200 × 50 ms = 10 s with any number of
-/// replicas (server/src/packages.rs at 3381620c, `round`).
+/// Every pair runs once a round, never twice (the wait after a run is an hour, so a second run inside the round would
+/// be one inside its lease), no replica runs more than its two at once, and two replicas run four at once and each a
+/// real share. A replica takes rows only for its free slots and refills a slot the moment its run ends, from the one
+/// queue (`for update skip locked`): with equal slots and equal work each takes about half, and for one to take fewer
+/// than a quarter it would have to be absent for half the round; a quarter leaves that room. The durations are printed,
+/// not asserted (on an idle machine about 5 s and 2.7 s; before this runner, an app's round went through every
+/// workspace in turn on the one replica holding its lock: 200 × 50 ms = 10 s with any number of replicas).
 #[test]
 fn two_runners_share_the_work() {
     scenario(async {
@@ -191,27 +227,32 @@ fn two_runners_share_the_work() {
                 if rows(&one).await.values().filter(|r| r.0).count() == 200 {
                     break;
                 }
-                assert!(started.elapsed() < Duration::from_secs(60), "a round of 200 did not end in a minute");
+                assert!(started.elapsed() < HANG, "a round of 200 did not end within {HANG:?}");
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             let took = started.elapsed().as_secs_f64();
             stop(tx, handles).await;
-            eprintln!("upkeep: one round over 200 workspaces, 50 ms each, 2 slots a replica, {replicas} replicas: {took:.2} s (longest due {oldest:.1} s)");
-            seconds.push(took);
-            assert!(oldest < 60.0, "the longest-waiting row was due {oldest} s");
             let seen = runs.lock().unwrap().clone();
+            let shares: Vec<usize> = (0..replicas).map(|i| seen.iter().filter(|r| r.2 == i).count()).collect();
+            let each: Vec<usize> = (0..replicas).map(|i| peak(seen.iter().filter(|r| r.2 == i).map(|r| (r.3, r.4)))).collect();
+            let together = peak(seen.iter().map(|r| (r.3, r.4)));
+            eprintln!(
+                "upkeep: one round over 200 workspaces, 50 ms each, 2 slots a replica, {replicas} replicas: {took:.2} s (longest due {oldest:.1} s; runs per replica {shares:?}; at once per replica {each:?}, together {together})"
+            );
+            seconds.push(took);
             let mut per_pair: HashMap<Uuid, usize> = HashMap::new();
             for r in &seen {
                 *per_pair.entry(r.0).or_default() += 1;
             }
             assert_eq!(per_pair.len(), 200, "every workspace ran");
             assert!(per_pair.values().all(|n| *n == 1), "a pair ran twice in one round (one lease)");
-            let by: HashSet<usize> = seen.iter().map(|r| r.2).collect();
-            assert_eq!(by.len(), replicas, "each replica took a share");
+            assert!(each.iter().all(|n| *n <= 2), "a replica ran more than its two slots at once: {each:?}");
+            assert!(shares.iter().all(|n| *n >= 200 / replicas / 2), "a replica took less than a quarter of the round: {shares:?}");
+            if replicas == 2 {
+                assert!(together > 2, "two replicas never ran more than one replica's slots at once: {together}");
+            }
         }
-        // Two slots at 50 ms: about 5 s for one replica, half that for two.
-        assert!(seconds[0] < 9.0, "one replica: {} s", seconds[0]);
-        assert!(seconds[1] < seconds[0] * 0.75, "two replicas did not share the round: {seconds:?}");
+        eprintln!("upkeep: one replica {:.2} s, two {:.2} s", seconds[0], seconds[1]);
     });
 }
 
@@ -243,19 +284,19 @@ fn one_failing_workspace_stops_no_other() {
         );
         let (tx, rx) = watch::channel(false);
         let h = packages::spawn_with(k.clone(), vec![a], Pace { every: Duration::from_secs(60), ..pace(2) }, rx);
-        let r = until(&k, Duration::from_secs(20), "every row recorded", |r| r.len() == 6 && r.values().all(|v| v.0 || v.1)).await;
+        let r = until(&k, "every row recorded", |r| r.len() == 6 && r.values().all(|v| v.0 || v.1)).await;
         stop(tx, vec![h]).await;
         let row = |t: Uuid| r[&(t, "fake".to_string())].clone();
         assert!(row(broken).2.as_deref().is_some_and(|e| e.contains("the mailbox refused the password")), "{:?}", row(broken));
         assert!(row(panicking).2.as_deref().is_some_and(|e| e.contains("panicked")), "{:?}", row(panicking));
         for t in [broken, panicking] {
-            let (ran, failed, _, due, timeouts) = row(t);
+            let (ran, failed, _, _, timeouts, wait) = row(t);
             assert!(!ran && failed && timeouts == 0, "{:?}", row(t));
-            assert!((55.0..=61.0).contains(&due), "a failure is due again after the usual wait: {due}");
+            assert_eq!(wait, 60.0, "a failure is due again after the usual wait, not backed off");
         }
         for t in &ws[2..] {
-            let (ran, failed, error, due, _) = row(*t);
-            assert!(ran && !failed && error.is_none() && (55.0..=61.0).contains(&due), "{:?}", row(*t));
+            let (ran, failed, error, _, _, wait) = row(*t);
+            assert!(ran && !failed && error.is_none() && wait == 60.0, "{:?}", row(*t));
         }
         // The operator sees counts and the longest wait (no workspace); the doctor says what to do.
         let (_, failing, late) = packages::gauges(&k).await.unwrap();
@@ -297,7 +338,7 @@ fn uninstalled_app_is_not_called() {
         assert!(!has(&rows(&k).await, both[0]), "none is left: the row goes");
         let (tx, rx) = watch::channel(false);
         let h = packages::spawn_with(k.clone(), apps(), pace(2), rx);
-        until(&k, Duration::from_secs(10), "the other workspace ran", |r| r.values().all(|v| v.0)).await;
+        until(&k, "the other workspace ran", |r| r.values().all(|v| v.0)).await;
         stop(tx, vec![h]).await;
         let called: HashSet<Uuid> = runs.lock().unwrap().iter().map(|r| r.0).collect();
         assert_eq!(called, HashSet::from([second[0]]), "the app is not called where none of its packages is");
@@ -312,72 +353,88 @@ fn shutdown_hands_back() {
         let k = replica(true).await;
         let ws = workspaces(&k, 2, &["fake_a"]).await;
         let runs: Runs = Default::default();
-        let slow = || app("fake", &["fake_a"], 0, &runs, |_| Duration::from_secs(20), ok);
+        // Runs that would take five minutes: a stop that waited for them would take that long.
+        let slow = || app("fake", &["fake_a"], 0, &runs, |_| Duration::from_secs(300), ok);
         let (tx, rx) = watch::channel(false);
         let h = packages::spawn_with(k.clone(), vec![slow()], pace(2), rx);
-        until(&k, Duration::from_secs(10), "both claimed", |r| r.len() == 2 && r.values().all(|v| v.3 > 200.0)).await;
+        until(&k, "both claimed", |r| r.len() == 2 && r.values().all(|v| v.3 > 200.0)).await;
         let asked = Instant::now();
         stop(tx, vec![h]).await;
-        assert!(asked.elapsed() < Duration::from_secs(3), "stopped within its grace and a statement: {:?}", asked.elapsed());
+        let stopping = asked.elapsed();
+        eprintln!("upkeep: a replica stopped in {stopping:?} with two runs of five minutes in flight (grace 200 ms)");
+        assert!(stopping < Duration::from_secs(150), "it waited for its runs: {stopping:?}");
         let r = rows(&k).await;
-        assert!(r.values().all(|v| !v.0 && !v.1 && v.3 <= 0.5), "given back, due at once, nothing recorded: {r:?}");
+        assert!(r.values().all(|v| !v.0 && !v.1 && v.3 <= 0.0), "given back, due at once, nothing recorded: {r:?}");
         assert!(runs.lock().unwrap().is_empty(), "the runs were stopped");
 
         // Killed: the claims stay until their lease ends (here 1 s), then another replica runs them.
         let quick = |runner| app("fake", &["fake_a"], runner, &runs, |_| Duration::from_millis(10), ok);
         let (tx, rx) = watch::channel(false);
         let killed = packages::spawn_with(k.clone(), vec![slow()], Pace { lease: Duration::from_secs(1), ..pace(2) }, rx.clone());
-        until(&k, Duration::from_secs(10), "both claimed", |r| r.values().all(|v| v.3 > 0.0)).await;
+        // Read before the query is sent: the leases end no earlier than this instant plus what the query says is left.
+        let (read, r) = loop {
+            let read = Instant::now();
+            let r = rows(&k).await;
+            if r.values().all(|v| v.3 > 0.0) {
+                break (read, r);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let leases_end = read + Duration::from_secs_f64(r.values().map(|v| v.3).fold(f64::INFINITY, f64::min));
         killed.abort();
         let _ = killed.await;
-        let killed_at = Instant::now();
         let other = packages::spawn_with(k.clone(), vec![quick(1)], pace(2), rx);
-        until(&k, Duration::from_secs(10), "run elsewhere", |r| r.values().all(|v| v.0)).await;
-        let waited = killed_at.elapsed();
+        until(&k, "run elsewhere", |r| r.values().all(|v| v.0)).await;
         stop(tx, vec![other]).await;
-        assert!(waited >= Duration::from_millis(500), "not before the lease ended: {waited:?}");
         let seen = runs.lock().unwrap().clone();
+        assert!(seen.iter().filter(|r| r.2 == 1).all(|r| r.3 >= leases_end), "run elsewhere before the lease ended");
         assert_eq!(seen.iter().filter(|r| r.2 == 1).map(|r| r.0).collect::<HashSet<_>>(), ws.iter().copied().collect());
     });
 }
 
-/// A slow app in a few workspaces cannot keep the slots from the others. By `due_at` alone it could not starve them (a row
-/// that has just run is due again behind every row already due), but it lengthened everyone's turn to the sum of all
-/// the work: with these figures a fast workspace waited up to 3.5 s between runs and ran twice in 8 s. An app holding half
-/// a replica's slots now has its rows taken after every other app's.
+/// A slow app in many workspaces cannot keep the slots from the others. By `due_at` alone it could not starve them (a
+/// row that has just run is due again behind every row already due), but a fast workspace's turn came round only once
+/// per cycle of every pair. An app holding half a replica's slots now has its rows taken after every other app's, so a
+/// fast workspace waits at most for one slow run (0.5 s) and the period (0.1 s), while each of ten slow workspaces,
+/// sharing two slots, comes round about every 2.5 s. Counted, not timed: until each slow workspace has run three
+/// times, every fast workspace has run at least twice as often as the busiest slow one. With the half-of-slots order
+/// about 4.5 times as often; by `due_at` alone under once (taken out, this fails: 2 or 3 runs against 3). Counts, the
+/// ratio and the gaps are printed.
 #[test]
 fn slow_upkeep_starves_no_other() {
     scenario(async {
         let k = replica(true).await;
-        let slow_ws = workspaces(&k, 3, &["fake_slow"]).await;
-        let fast_ws = workspaces(&k, 20, &["fake_fast"]).await;
+        let slow_ws = workspaces(&k, 10, &["fake_slow"]).await;
+        let fast_ws = workspaces(&k, 5, &["fake_fast"]).await;
         let runs: Runs = Default::default();
         let apps = vec![
-            app("slow", &["fake_slow"], 0, &runs, |_| Duration::from_millis(1500), ok),
+            app("slow", &["fake_slow"], 0, &runs, |_| Duration::from_millis(500), ok),
             app("fast", &["fake_fast"], 0, &runs, |_| Duration::from_millis(10), ok),
         ];
         let (tx, rx) = watch::channel(false);
-        let h = packages::spawn_with(k.clone(), apps, Pace { every: Duration::from_millis(500), ..pace(2) }, rx);
-        tokio::time::sleep(Duration::from_secs(8)).await;
+        let h = packages::spawn_with(k.clone(), apps, Pace { every: Duration::from_millis(100), ..pace(2) }, rx);
+        let count = |seen: &[(Uuid, &'static str, usize, Instant, Instant)], t: Uuid| seen.iter().filter(|r| r.0 == t).count();
+        until_runs(&runs, "each slow workspace ran three times", |seen| slow_ws.iter().all(|t| count(seen, *t) >= 3)).await;
         stop(tx, vec![h]).await;
         let seen = runs.lock().unwrap().clone();
+        let fast: Vec<usize> = fast_ws.iter().map(|t| count(&seen, *t)).collect();
+        let slow: Vec<usize> = slow_ws.iter().map(|t| count(&seen, *t)).collect();
         let mut starts: BTreeMap<Uuid, Vec<Instant>> = BTreeMap::new();
         for r in seen.iter().filter(|r| r.1 == "fast") {
             starts.entry(r.0).or_default().push(r.3);
         }
-        assert_eq!(starts.len(), 20, "every fast workspace ran");
-        let fewest = starts.values().map(Vec::len).min().unwrap();
-        let widest = starts.values().flat_map(|s| s.windows(2).map(|w| w[1] - w[0])).max().unwrap();
-        let slow_runs = seen.iter().filter(|r| r.1 == "slow").count();
-        eprintln!("upkeep fairness: fast workspaces ran at least {fewest} times in 8 s, at most {widest:?} apart; the slow app ran {slow_runs} times");
-        assert!(fewest >= 4, "a fast workspace ran {fewest} times in 8 s");
-        assert!(widest < Duration::from_millis(2500), "a fast workspace waited {widest:?} between runs");
-        assert!(slow_runs >= slow_ws.len() && fast_ws.len() == starts.len(), "the slow app ran too");
+        let widest = starts.values().flat_map(|s| s.windows(2).map(|w| w[1] - w[0])).max().unwrap_or_default();
+        eprintln!("upkeep fairness: runs per fast workspace {fast:?}, per slow workspace {slow:?}; a fast workspace's runs at most {widest:?} apart");
+        let busiest = *slow.iter().max().unwrap();
+        let ratio = *fast.iter().min().unwrap() as f64 / busiest as f64;
+        eprintln!("upkeep fairness: the least-run fast workspace ran {ratio:.1} times as often as the busiest slow one");
+        assert!(fast.iter().all(|n| *n >= 2 * busiest), "a fast workspace ran less than twice as often as the busiest slow one: {fast:?} against {slow:?}");
     });
 }
 
 /// A workspace whose upkeep keeps hitting the time limit takes its slot less and less: each time in a row doubles the
-/// wait, up to the most; a run that ends sets it back.
+/// wait, up to the most; a run that ends sets it back. The waits are read as the record set them (`due_at` less the
+/// failure's time, from one `now()`), so they are exact whatever the load: 1 s, 2 s, then 2 s (the most).
 #[test]
 fn timeouts_back_off() {
     scenario(async {
@@ -392,45 +449,92 @@ fn timeouts_back_off() {
         let (tx, rx) = watch::channel(false);
         let h = packages::spawn_with(k.clone(), vec![a], p, rx);
         let key = (ws[0], "fake".to_string());
-        let mut waits = Vec::new();
-        for n in 1..=3 {
-            let r = until(&k, Duration::from_secs(10), "a time limit hit", |r| r.get(&key).is_some_and(|v| v.4 == n)).await;
-            let (ran, failed, error, due, _) = r[&key].clone();
-            assert!(!ran && failed && error.is_some_and(|e| e.contains("took longer than")));
-            waits.push(due);
+        // Each time limit in a row as recorded, before a claim moves `due_at` to its lease (300 s): (timeouts, wait).
+        let mut waits: BTreeMap<i32, f64> = BTreeMap::new();
+        let start = Instant::now();
+        while waits.keys().max().is_none_or(|n| *n < 3) {
+            assert!(start.elapsed() < HANG, "three time limits in a row: not within {HANG:?}");
+            if let Some((ran, failed, error, _, n, wait)) = rows(&k).await.remove(&key)
+                && n > 0
+                && wait < 100.0
+            {
+                assert!(!ran && failed && error.is_some_and(|e| e.contains("took longer than")));
+                waits.insert(n, wait);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        eprintln!("upkeep: waits after 1, 2 and 3 time limits in a row: {waits:?}");
-        assert!((0.8..=1.05).contains(&waits[0]) && (1.8..=2.05).contains(&waits[1]) && (1.8..=2.05).contains(&waits[2]), "doubled up to the most: {waits:?}");
+        eprintln!("upkeep: waits after time limits in a row (as recorded): {waits:?}");
+        for (n, wait) in &waits {
+            let doubled = (0.5 * 2f64.powi(*n)).min(2.0);
+            assert_eq!(*wait, doubled, "after {n} time limits in a row the wait is 0.5 s doubled {n} times, at most 2 s: {waits:?}");
+        }
         hang.store(false, std::sync::atomic::Ordering::SeqCst);
-        let r = until(&k, Duration::from_secs(10), "a run that ends", |r| r.get(&key).is_some_and(|v| v.0)).await;
+        let r = until(&k, "a run that ends", |r| r.get(&key).is_some_and(|v| v.0 && v.5 < 100.0)).await;
         stop(tx, vec![h]).await;
-        let (_, _, error, due, timeouts) = r[&key].clone();
-        assert!(error.is_none() && timeouts == 0 && due <= 0.55, "set back: {:?}", r[&key]);
+        let (_, _, error, _, timeouts, wait) = r[&key].clone();
+        assert!(error.is_none() && timeouts == 0 && wait == 0.5, "set back: {:?}", r[&key]);
     });
 }
 
 /// A replica that ends a run after its lease ended, once another has run the pair again, changes nothing: the row
-/// keeps the newer run's outcome.
+/// keeps the newer run's outcome. Ordered by events, not by sleeps: the first replica's run starts, its lease (1 s)
+/// ends, the second replica runs the pair, and only then does the first run end, failing.
 #[test]
 fn late_finisher_changes_nothing() {
     scenario(async {
         let k = replica(true).await;
         let ws = workspaces(&k, 1, &["fake_a"]).await;
         let runs: Runs = Default::default();
-        let late = app("fake", &["fake_a"], 0, &runs, |_| Duration::from_millis(2500), |_| Err("the late one".into()));
+        let (started, ended) = (Arc::new(std::sync::atomic::AtomicBool::new(false)), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let newer = Arc::new(tokio::sync::Notify::new());
+        let (s1, e1, n1) = (started.clone(), ended.clone(), newer.clone());
+        let late = UpkeepApp {
+            id: "fake",
+            packages: vec!["fake_a".into()],
+            run: packages::run(move |_k, _t| {
+                let (s1, e1, n1) = (s1.clone(), e1.clone(), n1.clone());
+                Box::pin(async move {
+                    s1.store(true, std::sync::atomic::Ordering::SeqCst);
+                    n1.notified().await;
+                    e1.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Err(ferrum_kernel::Error::Internal("the late one".into()))
+                })
+            }),
+        };
         let (tx, rx) = watch::channel(false);
         let a = packages::spawn_with(k.clone(), vec![late], Pace { lease: Duration::from_secs(1), ..pace(1) }, rx.clone());
-        until(&k, Duration::from_secs(10), "claimed", |r| r.len() == 1 && r.values().all(|v| v.3 > 0.0)).await;
-        let b = packages::spawn_with(k.clone(), vec![app("fake", &["fake_a"], 1, &runs, |_| Duration::ZERO, ok)], pace(1), rx);
-        until(&k, Duration::from_secs(10), "run again once the lease ended", |r| r.values().all(|v| v.0)).await;
-        // The first replica's run ends now, 2.5 s after it started.
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-        let seen = runs.lock().unwrap().clone();
-        assert_eq!(seen.len(), 2, "both ran: {seen:?}");
+        let wait = |flag: Arc<std::sync::atomic::AtomicBool>, what: &'static str| async move {
+            let start = Instant::now();
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(start.elapsed() < HANG, "{what}: not within {HANG:?}");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        wait(started, "the first run started").await;
+        let n2 = newer.clone();
+        let b = packages::spawn_with(
+            k.clone(),
+            vec![app(
+                "fake",
+                &["fake_a"],
+                1,
+                &runs,
+                |_| Duration::ZERO,
+                move |_| {
+                    n2.notify_one();
+                    Ok(())
+                },
+            )],
+            pace(1),
+            rx,
+        );
+        wait(ended, "the first run ended after the second").await;
+        // Stopping waits for the first replica's record of its run (in its grace).
         stop(tx, vec![a, b]).await;
+        assert_eq!(runs.lock().unwrap().len(), 1, "the second replica ran the pair once");
         let r = rows(&k).await;
-        let (ran, failed, error, due, _) = r[&(ws[0], "fake".to_string())].clone();
-        assert!(ran && !failed && error.is_none() && due > 3000.0, "the late run's failure did not overwrite the newer success: {r:?}");
+        let (ran, failed, error, _, _, wait) = r[&(ws[0], "fake".to_string())].clone();
+        assert!(ran && !failed && error.is_none() && wait == 3600.0, "the late run's failure did not overwrite the newer success: {r:?}");
     });
 }
 
@@ -444,26 +548,35 @@ fn suspended_or_moving_is_skipped_and_comes_back() {
         let runs: Runs = Default::default();
         let a = app("fake", &["fake_a"], 0, &runs, |_| Duration::ZERO, ok);
         let (tx, rx) = watch::channel(false);
-        let p = Pace { sync: Duration::from_millis(200), every: Duration::from_millis(200), ..pace(2) };
+        // A lease of 2 s: a run in flight as the move begins records nothing (the workspace is held), and its row is
+        // claimed again once the lease ends.
+        let p = Pace {
+            sync: Duration::from_millis(200),
+            every: Duration::from_millis(200),
+            lease: Duration::from_secs(2),
+            limit: Duration::from_secs(1),
+            ..pace(2)
+        };
         let h = packages::spawn_with(k.clone(), vec![a], p, rx);
-        let ran = |runs: &Runs, t: Uuid| runs.lock().unwrap().iter().any(|r| r.0 == t);
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(ws.iter().all(|t| ran(&runs, *t)));
+        let ran = |seen: &[(Uuid, &'static str, usize, Instant, Instant)], t: Uuid| seen.iter().filter(|r| r.0 == t).count();
+        until_runs(&runs, "all three ran", |seen| ws.iter().all(|t| ran(seen, *t) > 0)).await;
         sql(&k, "update tenant set status = 'suspended' where id = any($1)", &[suspended]).await;
         sql(&k, "insert into workspace_move (workspace, move_id, side, state, peer) select id, gen_random_uuid(), 'source', 'leaving', 'elsewhere' from unnest($1::uuid[]) id", &[moving]).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        runs.lock().unwrap().clear();
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        assert!(!ran(&runs, suspended) && !ran(&runs, moving) && ran(&runs, other), "skipped while suspended or moving");
+        // A sync has seen it once the suspended workspace's row is gone. Every run that starts after that was claimed
+        // after it: none may be the suspended workspace's (no row) or the moving one's (held at the claim).
+        until(&k, "the suspended workspace's row goes", |r| !r.contains_key(&(suspended, "fake".into()))).await;
+        let since = Instant::now();
+        let after = |seen: &[(Uuid, &'static str, usize, Instant, Instant)], t: Uuid| seen.iter().filter(|r| r.0 == t && r.3 > since).count();
+        // Three runs of the other workspace: three turns in which the two were passed over.
+        until_runs(&runs, "the other workspace ran three times", |seen| after(seen, other) >= 3).await;
+        let seen = runs.lock().unwrap().clone();
+        assert!(after(&seen, suspended) == 0 && after(&seen, moving) == 0, "skipped while suspended or moving");
         let r = rows(&k).await;
-        assert!(
-            !r.contains_key(&(suspended, "fake".into())) && r.contains_key(&(moving, "fake".into())),
-            "a suspended workspace's row goes, a moving one's stays"
-        );
+        assert!(r.contains_key(&(moving, "fake".into())), "a moving workspace's row stays");
         sql(&k, "update tenant set status = 'active' where id = any($1)", &[suspended]).await;
         sql(&k, "delete from workspace_move where workspace = any($1)", &[moving]).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        let back = Instant::now();
+        until_runs(&runs, "both back", |seen| [suspended, moving].iter().all(|t| seen.iter().any(|r| r.0 == *t && r.3 > back))).await;
         stop(tx, vec![h]).await;
-        assert!(ran(&runs, suspended) && ran(&runs, moving), "both back");
     });
 }
