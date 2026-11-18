@@ -93,7 +93,7 @@ async fn messages(State(m): State<Model>, headers: HeaderMap, body: Bytes) -> Re
             &[
                 json!({"type": "thinking", "text": "Propose the customer."}),
                 json!({"type": "text", "text": "I'll create it."}),
-                json!({"type": "tool_use", "id": id, "name": "create_record", "input": {"entity": "Customer", "data": {"customer_name": format!("Made by the assistant {n}")}}}),
+                json!({"type": "tool_use", "id": id, "name": "create_record", "input": {"entity": "Customer", "data": {"customer_name": format!("Made by the assistant {n}")}, "idempotency_key": format!("assistant-made-{n}")}}),
             ],
             "tool_use",
         ),

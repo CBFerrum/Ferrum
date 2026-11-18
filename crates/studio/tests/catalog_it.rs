@@ -78,12 +78,16 @@ async fn scenario() {
     let builder: Vec<Value> = listed["capabilities"].as_array().unwrap().clone();
     let from_kernel: Vec<Value> = kernel.iter().map(|c| serde_json::to_value(c).unwrap()).collect();
     assert_eq!(builder, from_kernel, "the builder sees what the kernel offers");
-    let agent = tool(&k, &admin, "list_capabilities", json!({"q": "sales_order", "limit": 200})).await;
+    // The agent's list is a page of summaries; describe_capability gives each one whole.
+    let agent = tool(&k, &admin, "list_capabilities", json!({"q": "sales_order", "limit": 100})).await;
     let agent: Vec<Value> = agent["capabilities"].as_array().unwrap().clone();
     assert!(!agent.is_empty());
     for c in &agent {
         let same = from_kernel.iter().find(|k| k["id"] == c["id"]).expect("the agent lists nothing the kernel does not");
-        assert_eq!(c, same, "{}", c["id"]);
+        for field in ["label", "entity", "effect", "description", "permissions"] {
+            assert_eq!(c[field], same[field], "{} {field}", c["id"]);
+        }
+        assert_eq!(&tool(&k, &admin, "describe_capability", json!({"id": c["id"]})).await, same, "{}", c["id"]);
     }
     let one = site(&k, &admin, "GET", "/catalog/selling.sales_order.submit", &[], &[], Value::Null).await;
     assert_eq!(one["effect"], json!("transactional_action"));
@@ -95,7 +99,8 @@ async fn scenario() {
     let first =
         site(&k, &admin, "POST", "/catalog/parties.customer.create/invoke", &[], &[("idempotency-key", "onboard-pia")], json!({"input": customer})).await;
     assert_eq!(first["repeated"], json!(false), "{first}");
-    let again = tool(&k, &admin, "invoke_capability", json!({"capability": "parties.customer.create", "input": customer, "effect_key": "onboard-pia"})).await;
+    let again =
+        tool(&k, &admin, "invoke_capability", json!({"capability": "parties.customer.create", "input": customer, "idempotency_key": "onboard-pia"})).await;
     assert_eq!(again["repeated"], json!(true), "{again}");
     assert_eq!(again["result"]["id"], first["result"]["id"]);
 }
