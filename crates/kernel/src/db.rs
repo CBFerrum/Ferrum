@@ -293,8 +293,19 @@ impl Db {
         // A direct connection starts with its session settings; one through a pooler must not send them (PgBouncer
         // refuses startup parameters it does not track) and gets them from each transaction instead (`carrying`).
         let idle = format!("{}s", IDLE_IN_TRANSACTION.as_secs());
-        let session =
-            |o: PgConnectOptions| o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", idle.as_str())]);
+        // The TCP keepalives are per-session server settings: a replica that vanishes leaves its session locks and LISTEN
+        // backends until PostgreSQL notices the dead peer, 30 + 3 x 10 s here (the OS default is two hours). A server that
+        // refuses them fails the start, and its own error names the setting.
+        let session = |o: PgConnectOptions| {
+            o.options([
+                ("timezone", "UTC"),
+                ("lock_timeout", LOCK_TIMEOUT),
+                ("idle_in_transaction_session_timeout", idle.as_str()),
+                ("tcp_keepalives_idle", "30"),
+                ("tcp_keepalives_interval", "10"),
+                ("tcp_keepalives_count", "3"),
+            ])
+        };
         // Tests' own direct addresses, read by a debug build only (a release build reads no test's variable).
         let test = |name: &str| if cfg!(debug_assertions) { std::env::var(name).ok() } else { None };
         let direct_url = config

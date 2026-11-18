@@ -868,7 +868,8 @@ signature; that IRSA's token is accepted by AWS's STS, and that a role's policy 
 
 **Readiness.** A replica is not ready (`/api/ready` answers 503, saying why: the store's own refusal, such as a bucket
 that does not exist) until its store has taken a write and a read since it started; the log says so once, and it asks
-again every five seconds, so a store that comes up late makes it ready with no restart. A rollout with a wrong bucket or
+again every five seconds, so a store that comes up late makes it ready with no restart. Once the replica has been told to stop it answers 503 too ("this replica is stopping"), so a load balancer that has no
+`preStop` pause stops sending it requests at once. A rollout with a wrong bucket or
 wrong keys therefore never becomes ready, and the replicas before it keep serving. After that first answer a failing
 store does not take a replica out of service, which would take every replica out at once for a fault of the store: the
 doctor's `storage` line says so, and so do `ferrum_object_storage_up` (0 when this replica's last probe, every thirty
