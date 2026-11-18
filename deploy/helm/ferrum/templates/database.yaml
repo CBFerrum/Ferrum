@@ -74,6 +74,9 @@ spec:
     data:
       compression: gzip
 {{- with $d.pooler }}{{ if .enabled }}
+{{- if lt (int .maxPreparedStatements) 1 }}
+{{- fail "database.pooler.maxPreparedStatements must be at least 1: the server uses prepared statements, and every query fails through PgBouncer without them" }}
+{{- end }}
 ---
 # PgBouncer in front of the primary (values.yaml, database.pooler). Fields checked against CloudNativePG 1.30
 # (docs/src/connection_pooling.md, the Pooler API) and PgBouncer's configuration reference

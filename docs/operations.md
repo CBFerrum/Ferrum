@@ -2067,7 +2067,7 @@ to 8 when you turn the Job on.)
 **Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
 `database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
 with protocol-level prepared statements (`max_prepared_statements`, PgBouncer 1.21 or later; the operator
-supplies the image). The server's pods then get `DATABASE_URL` pointing at the pooler and
+supplies the image; the chart refuses `maxPreparedStatements` below 1, which would fail every query). The server's pods then get `DATABASE_URL` pointing at the pooler and
 `FERRUM_DATABASE_DIRECT_URL` at the primary (`ferrum-db-rw`), which the server uses for LISTEN, session locks
 and migrations; the migrate Job always connects directly. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
 PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
