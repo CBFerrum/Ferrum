@@ -1397,7 +1397,7 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
 | `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
-**Only its apps** ([BD-81](builder/decisions.md#bd-81-connections-only-apps-call-an-answer-to-class-a-hold)):
+**Only its apps** ([BD-82](builder/decisions.md#bd-82-connections-only-apps-call-an-answer-to-class-a-hold)):
 `exclusive: true` admits only the listed `apps`: never the system, an administrator or a role, and an administrator's
 *try* runs only operations that change nothing. `ferrum_kernel::connections::call_answer(&k, &ctx, app, &call)` answers
 `CallAnswer {sent, status, result, later, wait, error}` (whether a request left the server, the service's status, the
@@ -1439,7 +1439,7 @@ the body; without either, the digest of what was signed stands for it. `handler:
 with `HookRegistry::add_inbound_handler`) takes the payload in place of `map`. Bodies up to `max_bytes` (256 KB, at most
 1 MB), JSON or a form.
 
-For payment providers ([BD-80](builder/decisions.md#bd-80-inbound-verification-for-payment-providers)): a signature may
+For payment providers ([BD-81](builder/decisions.md#bd-81-inbound-verification-for-payment-providers)): a signature may
 say `algorithm: sha512` (HMAC-SHA512; `sha256` is the default) and `parts: {timestamp: "t", signature: "v1"}` (one header
 of `key=value` pairs, `t=…,v1=…,v1=…`: the timestamp from `t`, checked against the window, the message `{t}.{body}`,
 any `v1` that verifies passes; no `timestamp_header` beside it). `{type: query, param, secret, repeats_after_secs?}`

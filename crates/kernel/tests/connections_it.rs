@@ -383,7 +383,7 @@ fn sign512(secret: &str, message: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// What payment providers need of connections (S1-P0a, BD-80, BD-81): one-header signatures, SHA-512, a secret in the
+/// What payment providers need of connections (S1-P0a, BD-81, BD-82): one-header signatures, SHA-512, a secret in the
 /// address, a notice heard again after a while, apps alone calling an exclusive connection, an answer a money caller can
 /// class, and a connection an app holds.
 async fn payment_providers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {

@@ -1,4 +1,4 @@
--- An app that holds a connection (docs/builder/decisions.md BD-81; crate::connections::hold): deleting the connection is
+-- An app that holds a connection (docs/builder/decisions.md BD-82; crate::connections::hold): deleting the connection is
 -- refused, naming the app and why, while any hold is there. Turning it off stays possible.
 create table conn_hold (
   tenant_id uuid not null,
