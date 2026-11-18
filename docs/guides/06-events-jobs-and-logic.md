@@ -332,6 +332,69 @@ person before it runs ([docs/operations.md](../operations.md), *The assistant*; 
   for a model unless the workspace says so (`Egress` in `crates/kernel/src/ctx.rs`);
 - giving actions labels, parameters with descriptions, and contracts.
 
+## One path for people and agents
+
+Every change an app makes to data on a person's request goes through a declared operation: a record operation or an
+action with a contract, run through the kernel's record pipeline or the gate. A route of the app's `Site` that writes
+either calls the gate (`Kernel::invoke`, `invoke_tx`, `call_tx`) and nothing else that writes, or is listed with its
+kind in [docs/registry/agent-parity.md](../registry/agent-parity.md). An action a person can press (not `hidden`) has a
+contract with at least `effect`, `returns` and `completion`. Hooks, event sinks, upkeep and jobs are reactions, not
+requests: an agent triggers them by the same operation a person does.
+
+`python3 <platform>/scripts/agent_parity.py --app .` lists the app's write routes and its visible actions without a
+contract, and fails on one the registry lacks. A route that runs an operation and then writes something of its own is
+listed too: it does what an agent calling the operation would not.
+
+**Adding contracts to an app's actions**, for each of its rows in *Actions without a contract*:
+
+1. Find the handler: the app's `DocHook::action` match arm with the action's name, or the action's `effects` in YAML.
+2. `effect`:
+   - writes nothing: `query`, and `read_only: true` on the action too;
+   - sends anything outside the workspace (a `type: message` effect, `queue_mail`, a connection call, a job that
+     calls out): `external_effect`, with `unknown_outcome: manual` for mail and messages, `reconcile` when the
+     provider can be asked;
+   - otherwise `transactional_action`.
+3. `returns`: the JSON Schema of the handler's `Ok(Some(...))`. A record it made is
+   `{entity: {type: string}, id: {type: string, format: uuid, x-ferrum-link: <Entity>}, number: {type: [string, "null"]}}`;
+   a decimal is `{type: string}`; a field that can be empty is `{type: [<type>, "null"]}`; no
+   `additionalProperties: false` (outputs may grow).
+4. `completion`: one sentence of what is true when it reports done, and what happens only after the commit.
+5. `compensate_with`: the entity's action that undoes it, when there is one.
+6. Leave `idempotency` and `retention_days` derived, unless the outside provider deduplicates on the key
+   (`idempotency: provider_key`).
+7. Run `agent_parity.py --app .` (the action is gone from its findings) and the app's suite. The platform's next pin
+   runs `--write`, which lowers the allowed number.
+
+CRM's `Lead.convert_to_customer` (`packages/crm/entities/pipeline.yaml`; its handler in `src/lead.rs` returns the
+customer it made, with the contact and address):
+
+```yaml
+    - name: convert_to_customer
+      label: Convert to Customer
+      permission: write
+      # (condition, confirm, params unchanged)
+      contract:
+        effect: transactional_action
+        returns:
+          type: object
+          properties:
+            entity: {type: string, const: Customer}
+            id: {type: string, format: uuid, x-ferrum-link: Customer}
+            number: {type: [string, "null"]}
+            contact: {type: [string, "null"], format: uuid, x-ferrum-link: Contact}
+            address: {type: [string, "null"], format: uuid, x-ferrum-link: Address}
+        completion: "The lead is Converted and names the customer; the customer, contact and address it made or chose are committed with this receipt"
+        compensate_with: undo_conversion
+```
+
+`Quotation.send_quotation` (a link and a `crm.quotation_sent` message) is `external_effect` with
+`unknown_outcome: manual`.
+
+**A route in debt** is fixed by moving its writes into an action with a contract (or a record operation) and making the
+route call `k.invoke(ctx, Invocation::new("<pkg>.<entity>.<action>", input).key(key))`, with the key from the
+request's `Idempotency-Key` header or one the screen makes; or the screen calls the record route
+`POST /api/v1/{entity}/{id}/actions/{action}` itself and the route is deleted.
+
 ## Checked by
 
 - `crates/kernel/src/outbox.rs`, `crates/kernel/src/jobs.rs`, `crates/kernel/src/saga.rs` and their tests: delivery,
@@ -340,6 +403,8 @@ person before it runs ([docs/operations.md](../operations.md), *The assistant*; 
   names.
 - `crates/studio/tests/catalog_it.rs`: the builder, the API and MCP describe a capability the same way.
 - `scripts/mutants.py`: mutants on the outbox, jobs and the gate, run with the platform's tests.
+- `scripts/agent_parity.py` (on the platform, and `--app` in `scripts/app_ci.sh`): write routes outside the gate and
+  visible actions without a contract, against `docs/registry/agent-parity.md`.
 - The app's scenario test: upkeep at a chosen day, a handler run twice doing the work once.
 - Reviewed, not checked: no outside call in a native hook; no spawned tasks for work that matters; upkeep per
   workspace; keys sent on outside calls.

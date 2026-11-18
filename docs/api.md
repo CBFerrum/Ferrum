@@ -2160,15 +2160,33 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
 
 ## AI agents (MCP)
 
-`POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id;
-`GET`/`DELETE` → 405). Auth as above (`Bearer` session token or API key); 401 carries
-`WWW-Authenticate`. A client reads under the workspace's policy for the assistant ([operations](operations.md#the-assistant)):
+`POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id is minted, and
+`Mcp-Session-Id` and `Last-Event-ID` are ignored; `GET`/`DELETE` → 405). Each POST carries one JSON-RPC message, at
+most 1 MiB; an array is refused (`400`, -32600). Revisions served, newest first: **2026-07-28**, 2025-11-25 and
+2025-06-18 (`server/discover` lists them).
+
+* **2026-07-28 (no handshake):** every request sends `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method` (the body's
+  `method`) and, for `tools/call`, `resources/read` and `prompts/get`, `Mcp-Name` (`params.name` or `params.uri`; a
+  value that is not plain ASCII as `=?base64?…?=`, decoded before it is compared), and its `params._meta` carries
+  `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`. A header missing,
+  malformed or not matching the body → `400` with -32020 (`HeaderMismatch`); a `_meta` field missing → `400` with
+  -32602; an unknown method → `404` with -32601. Results carry `resultType: "complete"` and
+  `_meta["io.modelcontextprotocol/serverInfo"]`; `tools/list` adds `ttlMs: 300000`, `cacheScope: "private"`,
+  `prompts/list`, `resources/list`, `resources/templates/list` and `resources/read` `60000`, `"private"`, and
+  `server/discover` `3600000`, `"public"`. `initialize`, `ping`, `logging/setLevel` and `completion/complete` are not
+  served.
+* **2025-11-25 and 2025-06-18 (legacy):** `initialize` without the header (it answers the version asked, or
+  2025-11-25), then every message with `MCP-Protocol-Version`; `ping` too; no session.
+* Any other version (2025-03-26 and 2024-11-05 included) → `400` with -32022 and `data: {supported, requested}`; no
+  header outside a legacy `initialize` → `400` with -32020.
+
+Credential: `Authorization: Bearer` only (session token, API key or OAuth access token); the browser's session cookie
+is refused, and a request whose `Origin` is not this host gets `403`. 401 carries `WWW-Authenticate`. A client reads under the workspace's policy for the assistant ([operations](operations.md#the-assistant)):
 `403` where the workspace turned the assistant off (`assistant: false`), and what `assistant_egress` does not let go to
 an AI provider (internal entities, fields in a permission group, secrets) is left out of every tool's answer. For an MCP
 client to receive a field group, or an internal entity, an administrator lists it there:
 `PUT /api/admin/settings {"assistant_egress": {"groups": ["payroll"], "entities": ["Payslip"]}}` (the assistant's
-provider receives it too). Secrets never go. Methods: `initialize` (versions 2025-06-18, 2025-03-26, 2024-11-05), `ping`,
-`tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
+provider receives it too). Secrets never go. Methods: `server/discover`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`
 (`ferrum://overview`, `ferrum://entity/{name}`, `ferrum://record/{entity}/{id}`), `prompts/list`,
 `prompts/get`. Tool failures come back as results with `isError: true` and the same error JSON as
 the REST API; unknown tools or bad arguments are JSON-RPC errors (-32602). Tools, for everyone: `ferrum_overview`, `describe_entity`, `search_records`, `get_record`, `preview_record`, `create_record` (`idempotency_key`, `submit`), `update_record`, `delete_record`, `submit_record`, `cancel_record`, `amend_record`, `run_action`, `list_capabilities`, `invoke_capability`, `workflow_transition`, `run_report`, `get_audit_trail`, `get_collaboration`, `add_comment`, `assign_record`, `my_assignments`, `set_tags`; each asks what its REST route asks. Administrators also get `customize_entity` and the App Manager's tools — `list_apps`, `plan_app`, `install_app` (consent = the plan's digest, as on the Apps page), `set_app_enabled`, `uninstall_app` — so an agent can extend the workspace the same way a person does. Where the operations package is installed, `ops_overview`, `ops_command` and `ops_propose` (a proposal for a person to approve) are there too.

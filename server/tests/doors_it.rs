@@ -5,7 +5,8 @@
 //! A reply the server did not write, a plugin's (`/api/public/{workspace}/{plugin}/…`, `/api/ext/{plugin}/…`) or an app
 //! site's (`/api/site/{workspace}/{package}/…`, `/api/app/{package}/…`), runs nothing on the application's origin unless
 //! a native app declares a policy of its own; and a route that names its workspace answers on that workspace's hosts,
-//! not on another's. An AI client at `/mcp` reads under the workspace's policy for the assistant. A body past its
+//! not on another's. An AI client at `/mcp` reads under the workspace's policy for the assistant, with a bearer credential
+//! only and from no page of another origin. A body past its
 //! route's limit is refused as too large (413) wherever the server refuses one. Administration's list of packages is
 //! the administrators'.
 
@@ -120,6 +121,18 @@ async fn call(r: &axum::Router, method: Method, host: &str, path: &str, bearer: 
         req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
     }
     let res = r.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, headers, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A POST of `body` to `/mcp` on acme with these headers.
+async fn mcp_post(r: &axum::Router, headers: &[(&str, &str)], body: String) -> (StatusCode, HeaderMap, String) {
+    let mut req = Request::builder().method(Method::POST).uri("/mcp").header(header::HOST, ACME).header("x-forwarded-for", "203.0.113.7");
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let res = r.clone().oneshot(req.header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap()).await.unwrap();
     let (status, headers) = (res.status(), res.headers().clone());
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
     (status, headers, String::from_utf8_lossy(&bytes).into_owned())
@@ -250,7 +263,8 @@ async fn scenario() {
         let (k, r, admin, key, get_record) = (k.clone(), r.clone(), admin.clone(), key.clone(), get_record.clone());
         async move {
             k.update_tenant_settings(&admin, policy.as_object().unwrap()).await.unwrap();
-            let (status, _, body) = call(&r, Method::POST, ACME, "/mcp", Some(&key), Body::from(get_record.to_string())).await;
+            let bearer = format!("Bearer {key}");
+            let (status, _, body) = mcp_post(&r, &[("authorization", &bearer), ("mcp-protocol-version", "2025-11-25")], get_record.to_string()).await;
             (status, body)
         }
     };
@@ -261,6 +275,32 @@ async fn scenario() {
     assert!(status == StatusCode::OK && body.contains("SALARY-123456"), "and goes where the workspace lets it: {status} {body}");
     let (status, body) = mcp(json!({"assistant": false})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "the assistant turned off: {body}");
+    k.update_tenant_settings(&admin, json!({"assistant": true}).as_object().unwrap()).await.unwrap();
+    // An agent is a program: a bearer credential only, never the browser's cookie, and no page of another origin.
+    let bearer = format!("Bearer {key}");
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
+    let legacy: &[(&str, &str)] = &[("authorization", &bearer), ("mcp-protocol-version", "2025-11-25")];
+    let challenged =
+        |h: &HeaderMap| said(h, "www-authenticate").iter().any(|c| c.contains("resource_metadata=\"") && c.contains("/.well-known/oauth-protected-resource"));
+    let (status, h, body) = mcp_post(&r, &[("mcp-protocol-version", "2025-11-25")], list.clone()).await;
+    assert!(status == StatusCode::UNAUTHORIZED && challenged(&h), "no credential: {status} {h:?} {body}");
+    let cookie = format!("{}=anything", ferrum_server::shell::cookie_name(false));
+    let (status, h, body) = mcp_post(&r, &[("cookie", &cookie), ("sec-fetch-site", "same-origin"), ("mcp-protocol-version", "2025-11-25")], list.clone()).await;
+    assert!(status == StatusCode::UNAUTHORIZED && challenged(&h) && body.contains("Bearer"), "the cookie is not taken: {status} {body}");
+    let (status, _, body) = mcp_post(&r, &[legacy, &[("origin", "https://evil.example")]].concat(), list.clone()).await;
+    let refused: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "a foreign Origin: {body}");
+    assert!(refused["error"]["code"] == json!(-32600) && refused.get("id").is_none(), "{refused}");
+    assert_eq!(mcp_post(&r, &[legacy, &[("origin", "null")]].concat(), list.clone()).await.0, StatusCode::FORBIDDEN, "an opaque Origin");
+    let (status, _, body) = mcp_post(&r, &[legacy, &[("origin", "http://erp.acme.test")]].concat(), list.clone()).await;
+    assert!(status == StatusCode::OK && body.contains("ferrum_overview"), "this host's own Origin: {status} {body}");
+    let (status, _, body) = mcp_post(&r, &[("authorization", &bearer)], list.clone()).await;
+    assert!(status == StatusCode::BAD_REQUEST && body.contains("-32020"), "no MCP-Protocol-Version: {body}");
+    let (status, _, _) = mcp_post(&r, legacy, format!("[{list}]")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "one message per POST");
+    let (status, _, body) = mcp_post(&r, &[("authorization", &bearer), ("mcp-protocol-version", "1900-01-01")], list.clone()).await;
+    assert!(status == StatusCode::BAD_REQUEST && body.contains("-32022") && body.contains("2026-07-28"), "{body}");
+    assert_eq!(mcp_post(&r, legacy, " ".repeat(1 << 20) + &list).await.0, StatusCode::PAYLOAD_TOO_LARGE, "a body past a mebibyte");
 
     // ── A body past its route's limit ──
     // Too large (413) wherever the server refuses one: a site's route that takes 16 KB, signed in or not, a plugin's

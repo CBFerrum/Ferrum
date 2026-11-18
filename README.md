@@ -411,8 +411,8 @@ sequenceDiagram
 
 ## AI agents (MCP)
 
-Ferrum is an MCP server: `POST /mcp` speaks the Model Context Protocol (Streamable HTTP,
-stateless, so any replica answers). Agents get generic, metadata-driven tools that cover every
+Ferrum is an MCP server: `POST /mcp` speaks the Model Context Protocol, revisions 2026-07-28, 2025-11-25 and
+2025-06-18 (Streamable HTTP, stateless, so any replica answers). Agents get generic, metadata-driven tools that cover every
 entity, action, workflow and report of every installed package, customizations included:
 
 | | Tools |
