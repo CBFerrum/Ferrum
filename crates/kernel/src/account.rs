@@ -103,6 +103,8 @@ impl Kernel {
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
         audit::record_admin(&mut tx, &system, "Workspace", tenant, "account_state", None, json!({"state": state, "note": note})).await?;
         crate::auth::notify_users(&mut tx, tenant, None).await?;
+        // An app's upkeep may have had nothing to do while the account was restricted: it runs again.
+        crate::upkeep::wake_idle(&mut tx, Some(tenant)).await?;
         tx.commit().await?;
         self.invalidate_tenant_users(tenant);
         Ok(())

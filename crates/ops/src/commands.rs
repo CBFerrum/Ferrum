@@ -413,6 +413,8 @@ async fn write(tx: &mut Tx, ctx: &Ctx, cmd: NewCommand, exclusive: Option<&str>)
     if written.rows_affected() == 0 {
         return existing(tx, tenant, &cmd, exclusive).await?.ok_or_else(|| Error::Conflict("this was just issued, and has ended: try again".into()));
     }
+    // A command with a deadline: the workspace's upkeep runs now, to wait for that deadline ([`next_unsent_deadline`]).
+    ferrum_kernel::upkeep::wake(tx, tenant, "ops").await?;
     if state == State::Queued {
         record(
             tx,
@@ -816,6 +818,19 @@ pub async fn cancels(tx: &mut Tx, tenant: Uuid, domain: &str) -> Result<Vec<Uuid
     .bind(domain)
     .fetch_all(&mut **tx)
     .await?)
+}
+
+/// The earliest deadline among the workspace's commands that no site has received yet: when its upkeep is next needed
+/// to expire one ([`expire_unsent`]).
+pub async fn next_unsent_deadline(k: &Kernel, tenant: Uuid) -> Result<Option<DateTime<Utc>>> {
+    let mut tx = k.db.tenant_tx(tenant).await?;
+    let at =
+        sqlx::query_scalar("select min(expires_at) from op_command where tenant_id = $1 and state in ('Proposed', 'Authorized', 'Queued') and sent_at is null")
+            .bind(tenant)
+            .fetch_one(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    Ok(at)
 }
 
 /// Commands no site ever received whose deadline passed. One a site may hold is left for the site

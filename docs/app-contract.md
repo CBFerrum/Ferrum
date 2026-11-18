@@ -266,6 +266,22 @@ What it promises the app, and what it asks of it:
   workspace's row, which its administrators read at `GET /api/admin/upkeep`, and counted by `/metrics`
   (`ferrum_upkeep_failing`) and the doctor. A returned error is due again after the usual minute.
 - **As that workspace's work.** A call outside is the workspace's (a sandbox's sends nothing).
+- **Nothing done waits a day.** The kernel counts the transactions a run opens (every way an app reaches the database
+  goes through `Db`'s constructors). A run that returns `Ok` having opened none did nothing, and is next due a day away;
+  it is due again sooner when the workspace's metadata changes (a package installed) or the catalog does (an app's new
+  release, a build whose packages changed), its account's state does, or the operator's settings do. An app whose
+  upkeep has nothing to do in a workspace should return before it opens a transaction, so that it costs nothing there.
+  So decide "nothing to do" from the database and the workspace's metadata, never from the clock or the process's
+  memory: an upkeep that returns early at 01:00 because its work is at 02:00 is next asked at 01:00 the next day.
+- **When it is next needed: `next_in` and `wake`.** Most upkeep is daily or hourly work that the minute only polls for.
+  From inside `maintenance`, `ferrum_kernel::upkeep::next_in(d)` says the workspace needs it again in `d`: kept between
+  the usual minute and an hour; of several calls the shortest wins; a run that fails or times out is due again as usual.
+  Its complement: `ferrum_kernel::upkeep::wake(&mut tx, tenant, "<your app id>")`, in the app's own transaction when it
+  writes something its upkeep must see soon, brings the row forward to now (it commits or rolls back with that write; a
+  run in flight is followed by another as soon as it is recorded). **Say `next_in` only for what you can also `wake`:**
+  whatever a person or another app can do that needs the upkeep sooner must wake it, or the hour is that thing's delay.
+  Operations does both: its next run is the earliest deadline of a command no site has received, or an hour, and
+  issuing a command wakes it. An app passes its own id; waking only ever makes a workspace's upkeep run sooner.
 - **Work of the whole installation has no hook of its own** (a partition of a table every workspace writes, a purge
   across workspaces): do it from the call for whichever workspace comes first, at most once a day on a replica (a
   `static` day) and under `pg_try_advisory_xact_lock`, so that replicas do not do it together. ERP's journal

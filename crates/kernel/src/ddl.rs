@@ -708,6 +708,13 @@ pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport>
     }
     let result = sync_locked(&mut conn, catalog, force).await;
     let _ = sqlx::query("select pg_advisory_unlock($1)").bind(SYNC_LOCK).execute(&mut *conn).await;
+    // A new catalog (an app's new release, a build whose packages changed) may change what an app's upkeep has to do:
+    // the upkeep that did nothing runs again (crate::upkeep).
+    if matches!(&result, Ok(r) if !r.skipped) {
+        let mut tx = db.system_tx().await?;
+        crate::upkeep::wake_idle(&mut tx, None).await?;
+        tx.commit().await?;
+    }
     result
 }
 
