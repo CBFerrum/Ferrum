@@ -737,9 +737,14 @@ the operators' install from one has not run on a cluster without internet.
   one-time steps below, and the servers only check. Upgrades only add tables, columns
   and indexes; nothing is dropped automatically (orphaned columns are reported in the logs). Servers of the release
   before keep running and restarting on the migrated database (*Rolling back and the two-version window*).
-* Indexes the sync adds to entity tables are built concurrently, so writes carry on, and a build that
-  failed is dropped and built again at the next start. The release that gave lists an index in their
-  default order adds one per entity: on large tables the first start after it takes a while.
+* Indexes the sync adds to a table that exists are built concurrently, and a foreign key is added `not valid` and
+  validated in a statement of its own, so writes carry on. A build that failed (rows that repeat a value in a unique
+  index fail the start, naming the index) leaves nothing invalid: what a crash left is dropped and built again at the
+  next start. A build waits for the transactions that began before it (a dump, a long report), at most five minutes,
+  then fails the start, and says every 30 s which index it waits on; a replica that starts meanwhile waits for the
+  sync's lock the same five minutes. A release that adds an index to every entity makes the first start after it take
+  a while on large tables. What cannot be built that way, an exclusion constraint added to an existing table, holds the
+  table while it checks the rows.
 * Roll forward with the image tag (`kubectl -n ferrum set image deploy/ferrum ferrum=<image>`);
   `maxUnavailable: 0` keeps capacity during the rollout.
 * Rolling back the image is safe within the two-version window (*Rolling back and the two-version window*, below). If a release notes a data migration, take an

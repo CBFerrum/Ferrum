@@ -62,7 +62,10 @@ The platform's limits are the app's ([docs/limits.md](../limits.md), [docs/opera
 `tie_named_files` (1000 a batch), backfills (1000 a batch unless `batch` says otherwise).
 
 **Indexes.** An entity's table gets the indexes its metadata implies from the schema sync, built concurrently so writes
-carry on. An app's own table gets the indexes its SQL makes: one for each way the app looks rows up, always starting
+carry on (a foreign key is added `not valid` and validated apart). Your own SQL runs in a transaction and cannot do that:
+a plain `create index` or an `add constraint` that checks the rows as it is added holds writes on a table that has rows for as
+long as it runs. `scripts/window.py` refuses both in a new file of the platform's own (an app's is reviewed, not checked);
+a statement that is safe all the same says `-- window: safe, <why>`. An app's own table gets the indexes its SQL makes: one for each way the app looks rows up, always starting
 with `tenant_id`. Every query the app runs on its own tables names `tenant_id`; row-level security filters by it anyway,
 and an index that does not lead with it makes that filter a scan.
 

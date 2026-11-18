@@ -13,7 +13,10 @@ for sql in [
     "alter table outbox add column build_date timestamptz;",
     "alter table t add column n int not null default 0;",
     "create or replace function f() returns int language sql as $$ select 1; drop table t; $$;",
-    "create index i on t (x);",
+    "create table n (x text); create index i on n (x);",
+    "-- no-transaction\ncreate index concurrently if not exists i on t (x);",
+    "alter table t validate constraint c;",
+    "-- window: safe, empty until the next release\ncreate index i on t (x);",
     "-- window: safe, nothing reads it yet\nalter table t drop column x;",
 ]:
     assert window.sql_hazards(sql) == [], (sql, window.sql_hazards(sql))
@@ -24,12 +27,25 @@ for sql, what in [
     ("alter table t alter column x type bigint;", "changes a column's type"),
     ("alter table t alter column x set not null;", "makes a column required"),
     ("alter table t add column n numeric(28,9) not null;", "adds a required column without a default"),
-    ("alter table t add constraint c unique (x);", "adds a constraint"),
-    ("create unique index u on t (x);", "adds a unique index"),
+    ("alter table t add constraint c check (x > 0) not valid;", "adds a constraint"),  # for the window; it holds nothing
     ("drop function if exists f(int);", "drops a function"),
 ]:
     found = window.sql_hazards(sql)
     assert len(found) == 1 and found[0].startswith(what), (sql, found)
+
+# What holds writes while it runs: a plain index or a validated constraint on a table that is not new.
+for sql, what in [
+    ("create index i on t (x);", ["builds an index that holds writes"]),
+    ("create index concurrently i on t (x);", ["builds an index that holds writes"]),  # a transaction refuses it
+    ("-- no-transaction\ncreate index i on t (x);", ["builds an index that holds writes"]),
+    ("alter table t add constraint c foreign key (x) references u (id);", ["adds a constraint", "adds a constraint that holds writes"]),
+    ("alter table t add constraint c check (x > 0);", ["adds a constraint", "adds a constraint that holds writes"]),
+    ("alter table t add constraint c unique (x);", ["adds a constraint", "adds a constraint that holds writes"]),
+    ("create unique index u on t (x);", ["adds a unique index", "builds an index that holds writes"]),
+    ("-- no-transaction\ncreate unique index concurrently u on t (x);", ["adds a unique index"]),
+]:
+    found = window.sql_hazards(sql)
+    assert len(found) == len(what) and all(f.startswith(w) for f, w in zip(found, what)), (sql, found)
 
 # Entities, as the schema sync makes tables of them.
 old = "- name: A\n  fields:\n    - {name: x, type: data}\n    - {name: y, type: link, to: B}\n- name: Gone\n  fields: []\n"
@@ -75,5 +91,18 @@ with tempfile.TemporaryDirectory() as d:
     assert len(found) == 1 and moved, (found, moved)
     # A migration that was there before is not looked at again.
     assert window.check(repo, "HEAD", None) == ([], False)
+
+    # The baseline is exempt; a later file's plain index is not, and moving COMPATIBLE_FROM does not mend it.
+    head = git("rev-parse", "HEAD", cwd=repo)
+    (repo / "crates/kernel/migrations/20261201000001_baseline.sql").write_text("create table b (x text); alter table t add constraint c check (x <> '');\n")
+    assert window.check(repo, head, None) == ([], False)
+    (repo / "crates/kernel/migrations/5_index.sql").write_text("create index t_y on t (y);\n")
+    found, moved = window.check(repo, head, None)
+    assert len(found) == 1 and "5_index.sql: builds an index that holds writes" in found[0], found
+    constant.write_text('pub const COMPATIBLE_FROM: &str = "2027-01-01T00:00:00Z";\n')
+    git("add", ".", cwd=repo)
+    git("commit", "-qm", "an index", cwd=repo)
+    window.ROOT = repo
+    assert window.main(["--range", f"{head}..HEAD"]) == 1, "COMPATIBLE_FROM moved with it, and the index still holds writes"
 
 print("window.py: ok")

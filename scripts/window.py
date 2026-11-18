@@ -10,6 +10,11 @@ What it looks at:
 * new SQL files (the kernel's migrations, packages' SQL): a statement that drops a table, view, type, column or
   function, renames anything, changes a column's type, makes a column required, adds a required column without a
   default, or adds a constraint or a unique index to a table that is not new in the same file;
+* the same files, for what holds writes while it runs (a different failure: moving COMPATIBLE_FROM does not mend it): a
+  `create index` on a table that is not new (the sync's own indexes are built `concurrently`; in a file a migration
+  runner does not wrap in a transaction, which starts with `-- no-transaction`, so can this) and an `add constraint`
+  that is validated as it is added (`not valid`, then `validate constraint` in a statement of its own, holds nothing).
+  The kernel's baseline is exempt: it is edited in place until launch and runs on empty tables;
 * packages' entities (packages/*/entities/*.yaml), as the schema sync makes tables of them: an entity or a field
   taken out, a field's type or link target changed, a field made unique, a new unique group or exclusion.
 A statement that is safe all the same says so in a comment inside it: `-- window: safe, <why>`.
@@ -26,6 +31,8 @@ SQL = re.compile(r"^(crates/kernel/migrations/.*|packages/.*)\.sql$")
 ENTITIES = re.compile(r"^packages/[^/]+/entities/[^/]+\.ya?ml$")
 CONSTANT = re.compile(r'pub const COMPATIBLE_FROM: &str = "([^"]+)"')
 NAME = r'"?([a-z0-9_.]+)"?'
+BASELINE = re.compile(r"(^|/)[0-9]+_baseline\.sql$")
+HOLDS = "holds writes"
 
 
 def git(repo: Path, *args: str, ok=False) -> str:
@@ -55,8 +62,9 @@ def statements(sql: str):
 
 
 def sql_hazards(sql: str) -> list[str]:
-    """What in this file an older build cannot live with."""
+    """What in this file an older build cannot live with, or what holds writes on a table that has rows."""
     found = []
+    no_transaction = sql.lstrip().startswith("-- no-transaction")
     created = set(re.findall(r"\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?" + NAME, sql, re.I))
     created = {c.lower() for c in created}
     for raw in statements(sql):
@@ -91,9 +99,14 @@ def sql_hazards(sql: str) -> list[str]:
                     hazard("adds a required column without a default")
             if re.search(r"\badd\s+(constraint\s+\S+\s+)?(check|unique|foreign\s+key|exclude|primary\s+key)\b", s):
                 hazard("adds a constraint to a table that is not new")
+                if not re.search(r"\bnot\s+valid\b|\busing\s+index\b", s):
+                    hazard(f"adds a constraint that {HOLDS} while it checks the rows (add it `not valid`, then `validate constraint`)")
         m = re.search(r"\bcreate\s+unique\s+index\b.*?\bon\s+(?:only\s+)?" + NAME, s)
         if m and m.group(1) not in created:
             hazard("adds a unique index to a table that is not new")
+        m = re.search(r"\bcreate\s+(?:unique\s+)?index\b(.*?)\bon\s+(?:only\s+)?" + NAME, s)
+        if m and m.group(2) not in created and not (no_transaction and re.search(r"\bconcurrently\b", m.group(1))):
+            hazard(f"builds an index that {HOLDS} on a table that is not new (`create index concurrently`, in a file that starts with `-- no-transaction`)")
     return found
 
 
@@ -146,7 +159,7 @@ def check(repo: Path, base: str, head: str | None) -> tuple[list[str], bool]:
         lines += [f"A\t{p}" for p in git(repo, "ls-files", "--others", "--exclude-standard").splitlines()]
     for line in lines:
         status, path = line.split("\t", 1)
-        if SQL.match(path) and status == "A":
+        if SQL.match(path) and status == "A" and not BASELINE.search(path):
             found += [f"{path}: {h}" for h in sql_hazards(read(repo, head, path))]
         elif ENTITIES.match(path):
             found += entity_hazards(path, read(repo, base, path), read(repo, head, path))
@@ -165,6 +178,12 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     found, moved = check(ROOT, base, head)
+    holds = [f for f in found if HOLDS in f]
+    if holds:
+        for f in found:
+            print(f"  {f}")
+        print(f"window: {len(holds)} statements hold writes on a table that is not new for as long as they run; COMPATIBLE_FROM does not mend that. Mark one that is safe all the same with `-- window: safe, <why>`")
+        return 1
     if not found:
         print("window: every schema change here is additive")
         return 0
