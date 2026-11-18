@@ -77,8 +77,9 @@ pub async fn wake(tx: &mut Tx, tenant: Uuid, app: &str) -> Result<()> {
 }
 
 /// Rows waiting out a day because their last run did nothing ([`IDLE`]) are due again: in `tenant`, or everywhere. For
-/// what may change what an app's upkeep has to do: a new release of an app (the catalog), a workspace's metadata.
-pub(crate) async fn wake_idle(tx: &mut Tx, tenant: Option<Uuid>) -> Result<()> {
+/// what may change what an app's upkeep has to do: a new release of an app (the catalog), a workspace's metadata, its
+/// account's state, the operator's settings.
+pub async fn wake_idle(tx: &mut Tx, tenant: Option<Uuid>) -> Result<()> {
     // A row recorded idle has `due_at` exactly `ran_at` + IDLE: the record sets both from one `now()`.
     let idle = "not held and due_at = ran_at + make_interval(secs => $1) and due_at > now()";
     match tenant {

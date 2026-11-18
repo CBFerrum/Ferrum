@@ -383,8 +383,22 @@ async fn doctor(a: &AppState) {
     assert!(replicas.level == Level::Warning && replicas.detail.starts_with("2 replicas"), "{replicas:?}");
     assert!(replicas.detail.contains("default_workspace") && !replicas.detail.contains("ui_source"), "changed since they started: {replicas:?}");
     assert_eq!(found(&all, "settings.environment").level, Level::Ok, "this test's environment sets none");
+    // A workspace's app upkeep that did nothing waits a day (server/src/packages.rs); a change of the settings wakes it.
+    let ws = uuid::Uuid::now_v7();
+    let mut tx = a.kernel.db.system_tx().await.unwrap();
+    sqlx::query("insert into tenant (id, slug, name) values ($1, 'idle-upkeep', 'Idle')").bind(ws).execute(&mut *tx).await.unwrap();
+    sqlx::query("insert into upkeep (tenant_id, app, due_at, ran_at) values ($1, 'probe', now() + make_interval(secs => 86400), now())")
+        .bind(ws)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     let start = [ferrum_server::settings::Change { name: "ui_source".into(), pool: None, value: Some("http://web:8080/_releases/".into()) }];
     ferrum_server::settings::change(a, &start, "task").await.unwrap();
+    let mut tx = a.kernel.db.system_tx().await.unwrap();
+    let due: bool = sqlx::query_scalar("select due_at <= now() from upkeep where tenant_id = $1").bind(ws).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(due, "a change of the operator's settings makes the upkeep that did nothing due again");
     let replicas = found(&ferrum_server::doctor::database_settings_findings(a).await, "settings.replicas");
     assert!(replicas.level == Level::Warning && replicas.detail.contains("ui_source"), "both run the older value until they start again: {replicas:?}");
     assert!(replicas.detail.contains(&a.live_settings.replica.to_string()));

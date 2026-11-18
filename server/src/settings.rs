@@ -1151,6 +1151,8 @@ pub async fn change_with(
     }
     if done.iter().any(|d| d.version.is_some()) {
         sqlx::query("select pg_notify($1, '')").bind(CHANNEL).execute(&mut *tx).await?;
+        // An app's upkeep that had nothing to do may have something under the new settings: it runs again.
+        ferrum_kernel::upkeep::wake_idle(&mut tx, None).await?;
     }
     tx.commit().await?;
     for (name, value) in secrets {

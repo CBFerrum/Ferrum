@@ -269,8 +269,10 @@ What it promises the app, and what it asks of it:
 - **Nothing done waits a day.** The kernel counts the transactions a run opens (every way an app reaches the database
   goes through `Db`'s constructors). A run that returns `Ok` having opened none did nothing, and is next due a day away;
   it is due again sooner when the workspace's metadata changes (a package installed) or the catalog does (an app's new
-  release, a build whose packages changed). An app whose upkeep has nothing to do in a workspace should return before
-  it opens a transaction, so that it costs nothing there.
+  release, a build whose packages changed), its account's state does, or the operator's settings do. An app whose
+  upkeep has nothing to do in a workspace should return before it opens a transaction, so that it costs nothing there.
+  So decide "nothing to do" from the database and the workspace's metadata, never from the clock or the process's
+  memory: an upkeep that returns early at 01:00 because its work is at 02:00 is next asked at 01:00 the next day.
 - **When it is next needed: `next_in` and `wake`.** Most upkeep is daily or hourly work that the minute only polls for.
   From inside `maintenance`, `ferrum_kernel::upkeep::next_in(d)` says the workspace needs it again in `d`: kept between
   the usual minute and an hour; of several calls the shortest wins; a run that fails or times out is due again as usual.
