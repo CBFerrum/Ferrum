@@ -7,7 +7,6 @@
 
 create extension if not exists btree_gist;
 create extension if not exists citext;
-create extension if not exists pg_trgm;
 create schema if not exists vault;
 
 -- Whether this transaction is the system's (`ferrum.system = on`): jobs, token endpoints, the operator's tasks.

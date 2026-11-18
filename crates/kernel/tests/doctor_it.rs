@@ -69,6 +69,11 @@ async fn scenario() {
     let healthy = k.doctor(30).await.unwrap();
     assert!(healthy.iter().all(|f| f.level == Level::Ok || f.check == "database.connections" || f.check == "database.reserve"), "{healthy:?}");
     assert_eq!(level(&healthy, "database.reserve"), Some(Level::Warning), "this role could take every connection there is");
+    // M3: the required extensions are btree_gist and citext. This database has no pg_trgm (the reset dropped it and the
+    // migration no longer makes it), and the doctor still finds it healthy.
+    let trgm: i64 = sqlx::query_scalar("select count(*) from pg_extension where extname = 'pg_trgm'").fetch_one(&k.db.pool).await.unwrap();
+    assert_eq!(trgm, 0, "nothing makes pg_trgm any more");
+    assert_eq!(level(&healthy, "database.extensions"), Some(Level::Ok), "{healthy:?}");
     let base = std::env::var("FERRUM_TEST_SUPERUSER").unwrap_or_else(|_| format!("postgres://{}@localhost:5432", std::env::var("USER").unwrap_or_default()));
     let root = Db::connect(DbConfig { url: format!("{base}/postgres"), max_connections: 1, ..Default::default() }).await.expect("a superuser");
     sqlx::raw_sql("alter role ferrum connection limit 60").execute(&root.pool).await.unwrap();
