@@ -3,7 +3,8 @@
 //! stands alone: one that fails makes the event retry for itself, and those that handled it are
 //! not called again (unique delivery and run keys, `event_receipt` for sinks). A crash between
 //! "handled" and "marked" can repeat a sink, which deduplicates what must happen once.
-//! Dispatchers poll (no NOTIFY from writers: it would serialize their commits).
+//! No NOTIFY from writers (it would serialize their commits): a replica's own writes wake its dispatcher in-process, and
+//! idle dispatchers look less and less often, up to every five seconds ([`Pace`]).
 //!
 //! Each batch takes a few events from every workspace that has work, most urgent first, and handles
 //! workspaces side by side, so one workspace's backlog or slow provider cannot hold up another's
@@ -25,8 +26,79 @@ use std::time::Duration;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-/// How often an idle dispatcher looks for new events.
-const OUTBOX_POLL: Duration = Duration::from_millis(250);
+/// How the replica's loops that look for work in the database (events, webhook deliveries, jobs) pace their looks:
+/// soon after a wake or after finding work, then twice as long after each look that finds nothing, up to [`Pace::CAP`].
+/// A wake comes from this replica's own writes ([`wake`]); what another replica wrote, or a retry coming due, is found
+/// by the looks, within the cap.
+pub(crate) struct Pace {
+    wait: Duration,
+    /// Until when it keeps looking every [`Pace::SETTLE`]: a write that woke it may not have committed at the first look.
+    chase: Option<tokio::time::Instant>,
+}
+
+impl Pace {
+    /// The wait after a wake or after work was found: what a burst of writes is gathered in.
+    pub(crate) const SETTLE: Duration = Duration::from_millis(50);
+    /// How long after a wake it keeps looking every [`Pace::SETTLE`] while it finds nothing: the time the waking write's
+    /// transaction has to commit before the looks back off again.
+    pub(crate) const CHASE: Duration = Duration::from_secs(1);
+    /// The longest an idle loop waits between looks, and so the most an event written by a replica that died right
+    /// after its commit, or a retry coming due, waits beyond its time (docs/events.md).
+    pub(crate) const CAP: Duration = Duration::from_secs(5);
+
+    pub(crate) fn new() -> Pace {
+        Pace { wait: Self::SETTLE, chase: None }
+    }
+
+    /// How long to wait after a look: [`Pace::SETTLE`] if it found work or a wake is being chased, otherwise the last
+    /// wait, doubled for the next.
+    pub(crate) fn after(&mut self, found: bool) -> Duration {
+        let chasing = self.chase.is_some_and(|until| tokio::time::Instant::now() < until);
+        if found || chasing {
+            self.wait = Self::SETTLE;
+            return self.wait;
+        }
+        self.chase = None;
+        let wait = self.wait;
+        self.wait = (wait * 2).min(Self::CAP);
+        wait
+    }
+
+    /// A wake: the next look comes after [`Pace::SETTLE`], and the looks stay that close for [`Pace::CHASE`].
+    pub(crate) fn woken(&mut self) -> Duration {
+        self.wait = Self::SETTLE;
+        self.chase = Some(tokio::time::Instant::now() + Self::CHASE);
+        self.wait
+    }
+}
+
+/// The longest an idle dispatcher, webhook sender or job runner waits between looks ([`Pace::CAP`]).
+pub const IDLE_CAP: Duration = Pace::CAP;
+
+/// What a loop of this process is woken by when this process writes work for it. A watch: every loop sees the latest
+/// count, so a wake that comes while a loop is busy is still seen when it next waits.
+pub(crate) static EVENTS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+pub(crate) static WEBHOOKS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+pub(crate) static JOBS: std::sync::LazyLock<watch::Sender<u64>> = std::sync::LazyLock::new(|| watch::channel(0).0);
+
+/// Waits `wait`, or less if woken (then [`Pace::SETTLE`]); false once the process is stopping.
+pub(crate) async fn rest(wait: Duration, pace: &mut Pace, woken: &mut watch::Receiver<u64>, shutdown: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        _ = shutdown.changed() => return false,
+        _ = tokio::time::sleep(wait) => return true,
+        _ = woken.changed() => {}
+    }
+    let settle = pace.woken();
+    tokio::select! {
+        _ = shutdown.changed() => false,
+        _ = tokio::time::sleep(settle) => true,
+    }
+}
+
+/// Wakes the loops of this process that `which` stands for.
+pub(crate) fn wake(which: &watch::Sender<u64>) {
+    which.send_modify(|n| *n = n.wrapping_add(1));
+}
 const MAX_ATTEMPTS: i32 = 15;
 const WEBHOOK_MAX_ATTEMPTS: i32 = 12;
 const MAX_WEBHOOK_BODY: usize = 256 * 1024;
@@ -233,6 +305,8 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, topic: &str, entity: Option<&str
     .bind(crate::window::build_date())
     .execute(&mut **tx)
     .await?;
+    // Written in a transaction not yet committed: the dispatcher looks after [`Pace::SETTLE`], and on as it backs off.
+    wake(&EVENTS);
     Ok(())
 }
 
@@ -263,6 +337,7 @@ pub async fn enqueue_change(tx: &mut Tx, tenant: Uuid, topic: &str, source: Sour
     .bind(crate::window::build_date())
     .execute(&mut **tx)
     .await?;
+    wake(&EVENTS);
     Ok(())
 }
 
@@ -344,6 +419,8 @@ pub(crate) struct Sinks {
     waiting: AtomicUsize,
     /// Told when a call ends.
     ended: tokio::sync::Notify,
+    /// The dispatcher's looks that found nothing to claim since the process started ([`Kernel::outbox_empty_looks`]).
+    empty: std::sync::atomic::AtomicU64,
 }
 
 /// How long a call over its sink's share waits for one of the sink's calls to end before it is put off.
@@ -426,6 +503,12 @@ impl Kernel {
         self.background.acquire().await.map_err(Error::internal)
     }
 
+    /// How many times this replica's dispatcher has looked for events and found none to take since the process started
+    /// (held, or none waiting and due): what an idle replica costs its database.
+    pub fn outbox_empty_looks(&self) -> u64 {
+        self.sinks.empty.load(Ordering::SeqCst)
+    }
+
     /// How many times each event sink was put off at its share of this replica's turns since the process started ([`Sinks`]),
     /// for `/metrics` beside the outbox's figures: one that keeps growing is a sink whose provider is slow.
     pub fn sink_deferrals(&self) -> Vec<(String, u64)> {
@@ -452,7 +535,20 @@ impl Kernel {
     /// Claims a batch, each workspace's share apart, leaving out the workspaces in `busy` (this replica is still at their
     /// earlier events).
     async fn claim_events(&self, busy: &[Uuid]) -> Result<Vec<Vec<Event>>> {
-        if self.db.fenced() || self.holding().await? {
+        match self.claim_events_now(busy).await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => {
+                self.sinks.empty.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            }
+            claimed => claimed,
+        }
+    }
+
+    async fn claim_events_now(&self, busy: &[Uuid]) -> Result<Vec<Vec<Event>>> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding).
+        if self.db.fenced() || self.marker_waiting() {
+            self.sinks.empty.fetch_add(1, Ordering::SeqCst);
             return Ok(vec![]);
         }
         let turn = self.turn().await?;
@@ -472,6 +568,7 @@ impl Kernel {
                from waiting w where w.tenant_id is not null), \
              taken as (update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) \
+                 and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) \
                  and tenant_id <> all($5) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() and o.build_date <= $4 \
@@ -492,6 +589,9 @@ impl Kernel {
         let mut by_tenant: BTreeMap<Uuid, Vec<Event>> = BTreeMap::new();
         for ev in events {
             by_tenant.entry(ev.tenant_id).or_default().push(ev);
+        }
+        if by_tenant.is_empty() {
+            self.sinks.empty.fetch_add(1, Ordering::SeqCst);
         }
         Ok(by_tenant.into_values().collect())
     }
@@ -803,6 +903,7 @@ impl Kernel {
         let Some(topic) = topic else { return Err(Error::NotFound("dead webhook delivery".into())) };
         crate::audit::record_admin(&mut tx, ctx, "WebhookDelivery", id, "replay", None, json!({"topic": topic})).await?;
         tx.commit().await?;
+        wake(&WEBHOOKS);
         Ok(())
     }
 
@@ -890,7 +991,7 @@ impl Kernel {
         let entity_wildcard = format!("{}.*", ev.topic.split('.').next().unwrap_or_default());
         // An app's webhook hears which record, never what it holds (nor what a change replaced): its
         // service reads that with its own key, as far as its rights go.
-        sqlx::query(
+        let queued = sqlx::query(
             "insert into webhook_delivery (tenant_id, id, webhook_id, outbox_id, topic, payload) \
              select w.tenant_id, gen_random_uuid(), w.id, $2, $3, case when w.app is null then $4 else $4 - 'doc' - 'was' end from webhook w \
              where w.tenant_id = $1 and w.is_active and ($3 = any(w.topics) or ('*' = any(w.topics) and $3 not like 'audit.%') or $5 = any(w.topics)) \
@@ -903,7 +1004,8 @@ impl Kernel {
         .bind(&ev.payload)
         .bind(entity_wildcard)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
         // Those that handled it on an attempt that failed, or before it was dead and replayed.
         let names: Vec<&str> = sinks.iter().map(|(name, _)| *name).collect();
         let before: Vec<String> = sqlx::query_scalar("select consumer from event_receipt where tenant_id = $1 and consumer = any($2) and event_id = $3")
@@ -913,6 +1015,10 @@ impl Kernel {
             .fetch_all(&mut *tx)
             .await?;
         tx.commit().await?;
+        // Committed: the webhook sender of this process has work.
+        if queued > 0 {
+            wake(&WEBHOOKS);
+        }
         self.set_deliveries_aside(ev).await?;
         // Automations keep their own record of each run (`automation_run`): one that ran is not run again.
         let mut failed = Vec::new();
@@ -948,8 +1054,9 @@ impl Kernel {
     /// Drains the outbox until shutdown. Each workspace's share of a claim is handled in a task of its own, and the next
     /// claim does not wait for the slowest share: it leaves out the workspaces still in hand, so each one's events stay one
     /// at a time and in order, and it is made while fewer shares are in hand than the replica has turns. A sink held at
-    /// a provider for its 120 seconds so holds its own workspace and one turn, not the replica. Idle, it looks again every
-    /// 250 ms. Told to stop, each share finishes the event it is at and hands back the rest.
+    /// a provider for its 120 seconds so holds its own workspace and one turn, not the replica. An event written by this
+    /// process wakes it; with nothing to do it looks less and less often, up to every [`Pace::CAP`]. Told to stop, each
+    /// share finishes the event it is at and hands back the rest.
     pub fn spawn_outbox_dispatcher(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         type Ended = std::result::Result<(tokio::task::Id, Result<()>), tokio::task::JoinError>;
         fn ended(done: Ended, in_hand: &mut HashMap<tokio::task::Id, Uuid>) {
@@ -967,16 +1074,20 @@ impl Kernel {
             in_hand.remove(&id);
         }
         let k = self.clone();
+        let mut woken = EVENTS.subscribe();
         tokio::spawn(async move {
             let room = crate::db::background_connections(k.db.config.max_connections) as usize;
             let mut running = tokio::task::JoinSet::new();
             let mut in_hand = HashMap::new();
+            let mut pace = Pace::new();
+            // When it looks next: at once to begin with.
+            let mut next = tokio::time::Instant::now();
             while !*shutdown.borrow() {
                 while let Some(done) = running.try_join_next_with_id() {
                     ended(done, &mut in_hand);
                 }
-                let mut claimed = 0;
-                if running.len() < room {
+                if running.len() < room && tokio::time::Instant::now() >= next {
+                    let mut claimed = 0;
                     let busy: Vec<Uuid> = in_hand.values().copied().collect();
                     match k.claim_events(&busy).await {
                         Ok(batch) => {
@@ -988,15 +1099,21 @@ impl Kernel {
                         }
                         Err(e) => tracing::warn!("outbox dispatch error: {e}"),
                     }
-                }
-                // Claim again at once while there is work and room; otherwise when a share is done, or after a pause.
-                if claimed > 0 && running.len() < room {
+                    // A full batch: claim again at once while there is room (a share that ends brings the next look too).
+                    // Otherwise after the pace's wait.
+                    let now = tokio::time::Instant::now();
+                    next = if claimed as i64 >= BATCH && running.len() < room { now } else { now + pace.after(claimed > 0) };
                     continue;
                 }
                 tokio::select! {
                     changed = shutdown.changed() => if changed.is_err() { break },
-                    Some(done) = running.join_next_with_id(), if !running.is_empty() => ended(done, &mut in_hand),
-                    _ = tokio::time::sleep(OUTBOX_POLL), if claimed == 0 => {}
+                    // A share is done: there is room again, and its workspace may be claimed at the next look.
+                    Some(done) = running.join_next_with_id(), if !running.is_empty() => {
+                        ended(done, &mut in_hand);
+                        next = tokio::time::Instant::now();
+                    }
+                    _ = woken.changed() => next = next.min(tokio::time::Instant::now() + pace.woken()),
+                    _ = tokio::time::sleep_until(next), if running.len() < room => {}
                 }
             }
             while let Some(done) = running.join_next_with_id().await {
@@ -1009,7 +1126,16 @@ impl Kernel {
     /// open across a request: a slow endpoint holds no row, no connection and no turn at the pool,
     /// and the batch's requests run side by side, so it delays no other endpoint either.
     pub async fn deliver_webhooks_once(&self) -> Result<usize> {
-        if self.db.fenced() || self.holding().await? {
+        match self.deliver_webhooks_now().await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => Ok(0),
+            sent => sent,
+        }
+    }
+
+    async fn deliver_webhooks_now(&self) -> Result<usize> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding).
+        if self.db.fenced() || self.marker_waiting() {
             return Ok(0);
         }
         #[derive(sqlx::FromRow)]
@@ -1026,7 +1152,8 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let due: Vec<Due> = sqlx::query_as(
             "with claimed as (select tenant_id, id from webhook_delivery where status = 'pending' and next_attempt_at <= now() \
-               and not ferrum_workspace_held(tenant_id) order by next_attempt_at limit 20 for update skip locked), \
+               and not ferrum_workspace_held(tenant_id) and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) \
+               order by next_attempt_at limit 20 for update skip locked), \
              leased as (update webhook_delivery d set next_attempt_at = now() + make_interval(secs => $1) from claimed c \
                where d.tenant_id = c.tenant_id and d.id = c.id returning d.tenant_id, d.id, d.webhook_id, d.topic, d.payload, d.attempts) \
              select l.tenant_id, l.id, l.webhook_id, l.topic, l.payload, l.attempts, w.url from leased l \
@@ -1127,21 +1254,23 @@ impl Kernel {
         if resp.status().is_success() { Ok(code) } else { Err((Some(code), format!("HTTP {code}"))) }
     }
 
+    /// Sends webhooks until shutdown: woken by this process's deliveries, and with nothing to send looking less and less
+    /// often, up to every [`Pace::CAP`] (deliveries due again, or queued by another replica).
     pub fn spawn_webhook_sender(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
+        let mut woken = WEBHOOKS.subscribe();
         tokio::spawn(async move {
+            let mut pace = Pace::new();
             loop {
-                let busy = match k.deliver_webhooks_once().await {
+                let found = match k.deliver_webhooks_once().await {
                     Ok(n) => n > 0,
                     Err(e) => {
                         tracing::warn!("webhook delivery error: {e}");
                         false
                     }
                 };
-                let pause = if busy { Duration::from_millis(50) } else { Duration::from_secs(3) };
-                tokio::select! {
-                    _ = shutdown.changed() => return,
-                    _ = tokio::time::sleep(pause) => {}
+                if !rest(pace.after(found), &mut pace, &mut woken, &mut shutdown).await {
+                    return;
                 }
             }
         })

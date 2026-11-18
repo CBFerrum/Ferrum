@@ -32,8 +32,6 @@ use uuid::Uuid;
 /// soon a running job hears it was cancelled).
 const LEASE: Duration = Duration::from_secs(60);
 const RENEW: Duration = Duration::from_secs(5);
-/// How often an idle replica looks for work.
-const POLL: Duration = Duration::from_secs(1);
 /// Jobs one replica runs at once ...
 pub(crate) const WORKERS: usize = 4;
 /// ... and one workspace across all of them (replicas claiming at the same moment can pass this by
@@ -170,6 +168,8 @@ pub async fn enqueue(tx: &mut Tx, tenant: Uuid, created_by: Option<Uuid>, job: N
     .fetch_optional(&mut **tx)
     .await?;
     if let Some(id) = inserted {
+        // Not yet committed: the runner looks after a moment (outbox::Pace).
+        crate::outbox::wake(&crate::outbox::JOBS);
         return Ok(id);
     }
     let active: Option<Uuid> =
@@ -233,7 +233,17 @@ impl Kernel {
     /// Settles jobs nobody will come back for, then claims up to `slots`, fairly: see the module
     /// documentation.
     pub async fn claim_jobs(&self, slots: usize) -> Result<Vec<Job>> {
-        if self.db.fenced() || self.holding().await? {
+        match self.claim_jobs_now(slots).await {
+            // A planned move makes the database read-only before the claim could say it holds.
+            Err(_) if self.holding().await? => Ok(Vec::new()),
+            claimed => claimed,
+        }
+    }
+
+    async fn claim_jobs_now(&self, slots: usize) -> Result<Vec<Job>> {
+        // Held after a restore or for a move: asked in the claim itself (Kernel::holding); settling what nobody comes back
+        // for is no outward work.
+        if self.db.fenced() || self.marker_waiting() {
             return Ok(Vec::new());
         }
         let mut tx = self.db.system_tx().await?;
@@ -262,7 +272,8 @@ impl Kernel {
                select (select j.tenant_id from job j where j.tenant_id > w.tenant_id and j.status in ('queued', 'running') order by j.tenant_id limit 1) \
                from waiting w where w.tenant_id is not null), \
              picked as ( \
-               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
+               select claimed.tenant_id, claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) \
+                 and not exists (select 1 from platform_incarnation where held_since is not null) and not exists (select 1 from platform_move) order by random()) w \
                cross join lateral (select j.tenant_id, j.id from job j where j.tenant_id = w.tenant_id and (not j.cancel_requested or j.undo_on_cancel) \
                  and j.build_date <= $5 \
                  and ((j.status = 'queued' and j.run_at <= now()) or (j.status = 'running' and j.lease_until < now())) \
@@ -434,17 +445,22 @@ impl Kernel {
     }
 
     /// Runs jobs until shutdown, up to [`WORKERS`] at once on this replica. Those running then hand
-    /// themselves back before this ends.
+    /// themselves back before this ends. A job queued by this process wakes it, and so does one of its jobs ending; with
+    /// nothing to run it looks less and less often, up to every `outbox::Pace::CAP`.
     pub fn spawn_job_runner(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let k = self.clone();
+        let mut woken = crate::outbox::JOBS.subscribe();
         tokio::spawn(async move {
             let mut running = JoinSet::new();
-            loop {
+            let mut pace = crate::outbox::Pace::new();
+            while !*shutdown.borrow() {
                 while running.try_join_next().is_some() {}
                 let free = WORKERS.saturating_sub(running.len());
+                let mut found = false;
                 if free > 0 {
                     match k.claim_jobs(free).await {
                         Ok(jobs) => {
+                            found = !jobs.is_empty();
                             for job in jobs {
                                 let (k, stopping, id) = (k.clone(), shutdown.clone(), job.id);
                                 running.spawn(async move {
@@ -457,9 +473,11 @@ impl Kernel {
                         Err(e) => tracing::warn!("claiming jobs: {e}"),
                     }
                 }
+                let wait = pace.after(found);
                 tokio::select! {
-                    _ = shutdown.changed() => break,
-                    _ = tokio::time::sleep(POLL) => {}
+                    // A worker is free again: what waited for one is looked for now.
+                    Some(_) = running.join_next(), if !running.is_empty() => {}
+                    keep = crate::outbox::rest(wait, &mut pace, &mut woken, &mut shutdown) => if !keep { break },
                 }
             }
             while running.join_next().await.is_some() {}
@@ -527,6 +545,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        crate::outbox::wake(&crate::outbox::JOBS);
         if done.rows_affected() == 0 { Err(Error::NotFound("failed job".into())) } else { Ok(()) }
     }
 
