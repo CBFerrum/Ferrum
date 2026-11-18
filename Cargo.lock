@@ -3731,7 +3731,6 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.10.9",
  "stacker",
- "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -3760,7 +3759,6 @@ dependencies = [
 name = "ferrum-migration"
 version = "0.1.0"
 dependencies = [
- "loco-rs",
  "sea-orm-migration",
 ]
 
@@ -4057,7 +4055,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
- "tracing",
  "uuid",
  "zip",
 ]
