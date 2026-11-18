@@ -19,3 +19,4 @@ deploy/office-proof-key*
 deploy/live/cert.pem
 deploy/live/key.pem
 deploy/live/keys/
+reference/single-host/.env

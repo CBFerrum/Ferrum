@@ -566,8 +566,8 @@ kubectl -n ferrum create secret docker-registry ghcr --docker-server=ghcr.io \
 kubectl -n ferrum patch serviceaccount default -p '{"imagePullSecrets": [{"name": "ghcr"}]}'
 ```
 
-**Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
-Ferrum, PDF renderer) with freshly generated secrets. The workspace is created, seeded and
+**Checking an image before it goes out.** `reference/single-host/smoke.sh` deploys the single-host reference stack (the
+product's Compose file, with a database, a store and a daily dump beside it) with freshly generated secrets. The workspace is created, seeded and
 invoiced by the release being replaced (`FERRUM_PREVIOUS_IMAGE`, if set), then the server's
 container is replaced with `FERRUM_IMAGE` as an upgrade does; the session and the data must
 survive. On the new image it then checks the security headers; the shell's pages, apps' pages and
@@ -584,7 +584,7 @@ own checkout as the interfaces' source (`--build-context frontend=<checkout>`). 
 port 8080 and the 20-second load test):
 
 ```bash
-FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest deploy/smoke.sh
+FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest reference/single-host/smoke.sh
 ```
 
 **Checking the Kubernetes deployment.** `deploy/kind/smoke.sh` deploys the chart (`deploy/helm/ferrum`) to a cluster, on
@@ -631,7 +631,7 @@ GitHub; `scripts/local_ci.sh` runs every other job. From the repository's root, 
    `python:3.13-alpine` and `nginxinc/nginx-unprivileged:1.27-alpine` and the pinned editor builds).
 4. **The image** (job `image`):
    ```bash
-   FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
+   FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 reference/single-host/smoke.sh
    ```
    It pulls `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10` (and, from the
    single-host reference stack that gives it a database and a store, `postgres:17` and `chrislusf/seaweedfs:4.53`),
@@ -680,8 +680,9 @@ tar -cf ferrum-offline-<commit>.tar ferrum-offline-<commit>/
 ```
 
 The bundle holds every image (the server's at that commit, the PDF renderer's, the online editor's, and
-what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); no database and no object
-store, which are the site's; with `--kubernetes`, the operators'
+what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); for one host, the
+single-host reference stack's too (PostgreSQL, SeaweedFS), and for Kubernetes no database and no object store, which are
+the site's; with `--kubernetes`, the operators'
 manifests at the versions `deploy/kind/install.sh` names (Gateway API, cert-manager, metrics-server) and every image they
 name, including the ones named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which
 only its code names, and the images `helm template` of the chart names (the release's is given to it as `image.tag`); this
@@ -698,8 +699,10 @@ ferrum-offline-<commit>/deploy/offline/load.py --check
 ```
 
 * *One host*: `deploy/offline/load.py` puts the images into Docker under their own names and writes
-  `release.env`; fill in `deploy/.env` (*Configuration*) and start it with
-  `docker compose -f deploy/docker-compose.yml --env-file deploy/.env --env-file release.env up -d`.
+  `release.env`; the bundle carries the single-host reference stack's images and files too (`reference/`, with the
+  database and the store it runs beside the product): with that stack, `FERRUM_IMAGE=<the release.env's> reference/single-host/up.sh`
+  (it writes its `.env`), or, with a database and a bucket of your own, fill in `deploy/.env` (*Configuration*) and start the
+  product with `docker compose -f deploy/docker-compose.yml --env-file deploy/.env --env-file release.env up -d`.
 * *Kubernetes*: put the images in the site's registry (any OCI registry: Harbor, Zot, CNCF
   Distribution) with `deploy/offline/load.py --registry registry.site:5000` (`--insecure` for plain
   http or a certificate the nodes do not trust). Each image goes to
@@ -824,7 +827,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   old interfaces). Two such builds on one database are level. A local build from git takes the
   date of the commit checked out when the kernel's build script last ran, so two local builds may look the same age:
   they are then level, which is safe.
-  `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
+  `reference/single-host/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
 * **Rehearsed with two real binaries.** `scripts/window_rehearsal.sh <older commit> ferrum_windowrehearsal_<name>`
   builds an older commit of main as the image build does (its tree read with `git archive`, `BUILD_DATE` its commit's
@@ -972,18 +975,17 @@ for. It writes nothing to the live database and never takes the store back: a co
 reads its restore marker, finds itself behind and is held; a copy with another identity keeps a marker of its own. Run
 it after each change to backups, and at least quarterly.
 
-### The store Compose bundles
+### The store the single-host reference stack runs
 
-`deploy/docker-compose.yml` runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one
-process with its own volume. Only its S3 port listens, on Compose's network alone. It is given the key in `deploy/.env`
-(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, which `deploy/preflight.sh --generate` makes, and the server signs with:
-`deploy/store/start.sh`; it refuses to start without them) and makes the key that encrypts what it keeps, in its own
+Ferrum is given a bucket and operates no store. The single-host reference stack (`reference/single-host/compose.yml`, an
+example, not the product) runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one process with its
+own volume. Only its S3 port listens, on Compose's network alone. It is given the key in `reference/single-host/.env`
+(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, which `up.sh` makes once, and the server signs with:
+`reference/store/start.sh` refuses to start without them, naming them) and makes the key that encrypts what it keeps, in its own
 volume. The one-shot `store-setup` service runs `ferrum task bucket_set_up` once the store answers, which makes the bucket
-`ferrum` with versioning, lifecycle rules and encryption; it does not run with a store of your own (`STORE_REPLICAS=0`),
-whose bucket is left as it is. The store makes no bucket a write names, so a wrong bucket name is refused, and the server
-is not ready, saying `NoSuchBucket`. To use a store of your own instead, set its bucket, address and keys and
-`STORE_REPLICAS=0`. Back the store up beside the database with the commands in *Backups and restore* (the dump, then the
-store's volume while the store is paused); they were not run here, as there is no Docker on the machine this was built on.
+`ferrum` with versioning, lifecycle rules and encryption. The store makes no bucket a write names, so a wrong bucket name is
+refused, and the server is not ready, saying `NoSuchBucket`. Its volume and key are the stack's owner's to back up
+(`reference/single-host/README.md`).
 
 ## Backups and restore
 
@@ -1795,7 +1797,7 @@ stay `unscanned`, and signatures added later do not reach files already stored.
 ## Checking a deployment
 
 **Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
-left as placeholders, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
+left as placeholders, the database's and the store's addresses, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` makes the online
 editor's WOPI proof key (`deploy/office-proof-key`) when there is none, and changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
@@ -3147,7 +3149,7 @@ client sending its next request when the last is answered:
 | Create a draft Sales Invoice (1 to 3 lines) | 10% |
 
 Every image build runs it for 20 seconds at 10 and then 50 clients, against the image deployed
-with the Compose stack on CI's runner (`deploy/smoke.sh`, the `image` job): the server, PostgreSQL,
+with the Compose stack on CI's runner (`reference/single-host/smoke.sh`, the `image` job): the server, PostgreSQL,
 the editors' server and LiveKit share one GitHub-hosted machine with the load generator. The build
 fails when a level misses a target:
 
@@ -3423,7 +3425,7 @@ shows whether the editor and the PDF renderer are set up and answering (`GET /ap
 on purpose, its address left empty: information, with no `fix`), `warning` or `blocker`), and `ferrum task doctor` prints the
 same. `deploy/office_check.py --url … --tenant … --token … --office …` opens a docx, an xlsx and a pptx made in Drive,
 does what the editor does over WOPI (CheckFileInfo, LOCK, GetFile, PutFile, UNLOCK), checks the save became a new
-version, and has the editor load a file itself; `deploy/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
+version, and has the editor load a file itself; `reference/single-host/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
 checks the Kubernetes routes, the network policy and the server's report. With the editor down, Drive's "Open" answers
 that the editor server cannot be reached (it names the failure, not the address); everything else in Drive works, and
 files open in the browser editors if they are installed.
@@ -3604,7 +3606,7 @@ and Meet appears under Communication. Only people with a Comms role can join.
 * To try it on one machine: `FERRUM_MEET_URL=ws://localhost:7880`, `FERRUM_MEET_NODE_IP=127.0.0.1`,
   `FERRUM_MEET_EXTERNAL_IP=false`.
 
-`deploy/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
+`reference/single-host/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
 the passes Ferrum signs, refuses one signed with another secret, and that Meet's pages may reach
 it. CI runs it on every image.
 

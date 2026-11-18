@@ -6,7 +6,7 @@ without internet"). It writes a directory to carry across:
 
     images/      every image, copied with its digest kept (skopeo; `docker save` without it)
     manifests/   with --kubernetes, the operators' manifests at the versions CI tests (Gateway API, cert-manager, metrics-server)
-    deploy/      this checkout's deploy/ directory, these tools included
+    deploy/      this checkout's deploy/ directory, these tools included (one host: reference/ beside it)
     bundle.json  the release, each image with its digest, each manifest with where it came from
     SHA256SUMS   every file's checksum; load.py refuses a bundle that does not match it
 
@@ -279,7 +279,9 @@ def main() -> None:
             print(f"note: {e} runs beside the cluster from {COMPOSE[e]}; its image is carried for that host", file=sys.stderr)
             wanted |= compose_images([DEPLOY / COMPOSE[e]], env)
     else:
-        wanted |= compose_images([DEPLOY / "docker-compose.yml"] + [DEPLOY / COMPOSE[e] for e in sorted(extras - {"clamav"})], env)
+        # One host: the product's Compose file and the single-host reference stack beside it (a database, a store, a backup).
+        reference = REPO / "reference" / "single-host" / "compose.yml"
+        wanted |= compose_images([DEPLOY / "docker-compose.yml", reference] + [DEPLOY / COMPOSE[e] for e in sorted(extras - {"clamav"})], env)
     if "clamav" in extras:
         wanted.add(f"clamav/clamav:{os.environ.get('CLAMAV_TAG', 'stable')}")
 
@@ -291,6 +293,9 @@ def main() -> None:
         images.append({"ref": ref, "name": normalize(ref), "digest": digest, "file": file.as_posix(), "format": fmt})
 
     shutil.copytree(DEPLOY, out / "deploy", ignore=shutil.ignore_patterns("__pycache__", ".env", "test"))
+    if not a.kubernetes:
+        shutil.copytree(REPO / "reference" / "single-host", out / "reference" / "single-host", ignore=shutil.ignore_patterns(".env"))
+        shutil.copytree(REPO / "reference" / "store", out / "reference" / "store")
     (out / "bundle.json").write_text(
         json.dumps(
             {

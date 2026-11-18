@@ -12,7 +12,10 @@
 # deploy/kind/install.sh installs for CI), and installs the CloudNativePG operator and its Barman Cloud plugin itself. Run again,
 # it changes what changed. NS is the namespace (default ferrum).
 set -euo pipefail
+from=$PWD
 cd "$(dirname "$0")/../.."
+# A values file named relative to where this was run from.
+absolute() { case $1 in /*) echo "$1" ;; *) echo "$from/$1" ;; esac; }
 
 NS=${NS:-ferrum}
 CNPG=1.30.1
@@ -20,8 +23,8 @@ BARMAN_PLUGIN=v0.15.1
 product=() database=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -f) product+=(-f "${2:?-f needs a file}"); shift 2 ;;
-    -d) database+=(-f "${2:?-d needs a file}"); shift 2 ;;
+    -f) product+=(-f "$(absolute "${2:?-f needs a file}")"); shift 2 ;;
+    -d) database+=(-f "$(absolute "${2:?-d needs a file}")"); shift 2 ;;
     *) echo "usage: $0 [-f product-values.yaml]... [-d database-values.yaml]..." >&2; exit 2 ;;
   esac
 done

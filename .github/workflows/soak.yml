@@ -34,7 +34,7 @@ jobs:
       FERRUM_IMAGE: ${{ inputs.image || 'ghcr.io/cbferrum/ferrum:latest' }}
       HOURS: ${{ inputs.hours || (github.event_name == 'pull_request' && '0.35') || '3' }}
       COMPOSE_PROJECT_NAME: ferrum-soak
-      # One user drives each workspace: lift the per-user budget, as deploy/smoke.sh does. The per-workspace share
+      # One user drives each workspace: lift the per-user budget, as reference/single-host/smoke.sh does. The per-workspace share
       # stays at its default, which is what keeps the light workspace's turns.
       FERRUM_USER_REQUESTS_PER_MINUTE: "0"
     steps:

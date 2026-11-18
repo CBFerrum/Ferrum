@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploys the Compose stack (database, Ferrum, PDF renderer) and checks that it works as a
+# Deploys the single-host reference stack (reference/single-host: a database, a store and a daily dump beside the product's Compose
+# file: Ferrum, the PDF renderer, the editor) and checks that it works as a
 # deployment. A workspace is created, seeded and invoiced by the release being replaced
 # (FERRUM_PREVIOUS_IMAGE, when there is one), then the server's container is replaced with
 # FERRUM_IMAGE as an upgrade does: the session and the data must survive it. Then, on the new
@@ -16,9 +17,15 @@
 # SMOKE_MEET=1, the meeting server (meet.yml), which must accept the passes Ferrum signs, and
 # calendar apps signing in with an app password.
 #
-#   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest deploy/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
+# The database is restored from a dump taken by the stack's own backup command (deploy/dump.sh, as the job runs it), the store's
+# volume from its archive, and the files are intact.
+#   FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:latest reference/single-host/smoke.sh     # needs Docker, curl, openssl, python3 + httpx
+# Not run on the machine this was written on (no Docker daemon there).
 set -euo pipefail
 cd "$(dirname "$0")"
+here=$PWD
+root=$(cd ../.. && pwd)
+deploy=$root/deploy
 
 NEW_IMAGE=${FERRUM_IMAGE:-ghcr.io/cbferrum/ferrum:latest}
 # One user drives the load test: lift the per-user budget for it.
@@ -31,8 +38,12 @@ export OFFICE_PORT=${SMOKE_OFFICE_PORT:-9980} OFFICE_BIND=127.0.0.1
 export OFFICE_PUBLIC_HOST=127.0.0.1:$OFFICE_PORT OFFICE_PUBLIC_URL=http://127.0.0.1:$OFFICE_PORT
 OFFICE="http://127.0.0.1:$OFFICE_PORT"
 export POSTGRES_PASSWORD FERRUM_DB_PASSWORD JWT_SECRET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+export DATABASE_URL FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT=http://store:8333 FERRUM_S3_REGION=us-east-1 BACKUP_KEEP_DAYS=30
+export TEMPORAL_PG_HOST=db TEMPORAL_PG_USER=postgres TEMPORAL_PG_PASSWORD
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
+TEMPORAL_PG_PASSWORD=$POSTGRES_PASSWORD
 FERRUM_DB_PASSWORD=$(openssl rand -hex 16)
+DATABASE_URL=postgres://ferrum:$FERRUM_DB_PASSWORD@db:5432/ferrum
 AWS_ACCESS_KEY_ID=FERRUM$(openssl rand -hex 8 | tr 'a-f' 'A-F')
 AWS_SECRET_ACCESS_KEY=$(openssl rand -hex 24)
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
@@ -40,14 +51,14 @@ API="http://127.0.0.1:${FERRUM_PORT}"
 PASSWORD='Smoke-Test-Passw0rd'
 
 work=$(mktemp -d)
-files=(-f docker-compose.yml)
+files=(-f "$deploy/docker-compose.yml" -f "$here/compose.yml")
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
-  files+=(-f editors.yml)
+  files+=(-f "$deploy/editors.yml")
   export FERRUM_EDITORS_PORT=${SMOKE_EDITORS_PORT:-8090}
   export FERRUM_EDITORS_URL="http://127.0.0.1:$FERRUM_EDITORS_PORT"
 fi
 if [ -n "${SMOKE_MEET:-}" ]; then
-  files+=(-f meet.yml)
+  files+=(-f "$deploy/meet.yml")
   export FERRUM_MEET_PORT=${SMOKE_MEET_PORT:-7880} FERRUM_MEET_KEY=smoke FERRUM_MEET_SECRET FERRUM_MEET_EXTERNAL_IP=false FERRUM_MEET_NODE_IP=127.0.0.1
   export FERRUM_MEET_URL="ws://127.0.0.1:$FERRUM_MEET_PORT"
   FERRUM_MEET_SECRET=$(openssl rand -hex 32)
@@ -114,7 +125,7 @@ wait_up "$API/_health" "the server"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before" | json 'd["docstatus"]')" = "1" ] || fail "the invoice made before the replacement"
 [ "$(curl -fsS "${auth[@]}" "$API/api/v1/SalesInvoice/$before/audit" | json 'd["chain_valid"]')" = "True" ] || fail "the audit chain across the replacement"
 # On the new image: the one before may not have what this checks.
-FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 ../scripts/support_check.py \
+FERRUM_URL=$API FERRUM_TENANT=smoke FERRUM_EMAIL=smoke@smoke.test FERRUM_PASSWORD=$PASSWORD python3 "$root/scripts/support_check.py" \
   || fail "support access reaches more than it was given"
 
 # The two-version window (docs/operations.md, Upgrades and rollbacks): the image before this one starts again on the
@@ -276,7 +287,7 @@ report=$(compose exec -T ferrum ferrum task doctor format:json 2>/dev/null || tr
 python3 -c 'import json, sys
 f = [f for f in json.loads(sys.argv[1][sys.argv[1].index("["):]) if f["check"] == "office"]
 sys.exit(not f or f[0]["level"] != "ok")' "$report" || fail "the server's own report does not find the editor working: $report"
-python3 office_check.py --url "$API" --tenant smoke --token "$TOKEN" --office "$OFFICE" || fail "online editing"
+python3 "$deploy/office_check.py" --url "$API" --tenant smoke --token "$TOKEN" --office "$OFFICE" || fail "online editing"
 
 if [ -n "${FERRUM_EDITORS_IMAGE:-}" ]; then
   step "the browser editors' server"
@@ -368,7 +379,9 @@ file_sha=$(json 'd["sha256"]' <<<"$attachment")
 erasee=$(curl -fsS "${auth[@]}" -H 'content-type: application/json' "$API/api/v1/Customer" \
   -d '{"customer_name": "Erase Rehearsal", "customer_type": "Individual", "email": "erase-rehearsal@smoke.test"}' | json 'd["id"]') ||
   fail "a customer to erase"
-compose exec -T db pg_dump -U postgres -Fc ferrum > "$work/ferrum.dump" || fail "the database backup"
+# The stack's own backup command, as the daily job runs it (deploy/dump.sh, as the server's role).
+compose exec -T backup sh -c 'rm -f /tmp/smoke.dump && /usr/local/bin/dump.sh dump "$DATABASE_URL" /tmp/smoke.dump >&2 && cat /tmp/smoke.dump' > "$work/ferrum.dump" || fail "the database backup"
+[ -s "$work/ferrum.dump" ] || fail "the database backup is empty"
 curl -fsS "${auth[@]}" -H 'content-type: application/json' "$API/api/admin/personal-data/erase" \
   -d '{"email": "erase-rehearsal@smoke.test", "reason": "smoke: erased after the backup"}' > /dev/null || fail "the erasure"
 # The erasure is journalled with the files once it has committed, by the outbox's worker: the files' backup
@@ -380,7 +393,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 journal || fail "the erasure's journal, written with the files"
-# The store's volume, archived while the store is paused (docs/operations.md, "The store Compose bundles").
+# The store's volume, archived while the store is paused (reference/single-host/README.md).
 compose pause store
 rc=0
 compose run --rm --no-deps -T --entrypoint tar store -C /data -czf - . > "$work/store.tgz" || rc=$?
@@ -416,7 +429,7 @@ echo "    the customer erased after the backup was erased again"
 # On the restored stack.
 # The reference workload and its targets (docs/operations.md): a regression past them fails the build.
 step "load test"
-python3 ../tools/loadtest.py --url "$API" --tenant smoke --email smoke@smoke.test --password "$PASSWORD" --levels 10,50 --seconds "${SMOKE_LOAD_SECONDS:-20}" \
+python3 "$root/tools/loadtest.py" --url "$API" --tenant smoke --email smoke@smoke.test --password "$PASSWORD" --levels 10,50 --seconds "${SMOKE_LOAD_SECONDS:-20}" \
   --p95-ms "${SMOKE_LOAD_P95_MS:-10:300,50:2000}" --min-rps "${SMOKE_LOAD_MIN_RPS:-10:120,50:100}"
 
 step "the deployment works"

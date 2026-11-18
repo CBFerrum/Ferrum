@@ -12,7 +12,7 @@ end unless --keep). The workspace needs a company, a customer and two priced ite
 picks them. Exit status 1 when any level has more than 1% errors, or misses a target it was given:
 `--p95-ms 10:300,50:2000` (the most a level's p95 may take) and `--min-rps 10:120,50:100` (the
 fewest requests a second it must serve). This mix, at those levels, is the reference workload
-(docs/operations.md, "Reference workload and targets"); every image build runs it (deploy/smoke.sh).
+(docs/operations.md, "Reference workload and targets"); every image build runs it (reference/single-host/smoke.sh).
 `--summary` writes each level's figures as JSON.
 """
 

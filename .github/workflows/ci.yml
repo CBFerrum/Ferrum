@@ -222,6 +222,10 @@ jobs:
       # The example database (reference/kubernetes/database): its bootstrap modes and its pooler.
       - name: Reference database chart
         run: bash reference/kubernetes/database/test.sh
+      # The reference stacks: their READMEs name paths that exist, their scripts parse, the single-host stack merges with the
+      # product's Compose file.
+      - name: Reference stacks
+        run: bash reference/test.sh
       # Pools, zones and gateways: each preset keeps its promises, each refusal refuses.
       - name: Helm chart's deployment shapes
         run: bash deploy/helm/test_pools.sh
@@ -339,7 +343,7 @@ jobs:
           docker buildx build --load -q -t ferrum-editors:ci deploy/editors
           # The meeting server too (LiveKit), as deploy/meet.yml runs it.
           FERRUM_IMAGE=ferrum:ci FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest \
-            FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
+            FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 reference/single-host/smoke.sh
       - if: github.event_name == 'push'
         id: candidate
         run: |

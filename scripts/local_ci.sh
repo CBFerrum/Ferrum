@@ -249,6 +249,7 @@ job_audit() {
   run "audit Helm chart" bash deploy/helm/test.sh
   run "audit Helm chart's deployment shapes" bash deploy/helm/test_pools.sh
   run "audit the reference stacks' database chart" bash reference/kubernetes/database/test.sh
+  run "audit the reference stacks" bash reference/test.sh
   run "audit offline bundles" python3 deploy/offline/test_offline.py
   run "audit the bar runtime's pure helpers" node --test server/shell/runtime.test.mjs
   run "audit licenses" python3 scripts/licenses.py check
