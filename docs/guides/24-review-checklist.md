@@ -38,6 +38,9 @@ lock.
   prefixed with the app; migrations additive **(reviewed)**. ([04](04-data-and-records.md))
 - [ ] No new raw write to an `e_*` table, or one the review in `docs/registry/mutation-paths.md` now lists with its
   kind (`scripts/mutation_paths.py`). ([04](04-data-and-records.md))
+- [ ] Every route of the app's `Site` that writes calls the gate and nothing else that writes, or is in
+  `docs/registry/agent-parity.md` with its kind; every action a person can press has a contract with `effect`, `returns`
+  and `completion` (`scripts/agent_parity.py --app .`). ([06](06-events-jobs-and-logic.md))
 - [ ] Every route checks rights; "not found" for what the caller may not know exists; public routes authenticate by
   what they carry and count requests before any lookup **(reviewed)**. ([05](05-permissions-and-people.md),
   [21](21-apis-and-docs.md))
@@ -145,7 +148,7 @@ lock.
 ## Checked by
 
 The scripts named in each item: `scripts/check_apps.py`, `settings.py`, `secret_paths.py`, `mutation_paths.py`,
-`licenses.py`, `mutants.py`, `registry.py`, `app_ci.sh`, `local_ci.sh`, `one_input.sh`,
+`agent_parity.py`, `licenses.py`, `mutants.py`, `registry.py`, `app_ci.sh`, `local_ci.sh`, `one_input.sh`,
 `oidc_rehearsal.sh`; the server's `compiled_apps_fit_together`; Ferrum-Frontend's `packages/build/cli.mjs check`.
 Every item marked **(reviewed)** is a person's.
 
