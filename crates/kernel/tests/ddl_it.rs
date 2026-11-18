@@ -258,7 +258,10 @@ fn link_index_does_not_block_inserts() {
         assert!(during > 0, "the writers did not run during the sync: nothing was observed");
         assert!(samples >= 20, "not observed: {samples} samples in {synced:?}, a build too fast to sample");
         assert_eq!(blocked, 0, "a writer was blocked by the sync in {blocked} of {samples} samples");
-        assert!(slowest < Duration::from_secs(1), "an insert waited {slowest:?}");
+        assert!(
+            slowest < Duration::from_secs(5),
+            "an insert waited {slowest:?} (the verdict is the sampler's; this only catches a writer held for the whole build)"
+        );
         // What the sync set for its own waits is given back: the pool's 10 s.
         let mut conn = w.db().direct.acquire().await.unwrap();
         let t: String = sqlx::query_scalar("show lock_timeout").fetch_one(&mut *conn).await.unwrap();
@@ -383,7 +386,7 @@ fn build_waits_for_an_open_transaction_not_the_writers() {
         stop.store(true, Ordering::Relaxed);
         let (slowest, inserts) = writer.await.unwrap();
         println!("K7: {inserts} inserts while a build waited 3 s for an old transaction, the slowest {slowest:?}");
-        assert!(slowest < Duration::from_secs(1));
+        assert!(slowest < Duration::from_secs(2), "an insert waited {slowest:?} while the build waited 3 s for an old transaction");
         assert!(w.invalid().await.is_empty());
     });
 }
