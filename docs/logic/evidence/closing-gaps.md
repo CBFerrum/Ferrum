@@ -100,7 +100,7 @@ All local, at the head that merged:
 
 **Erasure reaches what runs keep (FLC-OPS-006).** Erasing a person's data now also takes the erased fields out
 of the copies runs keep of each erased record: the event that started a run, the run's own state, the material
-shown and the signals waiting. The erasure is kept (`logic_erasure`, migration 20261108000007), and
+shown and the signals waiting. The erasure is kept (`logic_erasure`, the kernel baseline migration), and
 `process_report` takes the fields out again when a runtime reports a run from a history taken before.
 - *Evidence (process_it):* a request's contact address leaves its run's trigger, state and task material.
 - The test runtime then reports its own pre-erasure copy, and the address stays gone.

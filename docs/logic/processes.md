@@ -11,7 +11,7 @@ and FLC-HUMAN in [traceability.md](traceability.md); the evidence is
 | `crates/logic/src/compile.rs`, `solution.rs` | The steps, and what the compiler refuses |
 | `crates/logic/src/process.rs` | A run as a pure state machine: what happened in, what to do out |
 | `crates/logic/src/calendar.rs` | Waits as elapsed time, business days or open time on a calendar, resolved to instants; the working-hours clock (`add_working`, `working_between`, `next_open`, `is_open`) |
-| `crates/kernel/src/process.rs`, migration `20261108000003_logic_process.sql` | Runs, tasks, decisions, waits, signals and calendars: Ferrum's records, and the activities a runtime calls |
+| `crates/kernel/src/process.rs`, the kernel baseline migration | Runs, tasks, decisions, waits, signals and calendars: Ferrum's records, and the activities a runtime calls |
 | `crates/process` | The runtime on Temporal, and what starts and signals runs |
 | `server/src/process.rs` | The server's switch: `TEMPORAL_ADDRESS`, with the `process` feature |
 

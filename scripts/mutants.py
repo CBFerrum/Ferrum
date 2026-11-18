@@ -638,8 +638,8 @@ MUTANTS = [
     ("closing-without-the-name", "crates/kernel/src/account.rs", "        if confirm.trim() != slug {", "        if false {", SIGNUP),
     ("closing-by-anyone", "crates/kernel/src/account.rs", "    pub async fn close_own_workspace(&self, ctx: &Ctx, confirm: &str) -> Result<NaiveDate> {\n        if !ctx.is_admin {", "    pub async fn close_own_workspace(&self, ctx: &Ctx, confirm: &str) -> Result<NaiveDate> {\n        if false {", SIGNUP),
     ("plan-quotas-not-written", "crates/kernel/src/plans.rs", "            .bind(&quotas)", "            .bind(json!({}))", SIGNUP),
-    ("people-quota-ignored", "crates/kernel/migrations/20261104000002_people_quota.sql", "  if used >= cap then", "  if false then", SIGNUP),
-    ("people-quota-only-on-insert", "crates/kernel/migrations/20261104000002_people_quota.sql", "before insert or update of is_active, kind on app_user", "before insert on app_user", SIGNUP),
+    ("people-quota-ignored", "crates/kernel/migrations/20261201000001_baseline.sql", "  if used >= cap then", "  if false then", SIGNUP),
+    ("people-quota-only-on-insert", "crates/kernel/migrations/20261201000001_baseline.sql", "before insert or update of is_active, kind on app_user", "before insert on app_user", SIGNUP),
     # An industrial solution's acceptance on site (FERRUM-IND-018).
     ("commissioned-without-acceptance", "crates/ops/src/devices.rs", "        if !waiting.is_empty() {", "        if false {", ACCEPTANCE),
     ("a-running-run-is-a-pass", "crates/ops/src/acceptance.rs", "r.procedure = p.id and r.status = 'Passed') \\", "r.procedure = p.id and r.status <> 'Failed') \\", ACCEPTANCE),
@@ -705,7 +705,7 @@ MUTANTS = [
     ("packaged-lines-own-table", "crates/meta/src/effective.rs", "let rows = if f.of.as_deref().is_some_and(|c| custom.contains(c)) {", "let rows = if b.custom {", PACKAGED_LINES),
     ("packaged-lines-two-levels", "crates/meta/src/effective.rs", "        if !b.custom && building.get(of).is_some_and(", "        if false && building.get(of).is_some_and(", PACKAGED_LINES),
     ("packaged-lines-taken-over", "crates/kernel/src/customize.rs", "and not exists (select 1 from {under} r.tenant_id = c.tenant_id and r.id = c.parent_id)", "and false", PACKAGED_LINES),
-    ("custom-lines-cascade-gone", "crates/kernel/migrations/20261110000010_packaged_lines.sql", "    delete from custom_record c using gone g where c.tenant_id = g.tenant_id and c.parent_id = g.id;", "    perform 1;", CUSTOM_LINES),
+    ("custom-lines-cascade-gone", "crates/kernel/migrations/20261201000001_baseline.sql", "    delete from custom_record c using gone g where c.tenant_id = g.tenant_id and c.parent_id = g.id;", "    perform 1;", CUSTOM_LINES),
     ("nested-lines-delete-guard-blind","crates/kernel/src/doc.rs", "                        checks.push((sub.table.clone(), f.name.clone(), \"id\", own));", "                        let _ = own;", NESTED_LINES),
     # Configured actions, update_linked, the day in aggregate filters, and the two faults found with them
     # (docs/api.md, Configured actions; docs/builder/decisions.md BD-11).

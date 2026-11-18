@@ -608,8 +608,8 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
         }
         ddl.search_indexes(&t, ent).await?;
         ddl.rls(&t).await?;
-        // A held record is not deleted, whoever's SQL asks (migration 20261105000006), and the row as it
-        // was before each change to it is kept while it is held (20261109000002).
+        // A held record is not deleted, whoever's SQL asks (the kernel baseline migration), and the row as
+        // it was before each change to it is kept while it is held.
         let named = ent.def.name.replace('\'', "''");
         ddl.exec(format!(
             "create or replace trigger ferrum_held before delete on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_guard('{named}')",
