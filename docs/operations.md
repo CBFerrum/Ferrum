@@ -4835,9 +4835,12 @@ matter of whole months: dropping one is a catalog change, where deleting its row
 ever dropped by the server (how long the trail is kept is the owner's decision). A save whose month has no partition
 fails, so a server makes this month and three ahead at every start, before it serves, and the hourly maintenance makes
 them again (its first step); a move or a sandbox makes the months of the rows it brings; and the doctor's `audit.months`
-is a blocker when fewer than two months ahead are there. Each month carries the trail's own policy, forced, so read by
-its own name it shows what `audit_event` would: a workspace's own rows, every row to the system (as `deploy/dump.sh`
-reads it). Measurements' minute rollups (`op_rollup_minute`) are kept the same way, and retention
+is a blocker when fewer than two months ahead are there; more than 600 months at once (a row dated 1970 by a wrong
+clock) is refused, and a move bringing such a row is refused, naming the table and the dates. Every partition of a
+workspace table, an app's included, is made by `ferrum_create_partition`, which gives it its table's policies, forced:
+read by its own name it shows what its table would, a workspace's own rows and every row to the system (as
+`deploy/dump.sh` reads it). A partition without them would read as empty there and be left out of a dump without a
+word, so a server refuses to start while one exists and `deploy/dump.sh` refuses to dump, each naming it. Measurements' minute rollups (`op_rollup_minute`) are kept the same way, and retention
 drops their months older than 400 days.
 
 ```bash

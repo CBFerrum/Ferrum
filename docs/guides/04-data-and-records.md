@@ -379,9 +379,13 @@ The rules:
 - **Row-level security enabled and forced, with the `tenant_isolation` policy above**, exactly as the kernel makes
   it for entity tables (`Ddl::rls` in `crates/kernel/src/ddl.rs`). Without `force`, the table's owner (the
   application's role) reads every workspace's rows. **Each partition too**: read by its own name, a partition is a
-  table of its own that its parent's policy does not reach, so make every one enabled and forced as you create it
-  (ERP's journal years, Operations' measurement days); with no policy of its own, such a read finds nothing. The
-  doctor fails such a table, a partition or a table in another schema than the vault's as a blocker:
+  table of its own that its parent's policy does not reach. Make every partition with the kernel's
+  `ferrum_create_partition(parent, name, lower, upper)` (ERP's journal years, Operations' measurement days, the audit
+  trail's months), which gives it its parent's policies, forced. A partition with none of its own reads as empty even
+  to the system, and a dump (`deploy/dump.sh` reads each partition by its name) would hold none of its rows: a server
+  refuses to start while one exists, naming it (`ferrum_partitions_without_policies()`), and `deploy/dump.sh` refuses
+  to dump. Make the parent's policies before its first partitions. The doctor fails a table, a partition or a table in
+  another schema than the vault's that does not force row-level security as a blocker:
   `isolation.row_security: N tables hold workspaces' rows without enforcing row-level security: …` (`ferrum task
   doctor`; `crates/kernel/src/doctor.rs`).
 - **Files run once each, in file-name order, per cluster**, after entity tables exist, each in its own transaction,

@@ -468,6 +468,16 @@ impl Kernel {
         // The audit trail's months, before anything is served: a server stopped for months, or a database restored from
         // long ago, would otherwise refuse every save until the hourly maintenance made them.
         audit::ensure_months(&db).await?;
+        // A partition without its table's policies (made some other way than ferrum_create_partition, by any app) reads as
+        // empty to the system, and a dump would leave its rows out without a word: no start while one exists.
+        let unguarded: Vec<String> = sqlx::query_scalar("select ferrum_partitions_without_policies()").fetch_all(&db.pool).await?;
+        if !unguarded.is_empty() {
+            return Err(Error::Invalid(format!(
+                "these partitions do not carry their table's row-level security policies, so a dump would leave out their rows: {}. \
+                 The app that made them must make its partitions with ferrum_create_partition; give each its table's policies to start",
+                unguarded.join(", ")
+            )));
+        }
         if booted.guest.is_some() || !settings.migrate_at_start {
             ddl::words(&full)?;
         }

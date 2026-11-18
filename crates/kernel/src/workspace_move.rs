@@ -223,7 +223,13 @@ pub(crate) async fn copy_rows(
                     .fetch_one(&mut **src)
                     .await?;
             if let (Some(first), Some(last)) = (first, last) {
-                sqlx::query("select ferrum_ensure_month_partitions($1::regclass, $2, $3)").bind(t).bind(first).bind(last).execute(&mut **tx).await?;
+                // A range no history has (a row dated 1970 by a wrong clock) is refused, naming the table and the dates.
+                sqlx::query("select ferrum_ensure_month_partitions($1::regclass, $2, $3)").bind(t).bind(first).bind(last).execute(&mut **tx).await.map_err(
+                    |e| match Error::from(e) {
+                        Error::Invalid(m) => Error::Conflict(format!("{m}, so nothing was copied")),
+                        e => e,
+                    },
+                )?;
             }
         }
         let names: Vec<String> = columns.iter().filter(|(_, _, generated)| !generated).map(|(c, _, _)| format!("\"{c}\"")).collect();

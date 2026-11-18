@@ -48,31 +48,15 @@ pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
     }
     let retention = retention_days();
     let mut tx = k.db.system_tx().await?;
-    sqlx::query("select pg_advisory_xact_lock(hashtext('ferrum.op_measurement'))").execute(&mut *tx).await?;
-    let have: HashSet<String> =
-        sqlx::query_scalar("select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'op_measurement'::regclass")
-            .fetch_all(&mut *tx)
-            .await?
-            .into_iter()
-            .collect();
-    let mut day = (now - Duration::days(retention)).date_naive();
-    let newest = (now + Duration::days(1)).date_naive();
-    while day <= newest {
-        let name = partition(day);
-        if !have.contains(&name) {
-            // The names and days are made here, from dates, never from input. A partition read by its own name is a
-            // table of its own, which op_measurement's policy does not reach: forced, with no policy of its own, such a
-            // read finds nothing, while what goes through op_measurement is held to its policy (as ERP's journal).
-            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-                "create table {name} partition of op_measurement for values from ('{day}') to ('{}'); \
-                 alter table {name} enable row level security; alter table {name} force row level security",
-                day.succ_opt().ok_or_else(|| Error::internal("no day follows"))?
-            )))
-            .execute(&mut *tx)
-            .await?;
-        }
-        day = day.succ_opt().ok_or_else(|| Error::internal("no day follows"))?;
-    }
+    // Each day through the kernel's ferrum_create_partition, which gives it op_measurement's policies.
+    sqlx::query(
+        "select ferrum_create_partition('op_measurement', 'op_measurement_' || to_char(d, 'YYYYMMDD'), d::date::text, (d::date + 1)::text) \
+         from generate_series($1::date, $2::date, interval '1 day') d",
+    )
+    .bind((now - Duration::days(retention)).date_naive())
+    .bind((now + Duration::days(1)).date_naive())
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("select ferrum_ensure_month_partitions('op_rollup_minute', $1, $2::timestamptz + interval '3 months')")
         .bind(now - Duration::days(ROLLUP_DAYS))
         .bind(now)

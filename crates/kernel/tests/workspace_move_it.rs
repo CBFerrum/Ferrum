@@ -459,6 +459,22 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     assert!(!dir_b.join(&file_key).exists(), "and its files");
     a.set_user_active(&acme, undone, false).await.expect("A takes changes again");
 
+    // An event a clock of 1970 dated: its months to now are more than 600, and the copy is refused, saying so, not a crash.
+    sqlx::query("select ferrum_ensure_month_partitions('audit_event', '1970-01-05 10:00+00', '1970-01-05 10:00+00')").execute(&a.db.pool).await.unwrap();
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("insert into audit_event (tenant_id, at, entity, record_id, action, hash, redacted) values ($1, '1970-01-05 10:00+00', 'Clock', $1, 'kept', '\\x00', '[\"diff\"]')")
+        .bind(t)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    refused(b.move_workspace("acme", &from(None), Run::Start, &quiet).await, "audit_event would need a partition for every month from 1970-01-05");
+    b.move_workspace("acme", &from(None), Run::Abort, &quiet).await.expect("aborted");
+    let mut tx = a.db.system_tx().await.unwrap();
+    sqlx::query("select set_config('ferrum.copy', 'on', true)").execute(&mut *tx).await.unwrap();
+    sqlx::query("delete from audit_event where tenant_id = $1 and entity = 'Clock'").bind(t).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+
     // A writer the freeze does not stop changes A after the copy: the end refuses, and the next run copies afresh.
     b.move_workspace("acme", &from(Some(Stop::Copied)), Run::Start, &quiet).await.expect("copied");
     let mut tx = a.db.system_tx().await.unwrap();

@@ -167,7 +167,11 @@ async fn scenario() {
     // A server stopped for months: no month is there. Saves fail until a maintenance round, or a start, makes them.
     drop_partitions(&k, &partitions(&k).await).await;
     let r = save(&k, "alpha").await;
-    assert!(r.is_err(), "a save with no month to go in: {r:?}");
+    // The server's own fault, said as such: the table, and that no partition holds the row's date.
+    assert!(
+        matches!(&r, Err(ferrum_kernel::Error::Internal(m)) if m.contains("\"audit_event\"") && m.contains("no partition holds this row's date")),
+        "a save with no month to go in: {r:?}"
+    );
     k.maintenance().await.expect("maintenance");
     assert_eq!(partitions(&k).await, ahead, "maintenance makes this month and three ahead");
     save(&k, "alpha").await.expect("a save after maintenance");
@@ -199,6 +203,35 @@ async fn scenario() {
     let made: i32 =
         sqlx::query_scalar("select ferrum_ensure_month_partitions('audit_event', now(), now() + interval '3 months')").fetch_one(&k.db.pool).await.unwrap();
     assert_eq!(made, 0, "made once");
+    // A row dated decades off (a clock of 1970) is not history: more than 600 months at once is refused, saying so.
+    let far = sqlx::query_scalar::<_, i32>("select ferrum_ensure_month_partitions('audit_event', '1970-01-01 00:00+00', now())").fetch_one(&k.db.pool).await;
+    let far = far.map_err(ferrum_kernel::Error::from);
+    assert!(matches!(&far, Err(ferrum_kernel::Error::Invalid(m)) if m.contains("audit_event") && m.contains("1970-01-01") && m.contains("600")), "{far:?}");
+
+    // A partition made any other way than ferrum_create_partition lacks the trail's policies: it would read as empty to a
+    // dump, so it is named, and no server starts while it is there.
+    sqlx::raw_sql(
+        "create table audit_event_y2040m01 partition of audit_event for values from ('2040-01-01 00:00+00') to ('2040-02-01 00:00+00'); \
+         alter table audit_event_y2040m01 enable row level security, force row level security",
+    )
+    .execute(&k.db.pool)
+    .await
+    .unwrap();
+    let bare: Vec<String> = sqlx::query_scalar("select ferrum_partitions_without_policies()").fetch_all(&k.db.pool).await.unwrap();
+    assert_eq!(bare, vec!["audit_event_y2040m01".to_string()]);
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 2, ..Default::default() }).await.unwrap();
+    let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).unwrap();
+    let refused = Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.map(|_| ());
+    assert!(matches!(&refused, Err(ferrum_kernel::Error::Invalid(m)) if m.contains("audit_event_y2040m01")), "{refused:?}");
+    sqlx::raw_sql("drop table audit_event_y2040m01").execute(&k.db.pool).await.unwrap();
+    let made: bool = sqlx::query_scalar("select ferrum_create_partition('audit_event', 'audit_event_y2040m01', '2040-01-01 00:00+00', '2040-02-01 00:00+00')")
+        .fetch_one(&k.db.pool)
+        .await
+        .unwrap();
+    assert!(made);
+    let bare: Vec<String> = sqlx::query_scalar("select ferrum_partitions_without_policies()").fetch_all(&k.db.pool).await.unwrap();
+    assert!(bare.is_empty(), "{bare:?}");
+    kernel(&url).await.db.pool.close().await;
 
     // Three months of events of fifty workspaces: anchoring a day reads its month alone, through the index.
     let today = Utc::now().date_naive().with_day(1).unwrap();

@@ -1726,47 +1726,70 @@ create trigger audit_event_redact_only before update on audit_event
   for each row
   execute function ferrum_audit_redact_only();
 
+-- The one way to make a partition of a table, an app's included: `name`, in the parent's schema, for the range [lower,
+-- upper) (literals of the partition key's type). Made only if missing (true when made). Read by its own name a partition
+-- is a table of its own, which the parent's policies do not reach: it is given the parent's, with row-level security
+-- forced, so such a read sees what the same read of the parent would. A partition without them reads as empty to the
+-- system too, and a dump (deploy/dump.sh reads each partition by its name) would hold none of its rows without a word;
+-- the kernel refuses to start while one exists (ferrum_partitions_without_policies). It is made apart and attached,
+-- which locks the parent against other changes of its partitions only, never against reads or writes (a partition made
+-- in place would wait for every reader, and every writer would wait behind it).
+create function ferrum_create_partition(parent regclass, name text, lower text, upper text) returns boolean
+language plpgsql as $$
+declare
+  schema_oid oid := (select relnamespace from pg_class where oid = parent);
+  p record;
+begin
+  -- Read as rows, not from the catalog's cache: a partition another session made while this one waited is seen.
+  if exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
+    return false;
+  end if;
+  perform pg_advisory_xact_lock(hashtext('ferrum_create_partition'), parent::oid::int);
+  if exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
+    return false;
+  end if;
+  execute format('create table %s.%I (like %s including constraints)', schema_oid::regnamespace, name, parent);
+  execute format('alter table %s.%I enable row level security, force row level security', schema_oid::regnamespace, name);
+  for p in select * from pg_policy where polrelid = parent loop
+    execute format('create policy %I on %s.%I as %s for %s to %s%s%s', p.polname, schema_oid::regnamespace, name,
+      case when p.polpermissive then 'permissive' else 'restrictive' end,
+      case p.polcmd when 'r' then 'select' when 'a' then 'insert' when 'w' then 'update' when 'd' then 'delete' else 'all' end,
+      (select coalesce(string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', '), 'public') from unnest(p.polroles) r),
+      coalesce(' using (' || pg_get_expr(p.polqual, parent) || ')', ''), coalesce(' with check (' || pg_get_expr(p.polwithcheck, parent) || ')', ''));
+  end loop;
+  execute format('alter table %s attach partition %s.%I for values from (%L) to (%L)', parent, schema_oid::regnamespace, name, lower, upper);
+  return true;
+end $$;
+
+-- Partitions of a table with row-level security policies that have none of their own: made some other way than
+-- ferrum_create_partition, they read as empty to the system and a dump leaves their rows out.
+create function ferrum_partitions_without_policies() returns setof text language sql stable as $$
+  select c.oid::regclass::text from pg_class c join pg_inherits i on i.inhrelid = c.oid
+  where c.relispartition and exists (select 1 from pg_policy where polrelid = i.inhparent)
+    and not exists (select 1 from pg_policy where polrelid = c.oid)
+  order by 1
+$$;
+
 -- The months of a table partitioned by month on a time, `<parent>_yYYYYmMM` (UTC months), from that of `since` to that of
--- `until`: those it lacks are made, and how many is returned. A row whose month has no partition fails its statement, so
--- the kernel makes the audit trail's at every start and every hour, three months ahead, and a copy makes those of the rows
--- it brings. There is no default partition: one holding rows of a month would refuse that month's partition later.
--- Each is made apart and attached, which locks the parent against other changes of its partitions only, never against
--- reads or writes (a partition made in place would wait for every reader, and every writer would wait behind it). Read by
--- its own name a partition is a table of its own, which the parent's policies do not reach: each is given the parent's
--- (row-level security forced), so such a read sees what the same read of the parent would, and a dump made as the system
--- (deploy/dump.sh, which reads each partition by name) holds its rows.
+-- `until`: those it lacks are made (ferrum_create_partition), and how many is returned. A row whose month has no partition
+-- fails its statement, so the kernel makes the audit trail's at every start and every hour, three months ahead, and a copy
+-- makes those of the rows it brings. There is no default partition: one holding rows of a month would refuse that month's
+-- partition later. More than 600 months at once is refused: a clock or a row dated decades off, not history.
 create function ferrum_ensure_month_partitions(parent regclass, since timestamptz, until timestamptz) returns int
 language plpgsql as $$
 declare
-  schema_oid oid;
-  base text;
   month timestamp := date_trunc('month', since at time zone 'UTC');
-  name text;
+  base text := (select relname from pg_class where oid = parent);
   made int := 0;
-  p record;
 begin
-  select relnamespace, relname into schema_oid, base from pg_class where oid = parent;
+  if month + interval '600 months' <= until at time zone 'UTC' then
+    raise exception 'ferrum: % would need a partition for every month from % to %, more than 600: a date that far off is not history',
+      base, since, until using errcode = 'P0001';
+  end if;
   while month <= until at time zone 'UTC' loop
-    name := base || to_char(month, '"_y"YYYY"m"MM');
-    -- Read as rows, not from the catalog's cache: a partition another session made while this one waited is seen.
-    if not exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
-      if made = 0 then
-        perform pg_advisory_xact_lock(hashtext('ferrum_ensure_month_partitions'), parent::oid::int);
-      end if;
-      if not exists (select 1 from pg_class where relnamespace = schema_oid and relname = name) then
-        execute format('create table %s.%I (like %s including constraints)', schema_oid::regnamespace, name, parent);
-        execute format('alter table %s.%I enable row level security, force row level security', schema_oid::regnamespace, name);
-        for p in select * from pg_policy where polrelid = parent loop
-          execute format('create policy %I on %s.%I as %s for %s to %s%s%s', p.polname, schema_oid::regnamespace, name,
-            case when p.polpermissive then 'permissive' else 'restrictive' end,
-            case p.polcmd when 'r' then 'select' when 'a' then 'insert' when 'w' then 'update' when 'd' then 'delete' else 'all' end,
-            (select coalesce(string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', '), 'public') from unnest(p.polroles) r),
-            coalesce(' using (' || pg_get_expr(p.polqual, parent) || ')', ''), coalesce(' with check (' || pg_get_expr(p.polwithcheck, parent) || ')', ''));
-        end loop;
-        execute format('alter table %s attach partition %s.%I for values from (%L) to (%L)', parent, schema_oid::regnamespace, name,
-          month at time zone 'UTC', (month + interval '1 month') at time zone 'UTC');
-        made := made + 1;
-      end if;
+    if ferrum_create_partition(parent, base || to_char(month, '"_y"YYYY"m"MM'), (month at time zone 'UTC')::text,
+                               ((month + interval '1 month') at time zone 'UTC')::text) then
+      made := made + 1;
     end if;
     month := month + interval '1 month';
   end loop;
