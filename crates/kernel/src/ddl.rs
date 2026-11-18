@@ -15,6 +15,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 const SYNC_LOCK: i64 = 0x0FE2_2077;
 
+/// The longest the sync waits for something it cannot hurry: another replica's sync (its advisory lock), and the
+/// transactions with a snapshot older than an index build, which `create index concurrently` lets finish before each of
+/// its phases. Longer than the 10 s other statements wait for a lock: a wait here queues for no table's lock, so no
+/// writer waits behind it.
+/// A transaction of this server's own seldom lasts that long (a statement ends at its statement timeout, an idle
+/// transaction at 60 s: `db::IDLE_IN_TRANSACTION`); one that does (a dump, a report from a console) fails the start,
+/// naming the index, and the next start builds it again.
+const BUILD_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct SyncReport {
     pub skipped: bool,
@@ -104,8 +113,34 @@ struct Ddl<'a> {
     dry: Option<Vec<String>>,
     report: SyncReport,
     constraints: HashSet<String>,
+    /// Foreign keys that exist but were never validated (an earlier start's validation failed): validated again.
+    unvalidated: HashSet<String>,
     policies: HashSet<String>,
     columns: HashMap<String, HashMap<String, String>>,
+    /// The sync's own triggers as the catalog has them, by table and name: the definition as PostgreSQL prints it, and
+    /// whether the trigger is enabled.
+    triggers: HashMap<(String, String), (String, bool)>,
+    /// The schema's indexes by name, whether each is valid (a build that failed leaves an invalid one).
+    indexes: HashMap<String, bool>,
+    /// Tables this run created: empty and unseen by anyone, so their indexes are built the plain way.
+    new_tables: HashSet<String>,
+}
+
+impl<'a> Ddl<'a> {
+    fn new(conn: &'a mut PgConnection, dry: bool) -> Self {
+        Ddl {
+            conn,
+            dry: dry.then(Vec::new),
+            report: SyncReport::default(),
+            constraints: HashSet::new(),
+            unvalidated: HashSet::new(),
+            policies: HashSet::new(),
+            columns: HashMap::new(),
+            indexes: HashMap::new(),
+            triggers: HashMap::new(),
+            new_tables: HashSet::new(),
+        }
+    }
 }
 
 impl Ddl<'_> {
@@ -128,6 +163,31 @@ impl Ddl<'_> {
         .await?
         .into_iter()
         .collect();
+        self.unvalidated = sqlx::query_scalar::<_, String>(
+            "select conname::text from pg_constraint c join pg_namespace n on n.oid = c.connamespace where n.nspname = current_schema() and not c.convalidated",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?
+        .into_iter()
+        .collect();
+        self.indexes = sqlx::query_as::<_, (String, bool)>(
+            "select c.relname::text, i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace \
+             where n.nspname = current_schema()",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?
+        .into_iter()
+        .collect();
+        self.triggers = sqlx::query_as::<_, (String, String, String, String)>(
+            "select c.relname::text, t.tgname::text, pg_get_triggerdef(t.oid), t.tgenabled::text from pg_trigger t join pg_class c on c.oid = t.tgrelid \
+             join pg_namespace n on n.oid = c.relnamespace where n.nspname = current_schema() and not t.tgisinternal and t.tgparentid = 0 \
+             and t.tgname in ('ferrum_held', 'ferrum_held_keep')",
+        )
+        .fetch_all(&mut *self.conn)
+        .await?
+        .into_iter()
+        .map(|(table, name, def, enabled)| ((table, name), (def, enabled == "O")))
+        .collect();
         self.policies =
             sqlx::query_scalar::<_, String>("select tablename::text || '.' || policyname::text from pg_policies where schemaname = current_schema()")
                 .fetch_all(&mut *self.conn)
@@ -142,6 +202,28 @@ impl Ddl<'_> {
             self.columns.entry(t).or_default().insert(c, ty);
         }
         Ok(())
+    }
+
+    /// Makes a `before {event}` trigger of the table that stands aside while a copy runs ([`STANDS_ASIDE`]), unless it has
+    /// it already as it would be made: `create or replace trigger` takes SHARE ROW EXCLUSIVE, queues behind any open
+    /// write transaction and holds the writers that come after it, so a sync that has nothing to change sends none.
+    /// "As it would be made" is read from the catalog, not taken from the name: the timing and event, a WHEN that
+    /// stands aside, the function and the entity's name it is given, and that it is enabled (PostgreSQL prints the WHEN
+    /// in a form of its own, so it is looked for by what it reads, as `copy_ready` does). Anything else is replaced.
+    async fn trigger(&mut self, table: &str, name: &str, event: &str, function: &str, entity: &str) -> Result<()> {
+        let named = entity.replace('\'', "''");
+        let (head, tail) = (format!("CREATE TRIGGER {name} BEFORE {} ON ", event.to_uppercase()), format!(" EXECUTE FUNCTION {function}('{named}')"));
+        let there = self.triggers.get(&(table.to_string(), name.to_string())).is_some_and(|(def, enabled)| {
+            *enabled && def.starts_with(&head) && def.ends_with(&tail) && def.contains(" FOR EACH ROW WHEN (") && def.contains("ferrum.copy")
+        });
+        if there {
+            return Ok(());
+        }
+        self.exec(format!(
+            "create or replace trigger {name} before {event} on {} for each row when ({STANDS_ASIDE}) execute function {function}('{named}')",
+            q(table)
+        ))
+        .await
     }
 
     async fn rls(&mut self, table: &str) -> Result<()> {
@@ -209,23 +291,70 @@ impl Ddl<'_> {
 
     /// A unique index over documents that are not cancelled: a cancelled document is void, so its
     /// values must not block new or amended ones. Replaces the plain one made while the entity was not
-    /// submittable (a package release or a workspace's own definition can make it so).
+    /// submittable (a package release or a workspace's own definition can make it so): dropped once the
+    /// new one stands, so that the values are never left unchecked while a large table's index is built.
     async fn unique_live(&mut self, table: &str, cols: &[&str], partial: Option<&str>) -> Result<()> {
-        self.exec(format!("drop index if exists {}", q(&obj_name("uq", table, cols)))).await?;
         let cond = partial.map_or("docstatus <> 2".to_string(), |p| format!("{p} and docstatus <> 2"));
-        self.index_named(&obj_name("uqv", table, cols), table, cols, true, Some(&cond)).await
+        self.index_named(&obj_name("uqv", table, cols), table, cols, true, Some(&cond)).await?;
+        let old = obj_name("uq", table, cols);
+        if self.indexes.remove(&old).is_some() {
+            self.exec(format!("drop index concurrently if exists {}", q(&old))).await?;
+        }
+        Ok(())
     }
 
     async fn index_named(&mut self, name: &str, table: &str, cols: &[&str], unique: bool, partial: Option<&str>) -> Result<()> {
         let collist = std::iter::once("tenant_id").chain(cols.iter().copied()).map(q).collect::<Vec<_>>().join(", ");
         let where_ = partial.map(|p| format!(" where {p}")).unwrap_or_default();
-        self.exec(format!("create {}index if not exists {} on {} ({collist}){where_}", if unique { "unique " } else { "" }, q(name), q(table))).await
+        self.make_index(name, table, unique, &format!("on {} ({collist}){where_}", q(table))).await
+    }
+
+    /// Makes index `name` from `rest` (`on <table> (...)`, what follows its name), without blocking writes: on a table
+    /// that exists already it is built `concurrently` (outside any transaction: this connection is in none, each
+    /// statement is sent alone), waiting at most [`BUILD_WAIT`] for older transactions and saying every 30 s that it
+    /// waits. An index of that name left invalid by a build that failed is dropped and built again. A build that fails
+    /// (rows that repeat a value in a unique one, the wait run out) leaves nothing invalid behind and fails the sync,
+    /// naming the index. One that stands already costs nothing.
+    async fn make_index(&mut self, name: &str, table: &str, unique: bool, rest: &str) -> Result<()> {
+        let create = |when: &str| format!("create {}index {when}if not exists {} {rest}", if unique { "unique " } else { "" }, q(name));
+        if self.dry.is_some() || self.new_tables.contains(table) {
+            return self.exec(create("")).await;
+        }
+        match self.indexes.get(name) {
+            Some(true) => return Ok(()),
+            Some(false) => self.exec(format!("drop index concurrently if exists {}", q(name))).await?,
+            None => {}
+        }
+        let sql = create("concurrently ");
+        tracing::debug!("ddl: {sql}");
+        sqlx::raw_sql(AssertSqlSafe(format!("set lock_timeout = {}", BUILD_WAIT.as_millis()))).execute(&mut *self.conn).await?;
+        let started = std::time::Instant::now();
+        let built = {
+            let run = sqlx::raw_sql(AssertSqlSafe(sql.clone())).execute(&mut *self.conn);
+            tokio::pin!(run);
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(30), &mut run).await {
+                    Ok(done) => break done,
+                    Err(_) => tracing::info!("schema sync: still building {name} on {table} ({}s)", started.elapsed().as_secs()),
+                }
+            }
+        };
+        let _ = sqlx::raw_sql("reset lock_timeout").execute(&mut *self.conn).await;
+        if let Err(e) = built {
+            let _ = sqlx::raw_sql(AssertSqlSafe(format!("drop index concurrently if exists {}", q(name)))).execute(&mut *self.conn).await;
+            let detail =
+                e.as_database_error().and_then(|d| d.try_downcast_ref::<sqlx::postgres::PgDatabaseError>()).and_then(|d| d.detail()).unwrap_or_default();
+            let repeated =
+                if unique && e.as_database_error().is_some_and(|d| d.code().as_deref() == Some("23505")) { ": rows already repeat a value" } else { "" };
+            return Err(Error::Internal(format!("schema sync failed on `{sql}`{repeated}: {e} {detail}")));
+        }
+        self.report.statements += 1;
+        self.indexes.insert(name.to_string(), true);
+        Ok(())
     }
 
     /// An entity's lists read in their default order from an index, rather than by sorting every
     /// row of the workspace for each page (`query::order_by` makes the order with the same words).
-    /// Built without blocking writes, since an upgrade can add it to a large table; a build that
-    /// failed leaves an invalid index behind, which is dropped and built again.
     async fn sort_index(&mut self, table: &str, ent: &EffEntity) -> Result<()> {
         let Ok((field, desc)) = crate::query::parse_sort(ent, None) else { return Ok(()) };
         let column = SYSTEM_KEYS.contains(&field.as_str()) || ent.storage_of(&field) == Some(Storage::Column);
@@ -235,24 +364,8 @@ impl Ddl<'_> {
         }
         let dir = if desc { "desc" } else { "asc" };
         let name = obj_name("ixs", table, &[&field, dir]);
-        let invalid: bool = sqlx::query_scalar(
-            "select exists (select 1 from pg_index i join pg_class c on c.oid = i.indexrelid join pg_namespace n on n.oid = c.relnamespace \
-             where c.relname = $1 and n.nspname = current_schema() and not i.indisvalid)",
-        )
-        .bind(&name)
-        .fetch_one(&mut *self.conn)
-        .await?;
-        if invalid {
-            self.exec(format!("drop index concurrently if exists {}", q(&name))).await?;
-        }
-        self.exec(format!(
-            "create index concurrently if not exists {} on {} (tenant_id, {} {}, id {dir})",
-            q(&name),
-            q(table),
-            q(&field),
-            crate::query::direction(&field, desc)
-        ))
-        .await
+        let rest = format!("on {} (tenant_id, {} {}, id {dir})", q(table), q(&field), crate::query::direction(&field, desc));
+        self.make_index(&name, table, false, &rest).await
     }
 
     async fn links(&mut self, table: &str, ent: &EffEntity, schema: &Schema) -> Result<()> {
@@ -268,6 +381,7 @@ impl Ddl<'_> {
             self.index(table, &[&f.name], false, None).await?;
             let name = obj_name("fk", table, &[&f.name]);
             if self.constraints.contains(&name) {
+                self.validate(table, &name, &f.name, &target.table).await?;
                 continue;
             }
             let on_delete = match f.on_delete {
@@ -275,32 +389,60 @@ impl Ddl<'_> {
                 OnDelete::SetNull => format!("set null ({})", q(&f.name)),
                 OnDelete::Cascade => "cascade".to_string(),
             };
+            // Not validated as it is added, then validated by itself: the first holds the table for an instant,
+            // the second reads it with writes carrying on.
             self.exec(format!(
-                "alter table {} add constraint {} foreign key (tenant_id, {}) references {} (tenant_id, id) on delete {on_delete} deferrable initially immediate",
+                "alter table {} add constraint {} foreign key (tenant_id, {}) references {} (tenant_id, id) on delete {on_delete} deferrable initially immediate not valid",
                 q(table),
                 q(&name),
                 q(&f.name),
                 q(&target.table)
             ))
             .await?;
-            self.constraints.insert(name);
+            self.constraints.insert(name.clone());
+            self.unvalidated.insert(name.clone());
+            self.validate(table, &name, &f.name, &target.table).await?;
         }
         Ok(())
     }
 
-    async fn search_indexes(&mut self, table: &str, ent: &EffEntity) -> Result<()> {
-        let mut cols: Vec<&str> = ent.def.search_fields.iter().map(String::as_str).collect();
-        if let Some(t) = &ent.def.title_field {
-            cols.push(t);
+    /// Checks a foreign key that was added `not valid` (or that a start before this one left so) against every row, and
+    /// validates it. The sync's connection belongs to no workspace, so the table's policy hides every row from it and
+    /// the check would pass on nothing: the statement runs with `ferrum.system` on, in a transaction of its own
+    /// (`set_config(..., true)`, as every system statement does; gone at its end). Rows that point at nothing do not fail
+    /// the start: the key stays `not valid`, still refusing new such rows, a warning names it and counts the rows, and
+    /// the next start tries again.
+    async fn validate(&mut self, table: &str, name: &str, column: &str, target: &str) -> Result<()> {
+        if !self.unvalidated.remove(name) {
+            return Ok(());
         }
-        cols.sort();
-        cols.dedup();
-        for c in cols {
-            let is_text_col = ent.field(c).is_some_and(|f| f.ftype.is_text()) && ent.storage_of(c) == Some(Storage::Column);
-            if is_text_col {
-                let name = obj_name("trgm", table, &[c]);
-                self.exec(format!("create index if not exists {} on {} using gin ({} gin_trgm_ops)", q(&name), q(table), q(c))).await?;
+        let sql = format!("alter table {} validate constraint {}", q(table), q(name));
+        let mut tx = sqlx::Connection::begin(&mut *self.conn).await?;
+        sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await?;
+        let checked = sqlx::raw_sql(AssertSqlSafe(sql.clone())).execute(&mut *tx).await;
+        match checked {
+            Ok(_) => {
+                tx.commit().await?;
+                self.report.statements += 1;
             }
+            Err(e) if e.as_database_error().is_some_and(|d| d.code().as_deref() == Some("23503")) => {
+                tx.rollback().await?;
+                let mut tx = sqlx::Connection::begin(&mut *self.conn).await?;
+                sqlx::query("select set_config('ferrum.system', 'on', true)").execute(&mut *tx).await?;
+                let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                    "select count(*) from {t} r where r.{c} is not null and not exists (select 1 from {p} p where p.tenant_id = r.tenant_id and p.id = r.{c})",
+                    t = q(table),
+                    c = q(column),
+                    p = q(target)
+                )))
+                .fetch_one(&mut *tx)
+                .await?;
+                tx.rollback().await?;
+                self.report.warnings.push(format!(
+                    "{table}: foreign key {name} is not validated: {count} rows have {column} pointing at nothing (it still refuses new ones; mend the rows and the next start validates it)"
+                ));
+            }
+            Err(e) => return Err(Error::Internal(format!("schema sync failed on `{sql}`: {e}"))),
         }
         Ok(())
     }
@@ -354,6 +496,7 @@ async fn tables_and_columns(ddl: &mut Ddl<'_>, schema: &Schema, managed: &[&EffE
         if !ddl.columns.contains_key(&ent.table) {
             ddl.exec(format!("create table if not exists {} (\n{SYSTEM_COLUMNS}\n)", q(&ent.table))).await?;
             ddl.columns.insert(ent.table.clone(), HashMap::new());
+            ddl.new_tables.insert(ent.table.clone());
         }
         ddl.add_columns(&ent.table, ent).await?;
         for child in ent.children.values() {
@@ -369,6 +512,7 @@ async fn tables_and_columns(ddl: &mut Ddl<'_>, schema: &Schema, managed: &[&EffE
                 ))
                 .await?;
                 ddl.columns.insert(child.table.clone(), HashMap::new());
+                ddl.new_tables.insert(child.table.clone());
                 ddl.index(&child.table, &["parent_id", "idx"], false, None).await?;
             }
             ddl.add_columns(&child.table, cent).await?;
@@ -382,14 +526,7 @@ async fn tables_and_columns(ddl: &mut Ddl<'_>, schema: &Schema, managed: &[&EffE
 pub async fn lacks(db: &Db, catalog: &Catalog) -> Result<Vec<String>> {
     let schema = cluster_schema(catalog)?;
     let mut conn = db.pool.acquire().await?;
-    let mut ddl = Ddl {
-        conn: &mut conn,
-        dry: Some(Vec::new()),
-        report: SyncReport::default(),
-        constraints: HashSet::new(),
-        policies: HashSet::new(),
-        columns: HashMap::new(),
-    };
+    let mut ddl = Ddl::new(&mut conn, true);
     ddl.load_state().await?;
     tables_and_columns(&mut ddl, &schema, &managed(&schema)).await?;
     let mut out = ddl.dry.take().unwrap_or_default();
@@ -513,10 +650,62 @@ pub async fn copy_ready(db: &Db) -> Result<Vec<String>> {
     Ok(problems)
 }
 
+/// The foreign keys the sync made that are not validated: rows point at nothing.
+async fn unvalidated(conn: &mut PgConnection) -> Result<Vec<(String, String)>> {
+    Ok(sqlx::query_as(
+        "select conrelid::regclass::text, conname::text from pg_constraint \
+         where contype = 'f' and not convalidated and conname like 'fk\\_%' and connamespace = current_schema()::regnamespace order by 1, 2",
+    )
+    .fetch_all(conn)
+    .await?)
+}
+
+impl crate::Kernel {
+    /// The foreign keys of the entity tables that are not validated, as (table, constraint): rows that point at nothing
+    /// kept the sync from validating them. They still refuse new such rows.
+    pub async fn unvalidated_keys(&self) -> Result<Vec<(String, String)>> {
+        unvalidated(&mut *self.db.pool.acquire().await?).await
+    }
+}
+
+/// A start that finds the schema current looks at those keys once more.
+async fn revalidate(conn: &mut PgConnection, schema: &Schema) -> Result<Vec<String>> {
+    if unvalidated(conn).await?.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ddl = Ddl::new(conn, false);
+    ddl.load_state().await?;
+    for ent in managed(schema) {
+        ddl.links(&ent.table, ent, schema).await?;
+        for child in ent.children.values() {
+            if let Some(cent) = schema.entity(&child.entity) {
+                ddl.links(&child.table, cent, schema).await?;
+            }
+        }
+    }
+    for w in &ddl.report.warnings {
+        tracing::warn!("schema sync: {w}");
+    }
+    Ok(ddl.report.warnings)
+}
+
 pub async fn sync(db: &Db, catalog: &Catalog, force: bool) -> Result<SyncReport> {
     // A session lock, and `create index concurrently` outside any transaction: the direct address.
     let mut conn = db.direct.acquire().await?;
-    sqlx::query("select pg_advisory_lock($1)").bind(SYNC_LOCK).execute(&mut *conn).await?;
+    // Another replica's sync may be building an index: wait for it as long as a build waits, not the 10 s of a request.
+    // Tried again and again rather than waited for in one statement: a statement that waits holds a snapshot, and the
+    // other replica's index build waits for every older snapshot to end, so each would wait for the other (PostgreSQL
+    // ends one of them with "deadlock detected").
+    let waited = std::time::Instant::now();
+    loop {
+        if sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1)").bind(SYNC_LOCK).fetch_one(&mut *conn).await? {
+            break;
+        }
+        if waited.elapsed() > BUILD_WAIT {
+            return Err(Error::Internal(format!("schema sync: another replica's sync still runs after {BUILD_WAIT:?}")));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     let result = sync_locked(&mut conn, catalog, force).await;
     let _ = sqlx::query("select pg_advisory_unlock($1)").bind(SYNC_LOCK).execute(&mut *conn).await;
     result
@@ -532,9 +721,11 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
     if !force && current.as_deref() == Some(fingerprint.as_str()) {
         // A build with the same catalog still says that it is here, so older ones can tell.
         crate::window::record(conn).await?;
-        return Ok(SyncReport { skipped: true, ..Default::default() });
+        // And a foreign key that is still not validated, for rows that pointed at nothing, is tried again.
+        let warnings = revalidate(conn, &schema).await?;
+        return Ok(SyncReport { skipped: true, warnings, ..Default::default() });
     }
-    let mut ddl = Ddl { conn, dry: None, report: SyncReport::default(), constraints: HashSet::new(), policies: HashSet::new(), columns: HashMap::new() };
+    let mut ddl = Ddl::new(conn, false);
     ddl.load_state().await?;
 
     // Pass 1: tables and columns.
@@ -555,7 +746,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
                 ddl.index(&t, &["company"], true, None).await?;
             } else {
                 let name = obj_name("uq", &t, &["singleton"]);
-                ddl.exec(format!("create unique index if not exists {} on {} (tenant_id)", q(&name), q(&t))).await?;
+                ddl.make_index(&name, &t, true, &format!("on {} (tenant_id)", q(&t))).await?;
             }
         }
         for f in ent.value_fields().filter(|f| ent.storage_of(&f.name) == Some(Storage::Column)) {
@@ -606,21 +797,12 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
             ddl.exec(format!("alter table {} add constraint {} exclude using gist ({}, {range} with &&){live}", q(&t), q(&name), eq.join(", "))).await?;
             ddl.constraints.insert(name);
         }
-        ddl.search_indexes(&t, ent).await?;
+        // No trigram indexes for search: the policy below keeps `ilike` out of every index (tests/search_index_it.rs).
         ddl.rls(&t).await?;
         // A held record is not deleted, whoever's SQL asks (the kernel baseline migration), and the row as
         // it was before each change to it is kept while it is held.
-        let named = ent.def.name.replace('\'', "''");
-        ddl.exec(format!(
-            "create or replace trigger ferrum_held before delete on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_guard('{named}')",
-            q(&t)
-        ))
-        .await?;
-        ddl.exec(format!(
-            "create or replace trigger ferrum_held_keep before update on {} for each row when ({STANDS_ASIDE}) execute function ferrum_held_keep('{named}')",
-            q(&t)
-        ))
-        .await?;
+        ddl.trigger(&t, "ferrum_held", "delete", "ferrum_held_guard", &ent.def.name).await?;
+        ddl.trigger(&t, "ferrum_held_keep", "update", "ferrum_held_keep", &ent.def.name).await?;
         for child in ent.children.values() {
             if let Some(cent) = schema.entity(&child.entity) {
                 ddl.links(&child.table, cent, &schema).await?;

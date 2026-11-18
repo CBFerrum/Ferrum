@@ -169,7 +169,7 @@ rehearsal that matches what they changed.
 | `scripts/licenses.py check` | Every Rust dependency's licence accepted; images deployed are approved engines | At the pin |
 | `scripts/mutation_paths.py` | Every direct write to an `e_*` table in an app is listed and given a kind | At the pin |
 | `scripts/mutants.py` | The platform's mutants each killed (`--check`: each still finds its text) | The platform's; an app keeps its own copy |
-| `scripts/window.py` | The platform's own SQL and entities stay within the two-version window | The platform's only ([14](14-operations-for-apps.md)) |
+| `scripts/window.py` | The platform's own SQL and entities stay within the two-version window; no plain `create index` or row-checking `add constraint` on a table not made in the same SQL file, in the platform's and, with `--app`, in every package SQL file of an app after the package's first (the first meets tables just made, which are empty) | The platform's CI; an app's `app_ci.sh` ([14](14-operations-for-apps.md)) |
 | `scripts/registry.py check` | The requirements registry, accepted advisories, generated documents | At the pin, through `audit` |
 | `scripts/check_manifests.py` | The deployment's connection budget and replica settings | When deployment files change |
 | `scripts/one_input.sh` | The server with every pinned app on `DATABASE_URL` alone, two replicas, every variable read declared | When named (`oneinput`) |

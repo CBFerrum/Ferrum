@@ -62,7 +62,10 @@ The platform's limits are the app's ([docs/limits.md](../limits.md), [docs/opera
 `tie_named_files` (1000 a batch), backfills (1000 a batch unless `batch` says otherwise).
 
 **Indexes.** An entity's table gets the indexes its metadata implies from the schema sync, built concurrently so writes
-carry on. An app's own table gets the indexes its SQL makes: one for each way the app looks rows up, always starting
+carry on (a foreign key is added `not valid` and validated apart). Your own SQL runs in a transaction and cannot do that:
+a plain `create index` or an `add constraint` that checks the rows as it is added holds writes on a table that has rows for as
+long as it runs. `scripts/window.py` refuses both in a new file of the platform's own, and `scripts/app_ci.sh` runs it
+(`--app`) over every file of your `packages/*/sql` after a package's first (the first runs against tables the sync has just made, which are empty); a statement that is safe all the same says `-- window: safe, <why>`. An app's own table gets the indexes its SQL makes: one for each way the app looks rows up, always starting
 with `tenant_id`. Every query the app runs on its own tables names `tenant_id`; row-level security filters by it anyway,
 and an index that does not lead with it makes that filter a scan.
 
@@ -84,7 +87,7 @@ window*). So every change an app makes to its tables is **additive** in the rele
 | A new entity or field in metadata | Taking an entity or field out; changing a field's type or link target; making a field unique |
 
 The second kind waits for the release after, once no build that reads the old shape can start. The platform checks its
-own `packages/` with `scripts/window.py`; an app's repository is not checked by it: reviewed, not checked. Write
+own `packages/` with `scripts/window.py`; an app's two-version window is not checked by it (reviewed, not checked); only what holds writes is (`--app`, in `app_ci.sh`). Write
 `-- window: safe, <why>` inside a statement you have reasoned is safe, as the platform's files do, so a reviewer sees why.
 
 ### Package SQL and its numbering
@@ -156,7 +159,7 @@ in the platform's [docs/operations.md](../operations.md) where the app is pinned
 - `HookRegistry::settle` and the schema sync at every start (declarations; package SQL changed after it was applied).
 - `scripts/settings.py`: the operations guide's settings table, generated from the registry with the apps' declarations.
 - `scripts/check_manifests.py`: the deployment's connection budget.
-- `scripts/window.py`: the platform's own packages only. An app's SQL and metadata changes: reviewed, not checked.
+- `scripts/window.py --app`: a plain `create index` or a row-checking `add constraint` in an app's package SQL after a package's first file, on a table the file does not make. The two-version window of an app's SQL and metadata changes: reviewed, not checked.
 - What an app documents for operators: reviewed, not checked.
 
 ## See also
