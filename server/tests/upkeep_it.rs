@@ -256,6 +256,37 @@ fn two_runners_share_the_work() {
     });
 }
 
+/// The runner's own bookkeeping is one transaction per run: the run's outcome is recorded and the next row claimed for
+/// its slot in the same one. Counted with a trigger that notes each transaction updating an `upkeep` row: twenty runs
+/// one after another on one slot take one transaction to start and one as each run ends (before: two as each ended).
+#[test]
+fn a_run_and_the_next_claim_are_one_transaction() {
+    scenario(async {
+        let k = replica(true).await;
+        workspaces(&k, 20, &["fake_a"]).await;
+        sqlx::raw_sql(
+            "create table upkeep_xact (xid bigint primary key); \
+             create function upkeep_xact_seen() returns trigger language plpgsql as $$ \
+             begin insert into upkeep_xact values (txid_current()) on conflict do nothing; return null; end $$; \
+             create trigger upkeep_xact_seen after update on upkeep for each row execute function upkeep_xact_seen()",
+        )
+        .execute(&k.db.pool)
+        .await
+        .unwrap();
+        let runs: Runs = Default::default();
+        let a = app("fake", &["fake_a"], 0, &runs, |_| Duration::ZERO, ok);
+        let (tx, rx) = watch::channel(false);
+        // No poll after the first: claims come only from runs ending.
+        let h = packages::spawn_with(k.clone(), vec![a], Pace { poll: HANG, ..pace(1) }, rx);
+        until_runs(&runs, "twenty runs", |seen| seen.len() == 20).await;
+        until(&k, "every run recorded", |r| r.values().all(|v| v.0)).await;
+        stop(tx, vec![h]).await;
+        let xacts: i64 = sqlx::query_scalar("select count(*) from upkeep_xact").fetch_one(&k.db.pool).await.unwrap();
+        eprintln!("upkeep: 20 runs on one slot took {xacts} transactions of the runner's");
+        assert!(xacts <= 20 + 2, "one transaction to start and one per run ending (one more for a poll): {xacts}");
+    });
+}
+
 /// A workspace whose upkeep fails, or panics, stops no other: the others' runs are recorded, the failing rows hold
 /// why, a failure is due again after the usual wait (it is not a time limit), and the doctor and the workspace's
 /// administrator see it.

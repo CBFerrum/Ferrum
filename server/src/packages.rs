@@ -576,61 +576,56 @@ struct Claim {
     lease: chrono::DateTime<chrono::Utc>,
 }
 
-/// Takes up to `free` rows due, the longest waiting first, of the apps of `apps`, in workspaces that are not moving: each
-/// held until `lease` from now. The rows of `full` (apps holding their share of this replica's slots) come after every
-/// other app's, so that one app slow in many workspaces cannot hold every slot while others wait; with nothing else
-/// due they still run.
-async fn claim(k: &Kernel, apps: &[UpkeepApp], free: usize, lease: Duration, full: &[&str]) -> ferrum_kernel::Result<Vec<Claim>> {
-    let ids: Vec<&str> = apps.iter().map(|a| a.id).collect();
-    let mut tx = k.db.system_tx().await?;
-    let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "with due as (select tenant_id, app from upkeep where due_at <= now() and app = any($2) and not ferrum_workspace_held(tenant_id) \
-         order by app = any($4), due_at limit $1 for update skip locked) \
-         update upkeep u set due_at = now() + make_interval(secs => $3) from due where (u.tenant_id, u.app) = (due.tenant_id, due.app) \
-         returning u.tenant_id, u.app, u.due_at",
-    )
-    .bind(free as i64)
-    .bind(&ids)
-    .bind(lease.as_secs_f64())
-    .bind(full)
-    .fetch_all(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(rows.into_iter().filter_map(|(tenant, app, lease)| ids.iter().find(|i| **i == app).map(|&app| Claim { tenant, app, lease })).collect())
-}
-
 /// How a run ended, when it did not end well.
 enum Ended {
     Failed(String),
     TimedOut,
 }
 
-/// Records how a run ended, on its row: only while the row still holds this claim's lease, so a replica that finishes
-/// after its lease ended, once another has run the pair again, changes nothing; nor while the workspace moves.
-async fn record(k: &Kernel, c: &Claim, ended: Option<Ended>, pace: &Pace) -> ferrum_kernel::Result<()> {
-    let (error, timed_out) = match ended {
-        None => (None, false),
-        Some(Ended::Failed(e)) => (Some(e), false),
-        Some(Ended::TimedOut) => (Some(format!("took longer than {} s, and was stopped", pace.limit.as_secs())), true),
+/// A run's end to record: its claim and how it ended (`None`: it ended well).
+type Finished<'a> = (&'a Claim, Option<&'a Ended>);
+
+/// One statement, in one transaction, for both halves of the runner's bookkeeping. First it records how a run ended,
+/// on its row: only while the row still holds this claim's lease, so a replica that finishes after its lease ended,
+/// once another has run the pair again, changes nothing; nor while the workspace moves. Then it takes up to `free`
+/// rows due, the longest waiting first, of the apps of `apps`, in workspaces that are not moving: each held until
+/// `lease` from now. The rows of `full` (apps holding their share of this replica's slots) come after every other
+/// app's, so that one app slow in many workspaces cannot hold every slot while others wait; with nothing else due they
+/// still run. The row just recorded is not taken again by the same statement (one statement may change a row once).
+async fn step(k: &Kernel, finished: Option<Finished<'_>>, apps: &[UpkeepApp], free: usize, full: &[&str], pace: &Pace) -> ferrum_kernel::Result<Vec<Claim>> {
+    let ids: Vec<&str> = apps.iter().map(|a| a.id).collect();
+    let (claim, error, timed_out) = match finished {
+        None => (None, None, false),
+        Some((c, None)) => (Some(c), None, false),
+        Some((c, Some(Ended::Failed(e)))) => (Some(c), Some(e.clone()), false),
+        Some((c, Some(Ended::TimedOut))) => (Some(c), Some(format!("took longer than {} s, and was stopped", pace.limit.as_secs())), true),
     };
     let mut tx = k.db.system_tx().await?;
-    sqlx::query(
-        "update upkeep set timeouts = case when $5 then timeouts + 1 else 0 end, \
-         due_at = now() + make_interval(secs => case when $5 then least($6 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
-         ran_at = case when $4::text is null then now() else ran_at end, failed_at = case when $4::text is null then failed_at else now() end, \
-         error = left($4, 2000) where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id)",
+    let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "with recorded as (update upkeep set timeouts = case when $5 then timeouts + 1 else 0 end, \
+           due_at = now() + make_interval(secs => case when $5 then least($6 * power(2::float8, least(timeouts + 1, 20)), $7) else $6 end), \
+           ran_at = case when $4::text is null then now() else ran_at end, failed_at = case when $4::text is null then failed_at else now() end, \
+           error = left($4, 2000) where tenant_id = $1 and app = $2 and due_at = $3 and not ferrum_workspace_held(tenant_id) returning 1), \
+         due as (select tenant_id, app from upkeep where due_at <= now() and app = any($9) and not ferrum_workspace_held(tenant_id) \
+           and (tenant_id, app) is distinct from ($1, $2) order by app = any($11), due_at limit $8 for update skip locked) \
+         update upkeep u set due_at = now() + make_interval(secs => $10) from due where (u.tenant_id, u.app) = (due.tenant_id, due.app) \
+         returning u.tenant_id, u.app, u.due_at",
     )
-    .bind(c.tenant)
-    .bind(c.app)
-    .bind(c.lease)
+    .bind(claim.map(|c| c.tenant))
+    .bind(claim.map(|c| c.app))
+    .bind(claim.map(|c| c.lease))
     .bind(error)
     .bind(timed_out)
     .bind(pace.every.as_secs_f64())
     .bind(pace.most.as_secs_f64())
-    .execute(&mut *tx)
+    .bind(free as i64)
+    .bind(&ids)
+    .bind(pace.lease.as_secs_f64())
+    .bind(full)
+    .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(rows.into_iter().filter_map(|(tenant, app, lease)| ids.iter().find(|i| **i == app).map(|&app| Claim { tenant, app, lease })).collect())
 }
 
 /// Gives the rows of claims whose runs did not end back, due at once (a replica stopping).
@@ -692,40 +687,28 @@ pub fn spawn_with(k: Arc<Kernel>, apps: Vec<UpkeepApp>, pace: Pace, mut shutdown
                     }));
                 }
             }
-            let free = pace.slots.saturating_sub(running.len());
-            if free > 0 && !drained {
-                // An app's share of the slots: half of them (one, with one or two).
-                let share = (pace.slots / 2).max(1);
-                let mut busy: HashMap<&str, usize> = HashMap::new();
-                for c in held.values() {
-                    *busy.entry(c.app).or_default() += 1;
-                }
-                let full: Vec<&str> = busy.into_iter().filter(|(_, n)| *n >= share).map(|(a, _)| a).collect();
-                match claim(&k, &apps, free, pace.lease, &full).await {
-                    Ok(claims) => {
-                        drained = claims.len() < free;
-                        for c in claims {
-                            let (k, run, tenant) = (k.clone(), runs[c.app].clone(), c.tenant);
-                            let task =
-                                running.spawn(async move { tokio::time::timeout(pace.limit, ferrum_kernel::sandbox::in_hand(tenant, run(&k, tenant))).await });
-                            held.insert(task.id(), c);
-                        }
-                    }
-                    Err(e) => {
-                        drained = true;
-                        tracing::warn!("upkeep: claiming what is due failed: {e}");
-                    }
-                }
+            // Only to find work when no run is ending: an ending run claims the next for its slot ([`step`]).
+            if running.len() < pace.slots && !drained {
+                drained = turn(&k, None, &apps, &runs, &mut running, &mut held, &pace).await;
             }
             tokio::select! {
                 _ = shutdown.changed() => break,
-                Some(done) = running.join_next_with_id(), if !running.is_empty() => ended(&k, &mut held, done, &pace).await,
+                Some(done) = running.join_next_with_id(), if !running.is_empty() => {
+                    let finished = ended(&mut held, done, &pace);
+                    if let Some(f) = finished {
+                        let claiming = !drained;
+                        let more = turn(&k, Some(f), if claiming { &apps } else { &[] }, &runs, &mut running, &mut held, &pace).await;
+                        drained = drained || more;
+                    }
+                }
                 _ = poll.tick() => drained = false,
             }
         }
         let _ = tokio::time::timeout(pace.grace, async {
             while let Some(done) = running.join_next_with_id().await {
-                ended(&k, &mut held, done, &pace).await;
+                if let Some(f) = ended(&mut held, done, &pace) {
+                    turn(&k, Some(f), &[], &runs, &mut running, &mut held, &pace).await;
+                }
             }
         })
         .await;
@@ -739,27 +722,65 @@ pub fn spawn_with(k: Arc<Kernel>, apps: Vec<UpkeepApp>, pace: Pace, mut shutdown
     })
 }
 
-/// One run's end, recorded on its row.
-async fn ended(
-    k: &Kernel,
+/// The claim of the run that ended and how it ended, logged; `None` for a run this replica no longer holds.
+fn ended(
     held: &mut HashMap<tokio::task::Id, Claim>,
     done: Result<(tokio::task::Id, Result<ferrum_kernel::Result<()>, tokio::time::error::Elapsed>), tokio::task::JoinError>,
     pace: &Pace,
-) {
+) -> Option<(Claim, Option<Ended>)> {
     let (id, outcome) = match done {
         Ok((id, Ok(Ok(())))) => (id, None),
         Ok((id, Ok(Err(e)))) => (id, Some(Ended::Failed(e.to_string()))),
         Ok((id, Err(_))) => (id, Some(Ended::TimedOut)),
         Err(e) => (e.id(), Some(Ended::Failed(if e.is_panic() { "it panicked".to_string() } else { e.to_string() }))),
     };
-    let Some(c) = held.remove(&id) else { return };
+    let c = held.remove(&id)?;
     if let Some(Ended::Failed(e)) = &outcome {
         tracing::warn!(app = c.app, tenant = %c.tenant, "app upkeep failed: {e}");
     } else if let Some(Ended::TimedOut) = &outcome {
         tracing::warn!(app = c.app, tenant = %c.tenant, "app upkeep took longer than {} s and was stopped", pace.limit.as_secs());
     }
-    if let Err(e) = record(k, &c, outcome, pace).await {
-        tracing::warn!(app = c.app, "upkeep: recording a run failed (the row is due again when its lease ends): {e}");
+    Some((c, outcome))
+}
+
+/// One [`step`]: records `finished`, if a run ended, and claims for this replica's free slots among `apps` (none: record
+/// only), starting each claim's run in a task of its own, as that workspace's work (`sandbox::in_hand`), within
+/// [`Pace::limit`]. True when it found fewer rows due than slots free (nothing more is asked for until the next poll).
+async fn turn(
+    k: &Arc<Kernel>,
+    finished: Option<(Claim, Option<Ended>)>,
+    apps: &[UpkeepApp],
+    runs: &HashMap<&'static str, Run>,
+    running: &mut JoinSet<Result<ferrum_kernel::Result<()>, tokio::time::error::Elapsed>>,
+    held: &mut HashMap<tokio::task::Id, Claim>,
+    pace: &Pace,
+) -> bool {
+    let free = if apps.is_empty() { 0 } else { pace.slots.saturating_sub(running.len()) };
+    // An app's share of the slots: half of them (one, with one or two).
+    let share = (pace.slots / 2).max(1);
+    let mut busy: HashMap<&str, usize> = HashMap::new();
+    for c in held.values() {
+        *busy.entry(c.app).or_default() += 1;
+    }
+    let full: Vec<&str> = busy.into_iter().filter(|(_, n)| *n >= share).map(|(a, _)| a).collect();
+    let app = finished.as_ref().map(|(c, _)| c.app);
+    match step(k, finished.as_ref().map(|(c, e)| (c, e.as_ref())), apps, free, &full, pace).await {
+        Ok(claims) => {
+            let drained = claims.len() < free;
+            for c in claims {
+                let (k, run, tenant, limit) = (k.clone(), runs[c.app].clone(), c.tenant, pace.limit);
+                let task = running.spawn(async move { tokio::time::timeout(limit, ferrum_kernel::sandbox::in_hand(tenant, run(&k, tenant))).await });
+                held.insert(task.id(), c);
+            }
+            drained
+        }
+        Err(e) => {
+            match app {
+                Some(app) => tracing::warn!(app, "upkeep: recording a run and claiming what is due failed (the row is due again when its lease ends): {e}"),
+                None => tracing::warn!("upkeep: claiming what is due failed: {e}"),
+            }
+            true
+        }
     }
 }
 
