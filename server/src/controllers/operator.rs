@@ -55,6 +55,15 @@ async fn list(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Re
     Ok(no_store(Json(crate::settings::listing(&st).await?).into_response()))
 }
 
+/// `GET /api/operator/services`: every optional service, whether this replica has it set up, whether it answers, how far
+/// behind its consumer is, and the installed apps that want or need it (crate::services).
+async fn services(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    operator(&st, &headers).await?;
+    let vault = st.kernel.vault_findings().await?;
+    Ok(no_store(Json(json!({"services": crate::services::status(&st, &vault).await?})).into_response()))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SetBody {
@@ -247,6 +256,7 @@ pub fn routes() -> Routes {
     Routes::new()
         .add("/api/operator/settings", get(list))
         .add("/api/operator/settings/{key}", put(set).delete(unset))
+        .add("/api/operator/services", get(services))
         .add("/api/operator/vault", get(vault_status))
         .add("/api/operator/secrets", get(secrets))
         .add("/api/operator/secrets/{owner}/{name}", put(set_secret).delete(remove_secret))

@@ -85,7 +85,8 @@ pub mod ui;
 
 pub use bundle::Bundle;
 pub use manifest::{
-    AppManifest, CATEGORIES, ExtensionPoint, OPERATOR_SETTING_TYPES, OperatorSetting, Runtime, SETTING_TYPES, SettingDef, Uninstall, contribution_body,
+    AppManifest, CATEGORIES, ExtensionPoint, OPERATOR_SETTING_TYPES, OperatorSetting, Runtime, SERVICES, SETTING_TYPES, SettingDef, Uninstall,
+    contribution_body,
 };
 pub use permissions::Permissions;
 pub use resolve::{Release, resolve};

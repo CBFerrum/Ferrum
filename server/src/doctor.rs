@@ -254,7 +254,9 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     crate::secrets::findings(st, &mut out).await;
     out.extend(database_settings_findings(st).await);
     out.extend(st.kernel.doctor(st.settings.db_max_connections).await?);
-    out.extend(st.kernel.vault_findings().await?);
+    let vault = st.kernel.vault_findings().await?;
+    out.extend(crate::services::findings(&crate::services::status(st, &vault).await?));
+    out.extend(vault);
     out.extend(crate::packages::findings(&st.kernel).await?);
     // A planned move holds outward work too, and says so itself (`move_findings`).
     out.push(if st.kernel.restore_held().await? {

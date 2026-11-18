@@ -308,6 +308,23 @@ operator_settings:
   variable, without a clash: until the app declares it, it is read from the environment only. Only a native app has
   operator settings.
 
+## Optional services of the installation
+
+An app that works better with something the installation may or may not have, or not at all without it, says so in its
+manifest by the id of the optional service (docs/operations.md, *Optional services*: `keys.external`, `search`,
+`events.stream`, `analytics`, `notify`):
+
+```yaml
+wants: [search]        # works without it; the install dialog says whether it is there
+needs: [keys.external] # cannot work without it: installing or upgrading is refused until an operator sets it up
+```
+
+- An unknown id, or one in both lists, is refused when the manifest is read. There are no versions: a service is there or
+  not.
+- `needs` unmet refuses the plan, before anyone is asked to agree, with the setting an operator fills. `wants` never
+  refuses: the plan's `app.services` says, for each, whether it is set up and what the app does with it.
+- This is not the companion program below (*Declaring a service*), which an app runs beside the server.
+
 ## Declaring a service
 
 A program an app runs beside the server (a meeting server, a mail server, an engine of its own) that shares a secret or

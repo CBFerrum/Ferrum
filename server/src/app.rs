@@ -473,6 +473,9 @@ impl Hooks for App {
             live_settings: Arc::new(crate::settings::Live::new(&pool, &ctx.config, snapshot, settings_at_start)),
         };
         state.kernel.set_file_store(Arc::new(crate::mailer::StorageFiles(storage.clone(), state.objects.clone())));
+        // Which optional services this replica has set up, as its settings are now (crate::services): what an app needs is checked against it.
+        let live = state.live_settings.clone();
+        state.apps.set_services(move || crate::services::configured(&live.now().snapshot));
         // A restore that keeps the database's identity is noticed by the marker in object storage (docs/operations.md,
         // "After restoring a backup"): one look before this replica serves or sends anything; until a look reaches the
         // store, what reaches outside waits. A guest of a newer build's database writes nothing.

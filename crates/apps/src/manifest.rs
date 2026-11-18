@@ -187,6 +187,10 @@ fn is_variable(s: &str) -> bool {
     (3..=100).contains(&b.len()) && b[0].is_ascii_uppercase() && b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
 }
 
+/// The optional services an installation may have, by id (server/src/services.rs says which this build has and whether
+/// they are set up). An app `wants` or `needs` them by these ids; a service is there or not, so no versions.
+pub const SERVICES: &[&str] = &["keys.external", "search", "events.stream", "analytics", "notify"];
+
 /// Classes of resource an app can ask for. A class is a contract about behaviour, not a product.
 pub const RESOURCE_CLASSES: &[&str] = &["relational", "object", "time_series", "search", "cache", "stream"];
 const RESOURCE_ISOLATIONS: &[&str] = &["database", "prefix"];
@@ -312,6 +316,12 @@ pub struct AppManifest {
     /// Other apps it needs: app id → version requirement.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub requires: BTreeMap<String, VersionReq>,
+    /// Optional services of the installation ([`SERVICES`]) it works better with: the install dialog says whether they are there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wants: Vec<String>,
+    /// Optional services it cannot work without: installing it is refused while the installation lacks one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
     /// The app this one is an add-on of, shown under it; it must also be in `requires`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -568,6 +578,15 @@ impl AppManifest {
             if dep == &self.id {
                 return bad("an app cannot require itself");
             }
+        }
+
+        for (key, list) in [("wants", &self.wants), ("needs", &self.needs)] {
+            if let Some(id) = list.iter().find(|s| !SERVICES.contains(&s.as_str())) {
+                return bad(format!("{key}: '{id}' is not a service ({})", SERVICES.join(", ")));
+            }
+        }
+        if let Some(id) = self.wants.iter().find(|s| self.needs.contains(s)) {
+            return bad(format!("service '{id}' is in both wants and needs"));
         }
 
         let mut seen = BTreeSet::new();
@@ -992,6 +1011,16 @@ uninstall: keep
         .unwrap();
         assert_eq!(m.uninstall, Uninstall::Keep);
         assert!(m.requires.is_empty() && m.settings.is_empty() && m.prefix.is_none());
+    }
+
+    #[test]
+    fn wants_and_needs_name_known_services_and_never_the_same_one() {
+        let m = with("uninstall: keep", "uninstall: keep\nwants: [search]\nneeds: [keys.external]").unwrap();
+        assert_eq!((m.wants, m.needs), (vec!["search".to_string()], vec!["keys.external".to_string()]));
+        rejected("uninstall: keep", "uninstall: keep\nwants: [pager]", "wants: 'pager' is not a service");
+        rejected("uninstall: keep", "uninstall: keep\nneeds: [Search]", "needs: 'Search' is not a service");
+        rejected("uninstall: keep", "uninstall: keep\nwants: [search]\nneeds: [search]", "service 'search' is in both wants and needs");
+        assert!(AppManifest::parse(VALID).unwrap().wants.is_empty(), "an app that names none is as before");
     }
 
     const EXTENDS: &str = r#"uninstall: keep

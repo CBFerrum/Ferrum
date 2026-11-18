@@ -1307,6 +1307,33 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 | Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
 | Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
 
+## Optional services
+
+PostgreSQL and object storage are always there and always external. Everything else is optional and is only ever a
+projection (rebuilt from PostgreSQL), an accelerator (lost without losing data) or the vault's trust anchor: the platform
+works without any of them. The installation knows five by id, and a service is **set up** when every setting it names is
+filled on this replica (there is no switch of its own).
+
+| Id | What | Set up by | In this build |
+|---|---|---|---|
+| `keys.external` | the vault's root key kept by OpenBao or Vault Transit | `kms_transit` | yes |
+| `search` | search through an external index | | not yet |
+| `events.stream` | the event stream over the Kafka protocol | | not yet |
+| `analytics` | analytics over a column store | | not yet |
+| `notify` | notices between replicas through Redis or Valkey | | not yet |
+
+An app's manifest says `wants: [id]` (it works without the service and better with it: the install dialog says whether it
+is there) or `needs: [id]` (it cannot work without it: installing or upgrading it is refused, with the setting to fill,
+until the installation has it). An app installed while its service was set up keeps running when the setting is unset;
+the doctor says so.
+
+`GET /api/operator/services` (the operator's token, as the settings) lists each id with `built`, `configured`,
+`reachable` (the key service answers, for `keys.external`), `lag_seconds` (the oldest event the service's consumer has not
+taken, for a service an outbox consumer feeds), and the installed apps that want (`wanted_by`) or need (`needed_by`) it. Each
+replica answers from its own settings. `ferrum task doctor` has a `services.<id>` line for each: ok when set up and answering
+(and its consumer under 300 s behind), a warning when it is set up and does not answer or is late, or is not set up and an
+installed app needs it, and only said otherwise.
+
 ## The vault's key from a key-management service
 
 The vault's `kms` slot (*The vault*, below) opens with a key that a key-management service gives, asked once at
