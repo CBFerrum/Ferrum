@@ -66,7 +66,11 @@ struct World {
 /// server does for itself (row-level security lets it through).
 async fn world() -> World {
     let db = Db::connect(DbConfig { url: url(), max_connections: 8, ..Default::default() }).await.expect("connect");
-    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public").execute(&db.pool).await.unwrap();
+    // The kernel does not need pg_trgm (it builds no trigram index); this suite measures what such indexes would do, so it makes the extension.
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public; create extension if not exists pg_trgm")
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let catalog = catalog();
     let table = ddl::cluster_schema(&catalog).unwrap().entity("Customer").unwrap().table.clone();
     let k = Kernel::boot(db, catalog, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");

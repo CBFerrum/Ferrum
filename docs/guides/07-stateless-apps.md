@@ -167,7 +167,7 @@ and refuses to start as a superuser or a role with `BYPASSRLS`. An app's SQL, it
 
 **What the role can do, and so what an app may use.**
 
-- The extensions are `btree_gist`, `citext` and `pg_trgm`, which a database's owner may make. An app needs no other:
+- The extensions are `btree_gist` and `citext`, which a database's owner may make. An app needs no other:
   a managed service may not offer it.
 - No superuser-only statement, no `ALTER SYSTEM`, no grant on `session_replication_role` (moves, sandboxes and deletions
   run without it; [docs/plan/stateless.md](../plan/stateless.md), D7).

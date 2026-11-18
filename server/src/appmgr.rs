@@ -140,6 +140,9 @@ pub struct PlanApp {
     /// what was tried with it.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub equipment: Value,
+    /// The optional services the apps of the plan want, and whether this installation has each (`wants` never refuses).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<crate::services::ServiceNote>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -364,6 +367,8 @@ pub struct AppManager {
     /// Per bundle digest: the files of its screens (`ui/…`).
     screen_files: DashMap<String, Arc<BTreeMap<String, Bytes>>>,
     screen_bytes: AtomicUsize,
+    /// The optional services this replica has set up, asked at each plan (`set_services`); none until told.
+    services: std::sync::OnceLock<Box<dyn Fn() -> BTreeSet<&'static str> + Send + Sync>>,
 }
 
 /// An installed, enabled app as screens, extension points and the shell see it.
@@ -920,7 +925,53 @@ impl AppManager {
             enabled: DashMap::new(),
             screen_files: DashMap::new(),
             screen_bytes: AtomicUsize::new(0),
+            services: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Tells the manager how to ask which optional services this replica has set up (crate::services), once, as the
+    /// server starts. A manager never told has none, and refuses what needs one.
+    pub fn set_services(&self, have: impl Fn() -> BTreeSet<&'static str> + Send + Sync + 'static) {
+        let _ = self.services.set(Box::new(have));
+    }
+
+    /// The services each app installed in some workspace wants and needs: `(app, wants, needs)`.
+    pub async fn declared_services(&self) -> Result<Vec<(String, Vec<String>, Vec<String>)>> {
+        let mut tx = self.kernel.db.system_tx().await?;
+        let rows: Vec<(String, Option<Value>, Option<Value>)> = sqlx::query_as(
+            "select distinct a.app_id, r.manifest #> '{app,wants}', r.manifest #> '{app,needs}' from tenant_app a \
+             left join app_release r on r.app_id = a.app_id and r.version = a.version",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let list = |v: Option<Value>| serde_json::from_value::<Vec<String>>(v.unwrap_or(Value::Null)).unwrap_or_default();
+        let mut out: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+        // A bundle's manifest is in its release; a compiled-in app says it itself. A compiled-in app is installed where a
+        // workspace has a row for it or all its packages (the workspace was made with them).
+        for (id, wants, needs) in rows.into_iter().filter(|(id, ..)| self.native(id).is_none()) {
+            let e = out.entry(id).or_default();
+            e.0.extend(list(wants));
+            e.1.extend(list(needs));
+        }
+        for m in self.natives.iter().filter(|m| !m.wants.is_empty() || !m.needs.is_empty()) {
+            let installed: bool = sqlx::query_scalar(
+                "select exists (select 1 from tenant_app where app_id = $1) or (cardinality($2::text[]) > 0 and exists \
+                 (select 1 from installed_package where name = any($2) group by tenant_id having count(*) = cardinality($2::text[])))",
+            )
+            .bind(&m.id)
+            .bind(&m.packages)
+            .fetch_one(&mut *tx)
+            .await?;
+            if installed {
+                out.insert(m.id.clone(), (m.wants.iter().cloned().collect(), m.needs.iter().cloned().collect()));
+            }
+        }
+        tx.commit().await?;
+        Ok(out
+            .into_iter()
+            .filter(|(_, (w, n))| !w.is_empty() || !n.is_empty())
+            .map(|(id, (w, n))| (id, w.into_iter().collect(), n.into_iter().collect()))
+            .collect())
     }
 
     fn native(&self, id: &str) -> Option<&AppManifest> {
@@ -1512,6 +1563,13 @@ impl AppManager {
                 return Err(Error::invalid(format!("{} needs {dep}, which is disabled in this workspace; enable it first", s.id)));
             }
         }
+        // An optional service an app cannot work without, which this installation has not set up, refuses it, before
+        // anything is agreed to; one it only wants is told in the dialog.
+        let have = self.services.get().map(|f| f()).unwrap_or_default();
+        if let Some(why) = changing.iter().find_map(|s| crate::services::unmet(&s.id, &s.manifest.needs, &have)) {
+            return Err(Error::Conflict(why));
+        }
+        let services: Vec<_> = changing.iter().flat_map(|s| crate::services::notes(&s.id, &s.manifest.wants, &have)).collect();
         if self.kernel.hooks.resources().is_none()
             && let Some(s) = changing.iter().find(|s| s.manifest.resources.iter().any(|r| r.required))
         {
@@ -1650,6 +1708,7 @@ impl AppManager {
                 isolated,
                 labels,
                 equipment: root.equipment.clone(),
+                services,
             },
             steps: steps
                 .iter()

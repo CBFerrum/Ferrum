@@ -371,7 +371,7 @@ database.
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
 isolation, so the server refuses to start with them. CloudNativePG's `ferrum` application user and
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
-trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
+trusted extensions `btree_gist` and `citext`, which a database owner can do.
 
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 8: 4 for short side writes and the vault
 (document numbering; an eighth of the pool when that is more), 2 on the direct pool (the one connection that LISTENs and
@@ -1256,7 +1256,7 @@ remembered:
 - PostgreSQL 17 is what CI and the rehearsal run; the doctor warns on anything older, which is not tested.
 - A role that logs in, is no superuser and has no `BYPASSRLS` (the server refuses to start otherwise), owns its
   database (or at least the `public` schema), and has a connection limit 20 below `max_connections`.
-- `btree_gist`, `citext` and `pg_trgm`: the role makes them itself (they are trusted extensions, which a database's
+- `btree_gist` and `citext`: the role makes them itself (they are trusted extensions, which a database's
   owner may make), or an administrator has made them already, in `public` or a schema on the role's `search_path`.
 - No grant on `session_replication_role`: moves, sandboxes, taking a workspace back and deleting one run without it.
 - With a pooler in transaction mode in front (RDS Proxy, PgBouncer, Supabase's or Neon's pooled address): that address
@@ -1299,13 +1299,40 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 
 | | What to make | Pooled address (`DATABASE_URL`) | Direct (`FERRUM_DATABASE_DIRECT_HOST`) | Backups and restore | Failover, and `hold_on_timeline` |
 |---|---|---|---|---|---|
-| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the three extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker); roles keep their passwords, so the vault opens as before *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
+| Amazon RDS for PostgreSQL | As the master user: `CREATE ROLE ferrum LOGIN PASSWORD '…' CONNECTION LIMIT …; CREATE DATABASE ferrum OWNER ferrum;` (the master user is `rds_superuser`, no superuser; the two extensions are allowed) *(from memory)* | RDS Proxy's endpoint, if you use one (transaction pooling, with pinning on session state) *(from memory)* | The instance endpoint, port 5432 *(from memory)* | Automated snapshots and point-in-time restore make a new instance, which keeps the identity of the one it came from (a snapshot, clone or restore is noticed by the marker); roles keep their passwords, so the vault opens as before *(from memory)* | Multi-AZ instance: synchronous standby, `false` is safe; Multi-AZ cluster (two readable standbys): semi-synchronous, `true` *(from memory)* |
 | Amazon Aurora PostgreSQL | As for RDS, on the cluster *(from memory)* | RDS Proxy *(from memory)* | The cluster (writer) endpoint *(from memory)* | Snapshots, point-in-time restore and fast clones make new clusters; whether `pg_control_system()` gives Aurora's storage a stable identity is unchecked, so count on the marker; roles keep their passwords *(from memory)* | Storage is shared and replicated by quorum: a failover loses nothing committed, `false` *(from memory)* |
 | Google Cloud SQL | `CREATE ROLE`/`CREATE DATABASE` as `postgres` (`cloudsqlsuperuser`, no superuser) *(from memory)* | Managed connection pooling where your edition has it, or PgBouncer of your own *(from memory)* | The instance's private IP: use `sslmode=verify-ca` and the server CA from the console *(from memory)* | Backups and point-in-time recovery restore to the same or a new instance; clones are new instances; users keep their passwords *(from memory)* | Regional (HA) instances fail over on a synchronously replicated disk: `false` *(from memory)* |
-| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the three extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server, with the roles and passwords it had *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
+| Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the two extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server, with the roles and passwords it had *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
 | Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker, and the same passwords *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
 | Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
 | Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
+
+## Optional services
+
+PostgreSQL and object storage are always there and always external. Everything else is optional and is only ever a
+projection (rebuilt from PostgreSQL), an accelerator (lost without losing data) or the vault's trust anchor: the platform
+works without any of them. The installation knows five by id, and a service is **set up** when every setting it names is
+filled on this replica (there is no switch of its own).
+
+| Id | What | Set up by | In this build |
+|---|---|---|---|
+| `keys.external` | the vault's root key kept by OpenBao or Vault Transit | `kms_transit` | yes |
+| `search` | search through an external index | | not yet |
+| `events.stream` | the event stream over the Kafka protocol | | not yet |
+| `analytics` | analytics over a column store | | not yet |
+| `notify` | notices between replicas through Redis or Valkey | | not yet |
+
+An app's manifest says `wants: [id]` (it works without the service and better with it: the install dialog says whether it
+is there) or `needs: [id]` (it cannot work without it: installing or upgrading it is refused, with the setting to fill,
+until the installation has it). An app installed while its service was set up keeps running when the setting is unset;
+the doctor says so.
+
+`GET /api/operator/services` (the operator's token, as the settings) lists each id with `built`, `configured`,
+`reachable` (the key service answers, for `keys.external`), `lag_seconds` (the oldest event the service's consumer has not
+taken, for a service an outbox consumer feeds), and the installed apps that want (`wanted_by`) or need (`needed_by`) it. Each
+replica answers from its own settings. `ferrum task doctor` has a `services.<id>` line for each: ok when set up and answering
+(and its consumer under 300 s behind), a warning when it is set up and does not answer or is late, or is not set up and an
+installed app needs it, and only said otherwise.
 
 ## The vault's key from a key-management service
 

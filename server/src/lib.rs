@@ -24,6 +24,7 @@ pub mod request_log;
 pub mod request_metrics;
 pub mod search;
 pub mod secrets;
+pub mod services;
 pub mod sessions;
 pub mod settings;
 pub mod shell;

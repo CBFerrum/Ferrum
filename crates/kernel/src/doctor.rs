@@ -130,18 +130,17 @@ impl Kernel {
                 "ALTER ROLE ... CONNECTION LIMIT, at least 20 below max_connections (docs/operations.md, Database role).",
             )
         });
-        let extensions: Vec<String> = sqlx::query_scalar(
-            "select n from unnest(array['btree_gist', 'citext', 'pg_trgm']) n where not exists (select 1 from pg_extension e where e.extname = n)",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
+        let extensions: Vec<String> =
+            sqlx::query_scalar("select n from unnest(array['btree_gist', 'citext']) n where not exists (select 1 from pg_extension e where e.extname = n)")
+                .fetch_all(&mut *tx)
+                .await?;
         out.push(if extensions.is_empty() {
-            Finding::ok("database.extensions", "btree_gist, citext and pg_trgm are installed")
+            Finding::ok("database.extensions", "btree_gist and citext are installed")
         } else {
             Finding::blocker(
                 "database.extensions",
                 format!("missing: {}", extensions.join(", ")),
-                "Give the database's role ownership of it, so it can create these trusted extensions, or have the service's administrator create them (CREATE EXTENSION btree_gist; and citext, pg_trgm).",
+                "Give the database's role ownership of it, so it can create these trusted extensions, or have the service's administrator create them (CREATE EXTENSION btree_gist; and citext).",
             )
         });
         // What the role can and cannot do, as running on any PostgreSQL needs (docs/operations.md, "Any PostgreSQL").
