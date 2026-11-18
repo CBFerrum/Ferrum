@@ -48,8 +48,11 @@ field it needs: an error that says invalid, not found or forbidden) is recorded 
 does not fail the event; an automation that ran is not run again for the event. A sink that handled the event
 is not called for it again when the event is retried or replayed: when an attempt fails or runs out of time,
 the sinks that handled it are recorded in `event_receipt` under their names (`{app}.{what}`, from
-`EventSink::name`). Only a replica that dies while handling an event can call again a sink that had finished,
-so a sink whose work must happen once asks `outbox::first_time` in the transaction that does it. An event
+`EventSink::name`). Only a replica that dies while handling an event can call again a sink that had finished
+(what an attempt handled is recorded when it ends), so a sink whose work must happen once asks
+`outbox::first_time` in the transaction that does it. A call outside cannot be in that transaction: a sink
+that makes one sends a key the other side knows a repeat by (`{app}.{what}:{event id}` as an
+`Idempotency-Key`, or the provider's own reference for the document), or asks the other side first. An event
 whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
 no webhook, follower, automation or sink, and counts as handled.
 
