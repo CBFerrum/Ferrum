@@ -4,8 +4,8 @@ use crate::db::{Db, Tx};
 use crate::error::{Error, Result};
 use dashmap::DashMap;
 use ferrum_meta::{Catalog, Overlay, OverlayOp, Schema, SchemaWarning, effective};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -29,9 +29,52 @@ pub const SETTINGS_CHANNEL: &str = "ferrum_settings";
 const ENTITY_BYTES: usize = 14_000;
 const BUDGET: usize = 512 * 1024 * 1024 / ENTITY_BYTES;
 
+/// What makes two workspaces' schemas the same but for what is set per workspace: the cluster catalog as this replica has it
+/// (its fingerprint covers every package's definition and version), and the installed packages that are in it, by name.
+/// Only a workspace with no active `meta_overlay` row is keyed; one with any builds its own schema.
+///
+/// Why that is exact. `Registry::schema` reads, for a workspace: (1) `tenant.meta_version` and `tenant.settings`;
+/// (2) `installed_package.name` (its `version` column is never read, so workspaces cannot differ by package version: an
+/// upgrade is a new catalog and so a new key); (3) the active `meta_overlay` rows (none, for a key); (4) the audit topics of
+/// its webhooks. And it asks `effective::build(catalog, installed, overlays, version)`, a function of those four arguments
+/// alone (crates/meta/src/effective.rs: no clock, environment or global is read; `version` is only copied to
+/// `Schema::version`, at the construction of the `Schema`). So with no overlays what `build` returns depends on the key
+/// alone, and everything else is written afterwards, per workspace, onto the clone of it: `version` (1), the warnings of
+/// packages no longer in the catalog (2), `audit_topics` (4), `controls`, `fy_start_month` and `timezone` with their warnings
+/// (from `settings`, 1). Custom entities, studio objects, translations and roles are rows read elsewhere or through
+/// overlays, never by `build`; zones and permissions are not in a schema.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Key(String, Vec<String>);
+
+/// What `build` made for a [`Key`], before anything per workspace was written onto it. Held by every cached workspace made
+/// from it, so it lives as long as one does; its entities are what they share (`Schema`'s clone copies the map, not the
+/// entities, each an `Arc`). It weighs its entity count against the cache's total from its making to its drop.
+struct Template {
+    schema: Schema,
+    weight: usize,
+    total: Arc<AtomicUsize>,
+}
+
+impl Template {
+    fn new(schema: Schema, total: &Arc<AtomicUsize>) -> Arc<Template> {
+        let weight = schema.entities.len().max(1);
+        total.fetch_add(weight, Ordering::Relaxed);
+        Arc::new(Template { schema, weight, total: total.clone() })
+    }
+}
+
+impl Drop for Template {
+    fn drop(&mut self) {
+        self.total.fetch_sub(self.weight, Ordering::Relaxed);
+    }
+}
+
 struct Cached {
     schema: Arc<Schema>,
-    /// What it counts against the budget: its entities, at least one.
+    /// What it was made from, when it was made from one: kept for as long as this entry is.
+    _template: Option<Arc<Template>>,
+    /// What it counts against the budget: its entities, at least one; a quarter of that when what is shared sits in its
+    /// template (the rest of a schema, which is not shared, measured about 23% of it).
     weight: usize,
     /// Milliseconds after the cache was made at which the database last said this schema is current.
     checked_at: AtomicU64,
@@ -45,15 +88,15 @@ struct Cached {
 /// costs far more. An ordered structure if misses at the budget ever become the common case.
 struct SchemaCache {
     map: DashMap<Uuid, Cached>,
-    /// The weights of everything in `map`, moved with each insertion and removal.
-    total: AtomicUsize,
+    /// The weights of everything in `map` and of the templates behind it, moved with each insertion and removal.
+    total: Arc<AtomicUsize>,
     budget: usize,
     start: Instant,
 }
 
 impl SchemaCache {
     fn new(budget: usize) -> Self {
-        SchemaCache { map: DashMap::new(), total: AtomicUsize::new(0), budget, start: Instant::now() }
+        SchemaCache { map: DashMap::new(), total: Arc::new(AtomicUsize::new(0)), budget, start: Instant::now() }
     }
 
     fn now(&self) -> u64 {
@@ -75,9 +118,9 @@ impl SchemaCache {
         })
     }
 
-    fn put(&self, tenant: Uuid, schema: Arc<Schema>) {
-        let weight = schema.entities.len().max(1);
-        if let Some(old) = self.map.insert(tenant, Cached { schema, weight, checked_at: AtomicU64::new(self.now()) }) {
+    fn put(&self, tenant: Uuid, schema: Arc<Schema>, template: Option<Arc<Template>>) {
+        let weight = if template.is_some() { schema.entities.len().div_ceil(4).max(1) } else { schema.entities.len().max(1) };
+        if let Some(old) = self.map.insert(tenant, Cached { schema, _template: template, weight, checked_at: AtomicU64::new(self.now()) }) {
             self.total.fetch_sub(old.weight, Ordering::Relaxed);
         }
         self.total.fetch_add(weight, Ordering::Relaxed);
@@ -118,6 +161,8 @@ pub struct Registry {
     catalog: std::sync::RwLock<Arc<Catalog>>,
     db: Db,
     cache: SchemaCache,
+    /// What was built for each [`Key`], for as long as a cached workspace uses it.
+    templates: DashMap<Key, Weak<Template>>,
     /// Schemas built from the database (a workspace not kept, or whose settings changed), since this replica started.
     misses: AtomicU64,
     ttl: Duration,
@@ -139,6 +184,7 @@ impl Registry {
             catalog: std::sync::RwLock::new(catalog),
             db,
             cache: SchemaCache::new(BUDGET),
+            templates: DashMap::new(),
             misses: AtomicU64::new(0),
             ttl: Duration::from_secs(30),
             changes: DashMap::new(),
@@ -228,6 +274,7 @@ impl Registry {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        let shared = rows.is_empty();
         let mut overlays = Vec::with_capacity(rows.len());
         let mut parse_warnings = Vec::new();
         let mut upstream = None;
@@ -256,7 +303,13 @@ impl Registry {
                 Err(e) => parse_warnings.push(SchemaWarning { entity, message: format!("unreadable customization: {e}") }),
             }
         }
-        let mut schema = effective::build(&catalog, &installed, &overlays, version).map_err(|e| Error::Internal(format!("schema for tenant {tenant}: {e}")))?;
+        let (mut schema, template) = if shared {
+            let template = self.template(&catalog, &installed, version).map_err(|e| Error::Internal(format!("schema for tenant {tenant}: {e}")))?;
+            (template.schema.clone(), Some(template))
+        } else {
+            (effective::build(&catalog, &installed, &overlays, version).map_err(|e| Error::Internal(format!("schema for tenant {tenant}: {e}")))?, None)
+        };
+        schema.version = version;
         schema.warnings.extend(parse_warnings);
         for m in missing {
             schema.warnings.push(SchemaWarning { entity: m.clone(), message: format!("package {m} is installed but no longer available on this cluster") });
@@ -286,8 +339,24 @@ impl Registry {
         }
         let schema = Arc::new(schema);
         self.misses.fetch_add(1, Ordering::Relaxed);
-        self.cache.put(tenant, schema.clone());
+        self.cache.put(tenant, schema.clone(), template);
         Ok(schema)
+    }
+
+    /// What `build` makes for these installed packages and no customizations: one for all workspaces using them at once. Two
+    /// first uses together may each build one; the later is the one kept in the map, and both are right. No lock is held
+    /// across the build.
+    fn template(&self, catalog: &Catalog, installed: &[String], version: i64) -> std::result::Result<Arc<Template>, ferrum_meta::MetaError> {
+        let key = Key(catalog.fingerprint().to_string(), installed.to_vec());
+        if let Some(t) = self.templates.get(&key).and_then(|w| w.upgrade()) {
+            return Ok(t);
+        }
+        let template = Template::new(effective::build(catalog, installed, &[], version)?, &self.cache.total);
+        if self.templates.len() > 1024 {
+            self.templates.retain(|_, w| w.strong_count() > 0);
+        }
+        self.templates.insert(key, Arc::downgrade(&template));
+        Ok(template)
     }
 
     /// How many schemas were built from the database since this replica started (`ferrum_schema_cache_misses_total`): it
@@ -303,6 +372,7 @@ impl Registry {
     }
 
     pub fn invalidate_all(&self) {
+        self.templates.clear();
         self.cache.clear();
         self.epoch.fetch_add(1, Ordering::SeqCst);
         self.bumps.fetch_add(1, Ordering::SeqCst);
@@ -454,7 +524,7 @@ mod tests {
             crate::logic::keep(*t);
             crate::process::keep(*t);
             // Nine hundred small and a hundred large, mixed: 12,900 entities in all.
-            cache.put(*t, if i % 10 == 9 { large.clone() } else { small.clone() });
+            cache.put(*t, if i % 10 == 9 { large.clone() } else { small.clone() }, None);
             assert!(cache.total.load(Ordering::Relaxed) <= 1000, "over the budget after {} puts", i + 1);
         }
         assert_eq!(cache.total.load(Ordering::Relaxed), weights(&cache), "the running total is what is held");
@@ -469,20 +539,48 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
         assert!(cache.current(old, 1).is_some());
         for _ in 0..800 {
-            cache.put(Uuid::new_v4(), small.clone());
+            cache.put(Uuid::new_v4(), small.clone(), None);
         }
         assert!(cache.map.contains_key(&old), "a workspace checked just now outlives the rest put after it");
         // One schema over the budget by itself stays and is served; the rest make room, and it is the oldest after.
         let (huge, big) = (Uuid::new_v4(), schema(5000));
-        cache.put(huge, big.clone());
+        cache.put(huge, big.clone(), None);
         assert!(Arc::ptr_eq(&cache.fresh(huge, Duration::from_secs(60)).expect("served"), &big));
         assert_eq!((cache.map.len(), cache.total.load(Ordering::Relaxed)), (1, 5000));
         std::thread::sleep(Duration::from_millis(5));
-        cache.put(Uuid::new_v4(), small.clone());
+        cache.put(Uuid::new_v4(), small.clone(), None);
         assert_eq!((cache.map.contains_key(&huge), cache.total.load(Ordering::Relaxed)), (false, 1));
         // Everything dropped (a notice may have been missed) takes the rules and listeners with it.
         cache.clear();
         assert_eq!((cache.map.len(), cache.total.load(Ordering::Relaxed)), (0, 0));
         assert!(tenants.iter().all(|t| !crate::logic::kept(*t) && !crate::process::kept(*t)));
+    }
+
+    /// A workspace made from a template: its entities are the template's, it weighs a quarter of them, the template
+    /// weighs them once for all and goes, with its weight, with the last workspace using it.
+    #[test]
+    fn a_template_weighs_while_it_is_used() {
+        let cache = SchemaCache::new(50);
+        let base = schema(40);
+        let template = Template::new((*base).clone(), &cache.total);
+        let from_template = |version| {
+            let mut s = (*base).clone();
+            s.version = version;
+            Arc::new(s)
+        };
+        assert_eq!(cache.total.load(Ordering::Relaxed), 40, "the template weighs its entities");
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        cache.put(a, from_template(1), Some(template.clone()));
+        assert_eq!(cache.total.load(Ordering::Relaxed), 50, "and the workspace a quarter: 40 + 10");
+        cache.put(b, from_template(2), Some(template.clone()));
+        drop(template);
+        // 60 is over 50: the one checked longest ago goes, the template stays for the one left.
+        assert_eq!((cache.map.contains_key(&a), cache.map.contains_key(&b), cache.total.load(Ordering::Relaxed)), (false, true, 50));
+        let (x, y) = (cache.fresh(b, Duration::from_secs(60)).unwrap(), from_template(3));
+        assert!(Arc::ptr_eq(x.entities.values().next().unwrap(), y.entities.values().next().unwrap()), "their entities are one allocation");
+        // A schema of its own, as large as it can be and stay: everything else makes room, the template with the last.
+        std::thread::sleep(Duration::from_millis(5));
+        cache.put(c, schema(100), None);
+        assert_eq!((cache.map.len(), cache.total.load(Ordering::Relaxed)), (1, 100), "the template's weight went with its last workspace");
     }
 }

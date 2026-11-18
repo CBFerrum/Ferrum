@@ -7,18 +7,16 @@ use ferrum_meta::catalog::load_package_dir;
 use ferrum_meta::effective;
 use ferrum_testkit::{Kit, database, run};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-thread_local! {
-    /// Bytes this thread has allocated minus freed. A thread's own, so other tests running beside this one do not count.
-    static NET: Cell<i64> = const { Cell::new(0) };
-}
+/// Bytes allocated minus freed, by every thread: this binary has the one test, and nothing else runs while it counts.
+static NET: AtomicI64 = AtomicI64::new(0);
 
 struct Counting;
 
 fn add(n: i64) {
-    NET.with(|c| c.set(c.get() + n));
+    NET.fetch_add(n, Ordering::Relaxed);
 }
 
 // SAFETY: every call is the system allocator's own; only a counter beside it changes.
@@ -77,11 +75,49 @@ fn schema_size_is_printed() {
         let kit = Kit::boot_with(&database("FERRUM_REGISTRY_TEST_DATABASE_URL"), &[], extra, KernelSettings::default()).await;
         let catalog = kit.k.registry.catalog();
         let names: Vec<String> = catalog.packages().map(|p| p.name().to_string()).collect();
-        // No await between the two readings: the same thread counts both.
-        let before = NET.with(Cell::get);
+        let before = NET.load(Ordering::Relaxed);
         let schema = effective::build(&catalog, &names, &[], 1).expect("the schema of every package");
-        let bytes = NET.with(Cell::get) - before;
+        let bytes = NET.load(Ordering::Relaxed) - before;
         println!("schema_size: {bytes} bytes for {} packages ({added} added), {} entities", names.len(), schema.entities.len());
+        // What building costs, and how much of what is built is the entities (each its own `Arc`, which the cache could share).
+        let took = (0..3)
+            .map(|_| {
+                let at = std::time::Instant::now();
+                let _ = effective::build(&catalog, &names, &[], 1).expect("a schema");
+                at.elapsed()
+            })
+            .min()
+            .expect("three builds");
+        let before = NET.load(Ordering::Relaxed);
+        let copies: Vec<_> = schema.entities.values().map(|e| (**e).clone()).collect();
+        let entity_bytes = NET.load(Ordering::Relaxed) - before;
+        drop(copies);
+        println!("schema_build: {took:?} for one build (best of 3, unoptimised test profile); entities about {entity_bytes} bytes of the {bytes}");
+        // Workspaces with the same packages each hold a schema of their own: five held at once, and 200 by multiplication.
+        let before = NET.load(Ordering::Relaxed);
+        let five: Vec<_> = (0..5).map(|v| effective::build(&catalog, &names, &[], v).expect("a schema")).collect();
+        let held = NET.load(Ordering::Relaxed) - before;
+        println!("schema_held: {held} bytes for 5 workspaces with the same packages, {} for 200", held / 5 * 200);
+        drop(five);
+        // The same five as workspaces of a registry, which builds the schema once and shares what it can (registry.rs).
+        let all: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut tenants = Vec::new();
+        for i in 0..5 {
+            tenants.push(kit.workspace(&format!("held{i}"), &all, serde_json::Value::Null).await.tenant);
+        }
+        kit.k.registry.invalidate_all();
+        let before = NET.load(Ordering::Relaxed);
+        kit.k.registry.schema(tenants[0]).await.expect("a schema");
+        let one = NET.load(Ordering::Relaxed) - before;
+        for t in &tenants[1..] {
+            kit.k.registry.schema(*t).await.expect("a schema");
+        }
+        let five = NET.load(Ordering::Relaxed) - before;
+        let each = (five - one) / 4;
+        println!(
+            "schema_shared: {five} bytes for 5 workspaces with the same packages ({one} for the first, {each} for each after it), {} for 200",
+            one + 199 * each
+        );
         assert!(bytes > 10_000, "a schema of {} entities holds more than {bytes} bytes", schema.entities.len());
     });
 }
