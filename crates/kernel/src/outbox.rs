@@ -357,21 +357,23 @@ impl Kernel {
         // in random order, so that more workspaces than a batch holds all get their turn.
         // A newer build's events wait for a replica of it: their topics may be ones this build does not know, which it
         // would mark done or send to webhooks that the newer build keeps them from (window.rs). Everything else goes on,
-        // so a newer event may be handled after later ones of its workspace (docs/events.md, Order).
+        // so a newer event may be handled after later ones of its workspace (docs/events.md, Order). Each workspace's
+        // share comes most urgent first, then oldest, the order handle_events keeps.
         let events: Vec<Event> = sqlx::query_as(
             "with recursive waiting(tenant_id) as ( \
                (select tenant_id from outbox where processed_at is null and not dead order by tenant_id limit 1) \
                union all \
                select (select o.tenant_id from outbox o where o.tenant_id > w.tenant_id and o.processed_at is null and not o.dead \
                        order by o.tenant_id limit 1) \
-               from waiting w where w.tenant_id is not null) \
-             update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
+               from waiting w where w.tenant_id is not null), \
+             taken as (update outbox set available_at = now() + make_interval(secs => $1) where id in ( \
                select claimed.id from (select tenant_id from waiting where tenant_id is not null and not ferrum_workspace_held(tenant_id) order by random()) w \
                cross join lateral (select o.id from outbox o where o.tenant_id = w.tenant_id and o.processed_at is null and not o.dead \
                  and o.available_at <= now() and o.build_date <= $4 \
                  order by o.priority, o.id limit $2 for update skip locked) claimed \
                limit $3) \
-             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone",
+             returning id, tenant_id, topic, entity, record_id, payload, attempts, correlation_id, traceparent, actor, legal_entity, source_version, schema_version, depth, available_at as lease, zone, priority) \
+             select * from taken order by priority, id",
         )
         .bind(CLAIM_SECS)
         .bind(TENANT_SHARE)
@@ -392,9 +394,8 @@ impl Kernel {
         Ok(claimed)
     }
 
-    /// One workspace's share of a batch, in order: priority, then age.
-    async fn handle_events(&self, mut events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
-        events.sort_by_key(|e| e.id);
+    /// One workspace's share of a batch, one event at a time, in the order the claim gave it: most urgent first, then oldest.
+    async fn handle_events(&self, events: Vec<Event>, stopping: &watch::Receiver<bool>) -> Result<()> {
         for (begun, ev) in events.iter().enumerate() {
             // Workspaces are handled side by side, as many at once as there are turns.
             let _turn = self.turn().await?;

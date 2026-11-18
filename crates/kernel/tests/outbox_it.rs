@@ -221,8 +221,8 @@ async fn scenario() {
             tx.commit().await.unwrap();
         })
     };
-    // A sign-in code waits in the same batch behind an event whose handler is at work when its replica is killed.
-    queue("held.1", 1).await;
+    // A sign-in code waits in the same batch behind an earlier one whose handler is at work when its replica is killed.
+    queue("held.1", outbox::PRIORITY_URGENT).await;
     queue("code", outbox::PRIORITY_URGENT).await;
     let (_alive, running) = watch::channel(false);
     let killed = a.spawn_outbox_dispatcher(running);

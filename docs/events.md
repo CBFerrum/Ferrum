@@ -53,9 +53,11 @@ so a sink whose work must happen once asks `outbox::first_time` in the transacti
 whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
 no webhook, follower, automation or sink, and counts as handled.
 
-**Order** holds within a workspace and a priority, until something fails: a retry goes behind later
-events. During an upgrade or after a rollback, an event written by a newer build can be delivered after later events of
-the same workspace (an older server leaves it for a newer one, docs/operations.md); `source_version` covers that too.
+**Order.** A replica handles one workspace's events one at a time, most urgent first, then oldest first. That is
+all that is promised. A later event of higher priority goes before an earlier one (a record's `created` written under
+bulk priority can follow its `updated`); a retry goes behind later events; two replicas can each hold a share of one
+workspace's events at once; and during an upgrade or after a rollback, an event written by a newer build can be
+delivered after later events of the same workspace (an older server leaves it for a newer one, docs/operations.md).
 Anything that depends on order compares `source_version`.
 
 **Fairness.** A batch gives each workspace with work at most 10 events, of 50, and handles workspaces
