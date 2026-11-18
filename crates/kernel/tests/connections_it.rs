@@ -145,6 +145,8 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/hop-private" => (302, "location: http://10.0.0.1/v1/ok\r\n".into(), String::new()),
                     "/v1/hop-localhost" => (302, format!("location: http://localhost:{}/v1/ok\r\n", s.local_addr().unwrap().port()), String::new()),
                     "/v1/ok" => (200, String::new(), json!({"ok": true}).to_string()),
+                    "/v1/conflict" => (409, String::new(), json!({"error": {"message": "idempotency_key_in_use"}}).to_string()),
+                    "/v1/gateway-down" => (502, String::new(), json!({"error": {"message": "bad gateway"}}).to_string()),
                     "/v1/orders" => match path.split_once("cursor=").map(|c| c.1.to_string()).as_deref() {
                         None | Some("") => {
                             (200, String::new(), json!({"data": [{"id": "O-1", "title": "First"}, {"id": "O-2", "title": "Second"}], "next": "c2"}).to_string())
@@ -373,6 +375,156 @@ async fn count(k: &Kernel, tenant: Uuid, sql: &str) -> i64 {
     n
 }
 
+/// HMAC-SHA512 of `message` under `secret`, in hex.
+fn sign512(secret: &str, message: &[u8]) -> String {
+    use hmac::Mac;
+    let mut mac = hmac::Hmac::<sha2::Sha512>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(message);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// What payment providers need of connections (S1-P0a, BD-81, BD-82): one-header signatures, SHA-512, a secret in the
+/// address, a notice heard again after a while, apps alone calling an exclusive connection, an answer a money caller can
+/// class, and a connection an app holds.
+async fn payment_providers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
+    let alike = Error::Unauthorized("this call was not accepted".into()).to_string();
+    let map = json!({"entity": "Alert", "by": {"external_id": "item.id"}, "set": {"title": "item.id"}});
+    let save = |name: &str, desc: Value| {
+        let input = input(name, desc, Some(json!({"hook": INBOUND, "api_key": SECRET})));
+        async move { k.save_connection_def(admin, None, &input).await.unwrap() }
+    };
+    let none = BTreeMap::new();
+    let now = chrono::Utc::now().timestamp();
+
+    // ── parts_header_signature_verified: `t=…,v1=…,v1=…`, any v1 that verifies, the timestamp in the window ──
+    let stripe = save(
+        "stripe_like",
+        json!({"test": true, "inbound": {"verify": {"type": "signature", "header": "Stripe-Signature", "secret": "hook",
+        "parts": {"timestamp": "t", "signature": "v1"}}, "delivery_at": "/id", "map": map}}),
+    )
+    .await;
+    let body = r#"{"id": "evt_1"}"#;
+    let good = sign(INBOUND, now, body).trim_start_matches("sha256=").to_string();
+    let wrong = sign("whsec-other", now, body).trim_start_matches("sha256=").to_string();
+    let h = headers(&[("Stripe-Signature", format!("t={now},v1={wrong},v1={good}"))]);
+    assert_eq!(k.connection_inbound(stripe, &h, &none, body.as_bytes()).await.unwrap(), json!({"accepted": true}), "the second v1 verifies");
+    let stale = sign(INBOUND, now - 3600, r#"{"id": "evt_2"}"#).trim_start_matches("sha256=").to_string();
+    let h = headers(&[("Stripe-Signature", format!("t={},v1={stale}", now - 3600))]);
+    assert_eq!(k.connection_inbound(stripe, &h, &none, br#"{"id": "evt_2"}"#).await.unwrap_err().to_string(), alike, "a stale t");
+    let h = headers(&[("Stripe-Signature", format!("t={now},v1={wrong}"))]);
+    assert_eq!(k.connection_inbound(stripe, &h, &none, br#"{"id": "evt_3"}"#).await.unwrap_err().to_string(), alike, "no v1 verifies");
+
+    // ── sha512_signature_verified ──
+    let hyper = save(
+        "hyper_like",
+        json!({"test": true, "inbound": {"verify": {"type": "signature", "header": "X-Webhook-Signature-512", "secret": "hook",
+        "algorithm": "sha512"}, "delivery_at": "/event_id", "map": map}}),
+    )
+    .await;
+    let body = r#"{"event_id": "e-1", "id": "pay_1"}"#;
+    let h = headers(&[("X-Webhook-Signature-512", sign512(INBOUND, body.as_bytes()))]);
+    assert_eq!(k.connection_inbound(hyper, &h, &none, body.as_bytes()).await.unwrap(), json!({"accepted": true}));
+    let body = r#"{"event_id": "e-2", "id": "pay_2"}"#;
+    let h = headers(&[("X-Webhook-Signature-512", sign(INBOUND, now, body))]);
+    assert_eq!(k.connection_inbound(hyper, &h, &none, body.as_bytes()).await.unwrap_err().to_string(), alike, "a SHA-256 signature is not one");
+
+    // ── query_token_verified_in_constant_time, query_token_wrong_or_missing_refused_alike ──
+    let mollie = save(
+        "mollie_like",
+        json!({"test": true, "inbound": {"verify": {"type": "query", "param": "t", "secret": "hook", "repeats_after_secs": 10},
+        "map": map}}),
+    )
+    .await;
+    let form = headers(&[("Content-Type", "application/x-www-form-urlencoded".into())]);
+    let q = |t: &str| BTreeMap::from([("t".to_string(), t.to_string())]);
+    assert_eq!(k.connection_inbound(mollie, &form, &q(INBOUND), b"id=tr_1").await.unwrap(), json!({"accepted": true}));
+    for (given, why) in [(q("whsec-wrong"), "a wrong token"), (q(""), "an empty one"), (BTreeMap::new(), "none"), (q(&INBOUND[..10]), "a prefix of it")] {
+        assert_eq!(k.connection_inbound(mollie, &form, &given, b"id=tr_9").await.unwrap_err().to_string(), alike, "{why}");
+    }
+    // ── same_body_heard_again_after_repeats_after_secs ──
+    let wait = 10 - chrono::Utc::now().timestamp().rem_euclid(10);
+    if wait <= 1 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    k.connection_inbound(mollie, &form, &q(INBOUND), b"id=tr_2").await.unwrap();
+    assert_eq!(k.connection_inbound(mollie, &form, &q(INBOUND), b"id=tr_2").await.unwrap_err().to_string(), alike, "the same notice at once is a replay");
+    tokio::time::sleep(std::time::Duration::from_secs(10 - chrono::Utc::now().timestamp().rem_euclid(10) as u64 + 1)).await;
+    assert_eq!(k.connection_inbound(mollie, &form, &q(INBOUND), b"id=tr_2").await.unwrap(), json!({"accepted": true}), "heard again after the window");
+    let bad = input(
+        "repeats_bad",
+        json!({"test": true, "inbound": {"verify": {"type": "query", "param": "t", "secret": "hook", "repeats_after_secs": 5}, "map": map}}),
+        None,
+    );
+    assert!(k.save_connection_def(admin, None, &bad).await.unwrap_err().to_string().contains("repeats_after_secs"));
+
+    // ── inbound_url_carries_the_query_token_and_is_masked ──
+    let ops = json!({"open": {"path": "/ok", "method": "POST", "body": "{\"webhook\": {{ connection.inbound_url | json }}}"}});
+    let pay_desc = json!({"base": base, "auth": {"type": "bearer", "secret": "api_key"}, "apps": ["depot"], "exclusive": true, "operations": ops,
+        "inbound": {"verify": {"type": "query", "param": "t", "secret": "hook"}, "map": map}});
+    let pay = save("pay_like", pay_desc.clone()).await;
+    k.debug_connection(admin, pay, 10).await.unwrap();
+    connections::call(k, admin, Some("depot"), &call("pay_like", "open", json!({}), Some("open-1"))).await.unwrap();
+    let sent = seen.lock().unwrap().last().cloned().unwrap();
+    assert!(sent.contains(&format!("https://ferrum.example.test/api/connections/inbound/{pay}?t={INBOUND}")), "{sent}");
+    let log = k.connection_log(admin, pay, 5).await.unwrap();
+    assert!(!serde_json::to_string(&log).unwrap().contains(INBOUND) && serde_json::to_string(&log).unwrap().contains("inbound/"), "masked: {log:?}");
+
+    // ── an_exclusive_connection_refuses_the_system_admins_and_roles ──
+    let mut role = admin.clone();
+    role.is_admin = false;
+    for (who, ctx) in [("an administrator", admin.clone()), ("the system", Ctx::system(admin.tenant, admin.schema.clone())), ("a role", role)] {
+        let e = connections::call(k, &ctx, None, &call("pay_like", "open", json!({}), Some("open-2"))).await.unwrap_err();
+        assert!(matches!(e, Error::Forbidden(_)), "{who}: {e}");
+    }
+    assert!(matches!(connections::call(k, admin, Some("other"), &call("pay_like", "open", json!({}), Some("open-3"))).await.unwrap_err(), Error::Forbidden(_)));
+    let e = k.try_connection(admin, pay, "open", &json!({}), Some("try-1")).await.unwrap_err();
+    assert!(matches!(e, Error::Forbidden(_)), "an administrator's try runs nothing that changes: {e}");
+
+    // ── call_answer_tells_not_sent_refused_unknown_and_answered ──
+    let ops = json!({
+        "conflict": {"path": "/conflict", "method": "POST", "body": "{}"}, "down": {"path": "/gateway-down", "method": "POST", "body": "{}"},
+        "slow": {"path": "/slow"}, "ok": {"path": "/ok"}, "garbled": {"path": "/ok", "result": {"id": {"at": "/id", "required": true}}}});
+    save("answers_like", json!({"base": base, "timeout_ms": 1000, "apps": ["depot"], "operations": ops})).await;
+    save("guarded_like", json!({"base": "https://10.0.0.1/v1", "apps": ["depot"], "operations": {"ok": {"path": "/ok"}}})).await;
+    let answer = |conn: &'static str, op: &'static str, key: Option<&'static str>| async move {
+        connections::call_answer(k, admin, Some("depot"), &call(conn, op, json!({}), key)).await.unwrap()
+    };
+    let a = answer("answers_like", "ok", None).await;
+    assert!(a.sent && a.status == Some(200) && a.result == Some(json!({"ok": true})) && !a.later && a.error.is_none(), "answered: {a:?}");
+    let a = answer("answers_like", "conflict", Some("c-1")).await;
+    assert!(a.sent && a.status == Some(409) && a.result.is_none() && !a.later, "a 409, for the caller to class: {a:?}");
+    let a = answer("answers_like", "down", Some("d-1")).await;
+    assert!(a.sent && a.status == Some(502) && a.later, "a 5xx: sent, later: {a:?}");
+    let a = answer("answers_like", "slow", None).await;
+    assert!(a.sent && a.status.is_none() && a.later, "a timeout: it left, nobody knows: {a:?}");
+    let a = answer("answers_like", "garbled", None).await;
+    assert!(a.sent && a.status == Some(200) && a.result.is_none() && a.error.is_some(), "a 2xx not read as described: {a:?}");
+    let a = answer("guarded_like", "ok", None).await;
+    assert!(!a.sent && a.status.is_none() && a.error.is_some(), "the guard refused it before it left: {a:?}");
+    let a = connections::call_answer(k, admin, Some("other"), &call("answers_like", "ok", json!({}), None)).await.unwrap();
+    assert!(!a.sent && a.error.is_some(), "a caller the connection does not list: {a:?}");
+    // ── call_is_unchanged ──
+    assert_eq!(connections::call(k, admin, Some("depot"), &call("answers_like", "ok", json!({}), None)).await.unwrap(), json!({"ok": true}));
+    assert!(matches!(
+        connections::call(k, admin, Some("depot"), &call("answers_like", "down", json!({}), Some("d-2"))).await.unwrap_err(),
+        Error::Unavailable(_)
+    ));
+
+    // ── a_held_connection_cannot_be_deleted_but_can_be_turned_off ──
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    connections::hold(&mut tx, admin.tenant, pay, "payments", "a payment account names it").await.unwrap();
+    tx.commit().await.unwrap();
+    let e = k.delete_connection_def(admin, pay).await.unwrap_err();
+    assert!(matches!(e, Error::Conflict(_)) && e.to_string().contains("payments") && e.to_string().contains("a payment account names it"), "{e}");
+    let mut off = input("pay_like", pay_desc, None);
+    off.enabled = false;
+    k.save_connection_def(admin, Some(pay), &off).await.expect("turned off");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    connections::release(&mut tx, admin.tenant, pay, "payments", "a payment account names it").await.unwrap();
+    tx.commit().await.unwrap();
+    k.delete_connection_def(admin, pay).await.expect("released, it goes");
+}
+
 /// Being called: verified, recorded once, processed once, onto records or by the app.
 async fn being_called(k: &Kernel, admin: &Ctx) {
     let tenant = admin.tenant;
@@ -386,7 +538,7 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
     let post = |delivery: &str, ts: i64, body: &str, secret: &str| {
         let h = headers(&[("X-Signature", sign(secret, ts, body)), ("X-Timestamp", ts.to_string()), ("X-Delivery", delivery.to_string())]);
         let body = body.to_string();
-        async move { k.connection_inbound(id, &h, body.as_bytes()).await }
+        async move { k.connection_inbound(id, &h, &BTreeMap::new(), body.as_bytes()).await }
     };
     let one = r#"{"alerts": [{"id": "A-1", "summary": "Disk full", "state": "firing"}, {"id": "A-2", "summary": "CPU hot", "state": "firing"}]}"#;
     assert_eq!(post("d-1", now, one, INBOUND).await.unwrap(), json!({"accepted": true}));
@@ -409,19 +561,19 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
         post("d-1", now, one, INBOUND).await.unwrap_err(),
         post("d-3", now, one, "whsec-wrong").await.unwrap_err(),
         post("d-4", now - 3600, one, INBOUND).await.unwrap_err(),
-        k.connection_inbound(id, &headers(&[("X-Delivery", "d-5".into())]), one.as_bytes()).await.unwrap_err(),
+        k.connection_inbound(id, &headers(&[("X-Delivery", "d-5".into())]), &BTreeMap::new(), one.as_bytes()).await.unwrap_err(),
         post("d-6", now, &json!({"alerts": [], "pad": "x".repeat(300 << 10)}).to_string(), INBOUND).await.unwrap_err(),
     ];
     assert!(refusals.iter().all(|e| e.to_string() == alike), "{refusals:?}");
     let unknown_before = ferrum_kernel::connections::inbound::refused_unknown();
-    assert_eq!(k.connection_inbound(Uuid::now_v7(), &BTreeMap::new(), b"{}").await.unwrap_err().to_string(), alike);
+    assert_eq!(k.connection_inbound(Uuid::now_v7(), &BTreeMap::new(), &BTreeMap::new(), b"{}").await.unwrap_err().to_string(), alike);
     assert_eq!(ferrum_kernel::connections::inbound::refused_unknown(), unknown_before + 1);
     let refused = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "monitor").unwrap()["refused"].clone();
     assert_eq!(refused, json!(5));
     // Without a delivery id, what was signed stands for it: the same call again is a replay.
     let h = headers(&[("X-Signature", sign(INBOUND, now, one)), ("X-Timestamp", now.to_string())]);
-    k.connection_inbound(id, &h, one.as_bytes()).await.unwrap();
-    assert_eq!(k.connection_inbound(id, &h, one.as_bytes()).await.unwrap_err().to_string(), alike);
+    k.connection_inbound(id, &h, &BTreeMap::new(), one.as_bytes()).await.unwrap();
+    assert_eq!(k.connection_inbound(id, &h, &BTreeMap::new(), one.as_bytes()).await.unwrap_err().to_string(), alike);
     // A payload the mapping cannot take is marked failed, saying why, and not tried again.
     let blank = r#"{"alerts": [{"id": "A-9", "state": "firing"}]}"#;
     post("d-7", now, blank, INBOUND).await.unwrap();
@@ -433,10 +585,10 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
     let shop = json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"}, "delivery_at": "/order", "handler": "depot"}});
     let shop = k.save_connection_def(admin, None, &input("shop", shop, Some(json!({"token": TOKEN})))).await.unwrap();
     let form = headers(&[("X-Token", TOKEN.into()), ("Content-Type", "application/x-www-form-urlencoded".into())]);
-    k.connection_inbound(shop, &form, b"order=O-1&ref=web").await.unwrap();
-    assert_eq!(k.connection_inbound(shop, &form, b"order=O-1&ref=web").await.unwrap_err().to_string(), alike, "the same order again");
+    k.connection_inbound(shop, &form, &BTreeMap::new(), b"order=O-1&ref=web").await.unwrap();
+    assert_eq!(k.connection_inbound(shop, &form, &BTreeMap::new(), b"order=O-1&ref=web").await.unwrap_err().to_string(), alike, "the same order again");
     let wrong = headers(&[("X-Token", "tok-Qq19-shared-inbounD".into())]);
-    assert_eq!(k.connection_inbound(shop, &wrong, b"{}").await.unwrap_err().to_string(), alike);
+    assert_eq!(k.connection_inbound(shop, &wrong, &BTreeMap::new(), b"{}").await.unwrap_err().to_string(), alike);
     drain(k).await;
     assert_eq!(count(k, tenant, &format!("select count(*) from {parcel} where tenant_id = $1 and label = 'shop:web'")).await, 1, "handed to the app, once");
     let other_app =
@@ -459,7 +611,7 @@ async fn being_called(k: &Kernel, admin: &Ctx) {
         mac.update(body.as_bytes());
         let h = headers(&[("X-Carrier-Sig", base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())), ("X-Event-Id", event.to_string())]);
         let body = body.to_string();
-        async move { k.connection_inbound(tracking, &h, body.as_bytes()).await }
+        async move { k.connection_inbound(tracking, &h, &BTreeMap::new(), body.as_bytes()).await }
     };
     let first = r#"{"id": "TRK-1", "status": "in transit"}"#;
     send("e-1", first, INBOUND).await.unwrap();
@@ -628,8 +780,15 @@ async fn answers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
         "by": {"external_id": {"at": "/id", "required": true}}, "set": {"state": "/state", "title": {"expr": "connection.name + ' ' + string(item.likes + item.shares)"}}}}});
     let hook = k.save_connection_def(admin, None, &input("posts_in", hook, Some(json!({"token": TOKEN})))).await.unwrap();
     let h = headers(&[("X-Token", TOKEN.into())]);
-    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-1", "likes": 2, "shares": 5}]}).to_string().as_bytes()).await.unwrap();
-    k.connection_inbound(hook, &h, json!({"items": [{"id": "N-2", "likes": 1, "shares": 1}, {"likes": 0, "shares": 0}]}).to_string().as_bytes()).await.unwrap();
+    k.connection_inbound(hook, &h, &BTreeMap::new(), json!({"items": [{"id": "N-1", "likes": 2, "shares": 5}]}).to_string().as_bytes()).await.unwrap();
+    k.connection_inbound(
+        hook,
+        &h,
+        &BTreeMap::new(),
+        json!({"items": [{"id": "N-2", "likes": 1, "shares": 1}, {"likes": 0, "shares": 0}]}).to_string().as_bytes(),
+    )
+    .await
+    .unwrap();
     drain(k).await;
     assert_eq!(
         count(k, tenant, &format!("select count(*) from {alert} where tenant_id = $1 and external_id = 'N-1' and title = 'posts_in 7' and state is null"))
@@ -1417,6 +1576,7 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     being_called(&k, &admin).await;
+    payment_providers(&k, &admin, &base, &seen).await;
     answers(&k, &admin, &base, &seen).await;
     files(&k, &admin, &base, &seen).await;
     pulling(&k, &admin, &base, &seen).await;

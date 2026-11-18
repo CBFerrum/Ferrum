@@ -1397,6 +1397,15 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `POST /api/connections/inbound/{id}` | no session: a call from outside → `{accepted: true}`, or `401 this call was not accepted` whatever the reason |
 | `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
+**Only its apps** ([BD-82](builder/decisions.md#bd-82-connections-only-apps-call-an-answer-to-class-a-hold)):
+`exclusive: true` admits only the listed `apps`: never the system, an administrator or a role, and an administrator's
+*try* runs only operations that change nothing. `ferrum_kernel::connections::call_answer(&k, &ctx, app, &call)` answers
+`CallAnswer {sent, status, result, later, wait, error}` (whether a request left the server, the service's status, the
+mapped result when it answered as described, whether to try later and when, why not; `Err` only for the platform's own
+failures), for a caller that moves money and must tell "refused" from "unknown"; `call` is unchanged.
+`connections::hold(tx, tenant, connection, app, reason)` / `release(…)`: while an app holds a connection, deleting it is
+refused (409, naming the app and the reason); turning it off stays possible (its calls wait, not sent).
+
 **Calling** — an app: `ferrum_kernel::connections::call(&kernel, &ctx, Some("erp"), &Call { connection: "carrier".into(),
 operation: "create_label".into(), inputs: json!({"weight": 2, "ref": "P-9"}), key: Some(format!("label:{id}")),
 entity: Some("Shipment".into()), record: Some(id) })` gives the mapped result; `Unavailable` means "later", `Invalid` the
@@ -1429,6 +1438,17 @@ body), saved only with `delivery_header` or `delivery_at`: then a delivery id or
 the body; without either, the digest of what was signed stands for it. `handler: "<app>"` (an app in `apps`, registered
 with `HookRegistry::add_inbound_handler`) takes the payload in place of `map`. Bodies up to `max_bytes` (256 KB, at most
 1 MB), JSON or a form.
+
+For payment providers ([BD-81](builder/decisions.md#bd-81-inbound-verification-for-payment-providers)): a signature may
+say `algorithm: sha512` (HMAC-SHA512; `sha256` is the default) and `parts: {timestamp: "t", signature: "v1"}` (one header
+of `key=value` pairs, `t=…,v1=…,v1=…`: the timestamp from `t`, checked against the window, the message `{t}.{body}`,
+any `v1` that verifies passes; no `timestamp_header` beside it). `{type: query, param, secret, repeats_after_secs?}`
+verifies a service that signs nothing by a secret in the inbound address's query (`?{param}=…`), compared in constant
+time, a wrong or missing one refused as any other; request logs keep no query. `repeats_after_secs` (10 to 3600): with no
+delivery id named, the same body is taken again once that many seconds have passed (the delivery id is
+`sha256(body):{now / repeats_after_secs}`). Operations' templates read `connection.inbound_url`: the inbound address
+(the public address + `/api/connections/inbound/{id}`), with `?{param}={secret}` for a `query` connection, masked as
+every secret value is in the call log and captures.
 
 **Pulling**: `"pulls": [{"name": "orders", "operation": "list_orders", "every_minutes": 15, "items_at": "/data",
 "cursor": "token", "next_at": "/next", "cursor_input": "cursor", "max_pages": 5, "map": {…}}]` (`cursor: "time"` gives
