@@ -5,7 +5,8 @@
 //! * A value `vault:v…:…` is ciphertext of OpenBao's (or HashiCorp Vault's) Transit engine, unwrapped
 //!   by the Transit key the setting `kms_transit` names (`https://host:8200/transit/ferrum`: the mount,
 //!   then the key). It signs in with the token in [`KMS_TOKEN`] (a mounted Secret, or a Vault Agent's
-//!   file), or as the pod's Kubernetes service account (the setting `kms_kubernetes_role`); through R1
+//!   file), as an AppRole (the setting `kms_approle_role_id` and the secret id in the file [`KMS_SECRET_ID`], read at each
+//!   use as the token's file is), or as the pod's Kubernetes service account (the setting `kms_kubernetes_role`); through R1
 //!   also with `FERRUM_KMS_TOKEN_FILE`, `BAO_TOKEN` or `VAULT_TOKEN` from the environment, which win. The
 //!   token is never a setting: it would be in the database.
 //! * `FERRUM_SECRET_KEY_COMMAND` runs a command whose output is the key: any KMS's own tool
@@ -26,6 +27,8 @@ const TRIES: u32 = 5;
 const SERVICE_ACCOUNT_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 /// Where the key-management service's token is mounted (the boot contract's fixed path), read at each use.
 pub const KMS_TOKEN: &str = "/run/ferrum/kms.token";
+/// Where an AppRole's secret id is mounted (the boot contract's fixed path), read at each use: never a setting.
+pub const KMS_SECRET_ID: &str = "/run/ferrum/kms.secret-id";
 /// Where a certificate authority the service's certificate is checked against is mounted, beside the usual ones.
 pub const KMS_CA: &str = "/run/ferrum/kms-ca.pem";
 
@@ -52,6 +55,12 @@ pub enum TransitAuth {
     Token(String),
     /// A file a Vault Agent keeps a token in, read at each use.
     TokenFile(String),
+    /// AppRole: the role's id, the auth mount, and the file the secret id is in (read at each sign-in).
+    AppRole {
+        role_id: String,
+        mount: String,
+        secret_id_file: String,
+    },
     /// Kubernetes auth: a role, the auth mount, and the service account token's file.
     Kubernetes {
         role: String,
@@ -89,6 +98,11 @@ impl Transit {
             TransitAuth::Token(token)
         } else if let Some(file) = mounted(KMS_TOKEN) {
             TransitAuth::TokenFile(file)
+        } else if let Some(role_id) = some("FERRUM_KMS_APPROLE_ROLE_ID") {
+            // The file is named even where it is not there yet: a start that finds it missing says so, and one that finds
+            // it replaced uses the new one.
+            let secret_id_file = mounted(KMS_SECRET_ID).unwrap_or_else(|| crate::db::run_path(KMS_SECRET_ID).to_string_lossy().into_owned());
+            TransitAuth::AppRole { role_id, mount: some("FERRUM_KMS_APPROLE_MOUNT").unwrap_or_else(|| "approle".into()), secret_id_file }
         } else if let Some(role) = some("FERRUM_KMS_KUBERNETES_ROLE") {
             TransitAuth::Kubernetes {
                 role,
@@ -113,8 +127,15 @@ impl Transit {
         b.build().map_err(|e| Error::Unavailable(e.to_string()))
     }
 
-    async fn call(&self, client: &reqwest::Client, path: &str, token: Option<&str>, body: Value) -> Result<Value> {
-        let mut req = client.post(format!("{}/{path}", self.api)).json(&body);
+    /// Asks the service (a POST with `body`, a GET without one). Said apart: a refusal (400, 403, 404: the way in or what it
+    /// may do is wrong, and asking again changes nothing, [`Error::Invalid`]) and an outage (anything else,
+    /// [`Error::Unavailable`], tried again at start).
+    async fn call(&self, client: &reqwest::Client, path: &str, token: Option<&str>, body: Option<Value>) -> Result<Value> {
+        let url = format!("{}/{path}", self.api);
+        let mut req = match &body {
+            Some(b) => client.post(url).json(b),
+            None => client.get(url),
+        };
         if let Some(t) = token {
             req = req.header("x-vault-token", t);
         }
@@ -126,24 +147,42 @@ impl Transit {
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
             let why = v["errors"].as_array().and_then(|e| e.first()).and_then(Value::as_str).unwrap_or("no reason given").to_string();
-            let refused = matches!(status.as_u16(), 400 | 403 | 404);
-            let said = format!("the key-management service answered {status} to {path}: {why}");
-            return Err(if refused { Error::Invalid(said) } else { Error::Unavailable(said) });
+            // OpenBao wraps a policy's refusal as "1 error occurred:\n\t* permission denied": say the reason alone.
+            let why = why.lines().find_map(|l| l.trim().strip_prefix("* ")).map(str::to_string).unwrap_or(why);
+            return Err(if matches!(status.as_u16(), 400 | 403 | 404) {
+                Error::Invalid(format!(
+                    "the key-management service refused {path} ({status}: {why}). This is a refusal, not an outage: what Ferrum signs in with is wrong, expired or \
+                     not allowed to do this, and asking again will not change it"
+                ))
+            } else {
+                Error::Unavailable(format!("the key-management service answered {status} to {path}: {why}"))
+            });
         }
         Ok(v)
     }
 
     async fn token(&self, client: &reqwest::Client) -> Result<Option<String>> {
+        let file = |what: &str, f: &str| {
+            std::fs::read_to_string(f)
+                .map(|t| t.trim().to_string())
+                .map_err(|e| Error::Unavailable(format!("the key-management service's {what} {f} cannot be read: {e}")))
+        };
+        let login = |v: Value, how: &str| {
+            v["auth"]["client_token"].as_str().map(str::to_string).ok_or_else(|| Error::Unavailable(format!("the {how} sign-in gave no token")))
+        };
         Ok(match &self.auth {
             TransitAuth::None => None,
             TransitAuth::Token(t) => Some(t.clone()),
-            TransitAuth::TokenFile(f) => {
-                Some(std::fs::read_to_string(f).map_err(|e| Error::Unavailable(format!("FERRUM_KMS_TOKEN_FILE {f}: {e}")))?.trim().to_string())
+            TransitAuth::TokenFile(f) => Some(file("token file", f)?),
+            TransitAuth::AppRole { role_id, mount, secret_id_file } => {
+                let secret_id = file("secret id file", secret_id_file)?;
+                let v = self.call(client, &format!("auth/{mount}/login"), None, Some(json!({"role_id": role_id, "secret_id": secret_id}))).await?;
+                Some(login(v, "AppRole")?)
             }
             TransitAuth::Kubernetes { role, mount, jwt_file } => {
-                let jwt = std::fs::read_to_string(jwt_file).map_err(|e| Error::Unavailable(format!("the service account token {jwt_file}: {e}")))?;
-                let v = self.call(client, &format!("auth/{mount}/login"), None, json!({"role": role, "jwt": jwt.trim()})).await?;
-                Some(v["auth"]["client_token"].as_str().ok_or_else(|| Error::Unavailable("the Kubernetes sign-in gave no token".into()))?.to_string())
+                let jwt = file("service account token", jwt_file)?;
+                let v = self.call(client, &format!("auth/{mount}/login"), None, Some(json!({"role": role, "jwt": jwt}))).await?;
+                Some(login(v, "Kubernetes")?)
             }
         })
     }
@@ -152,7 +191,7 @@ impl Transit {
     pub async fn unwrap(&self, ciphertext: &str) -> Result<SecretKey> {
         let client = self.client()?;
         let token = self.token(&client).await?;
-        let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key), token.as_deref(), json!({"ciphertext": ciphertext.trim()})).await?;
+        let v = self.call(&client, &format!("{}/decrypt/{}", self.mount, self.key), token.as_deref(), Some(json!({"ciphertext": ciphertext.trim()}))).await?;
         let plain = v["data"]["plaintext"].as_str().ok_or_else(|| Error::Unavailable("the key-management service gave no plaintext".into()))?;
         // Transit's plaintext is base64 of the key's 32 bytes: the form the key is given in.
         SecretKey::from_base64(plain)
@@ -163,9 +202,44 @@ impl Transit {
         SecretKey::from_base64(key)?;
         let client = self.client()?;
         let token = self.token(&client).await?;
-        let v = self.call(&client, &format!("{}/encrypt/{}", self.mount, self.key), token.as_deref(), json!({"plaintext": key.trim()})).await?;
+        let v = self.call(&client, &format!("{}/encrypt/{}", self.mount, self.key), token.as_deref(), Some(json!({"plaintext": key.trim()}))).await?;
         v["data"]["ciphertext"].as_str().map(str::to_string).ok_or_else(|| Error::Unavailable("the key-management service gave no ciphertext".into()))
     }
+}
+
+/// What the service says about the way in and the key, for the doctor. Each part is `None` where it could not be had (the
+/// service did not answer, or the policy does not allow the read: only encrypt and decrypt are needed to run).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KmsHealth {
+    /// How long the token signed in with has left; none for a token that does not expire, and for a way in that signs in
+    /// afresh at each use (AppRole, Kubernetes).
+    pub token_ttl: Option<Duration>,
+    /// The key's latest version and the oldest one that still decrypts.
+    pub key_versions: Option<(u32, u32)>,
+}
+
+impl Transit {
+    /// [`KmsHealth`]: `auth/token/lookup-self` for a token (a static one or a file's), and the key's own page.
+    pub async fn health(&self) -> KmsHealth {
+        let Ok(client) = self.client() else { return KmsHealth::default() };
+        let Ok(token) = self.token(&client).await else { return KmsHealth::default() };
+        let mut health = KmsHealth::default();
+        if matches!(self.auth, TransitAuth::Token(_) | TransitAuth::TokenFile(_))
+            && let Ok(v) = self.call(&client, "auth/token/lookup-self", token.as_deref(), None).await
+        {
+            health.token_ttl = v["data"]["ttl"].as_u64().filter(|s| *s > 0).map(Duration::from_secs);
+        }
+        if let Ok(v) = self.call(&client, &format!("{}/keys/{}", self.mount, self.key), token.as_deref(), None).await {
+            let d = &v["data"];
+            health.key_versions = d["latest_version"].as_u64().zip(d["min_decryption_version"].as_u64()).map(|(l, m)| (l as u32, m as u32));
+        }
+        health
+    }
+}
+
+/// The version of the Transit key that made `vault:v3:…`.
+pub fn ciphertext_version(value: &str) -> Option<u32> {
+    value.trim().strip_prefix("vault:v")?.split_once(':')?.0.parse().ok()
 }
 
 /// Whether a key given is Transit ciphertext rather than the key itself.
@@ -271,6 +345,49 @@ mod tests {
         std::fs::write(dir.join("kms-ca.pem"), "not a certificate").unwrap();
         assert!(Transit::from_settings("https://b/transit/k", |_| None, mounted).unwrap().ca_pem.is_some(), "the mounted authority is read");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_approle_signs_in_after_a_token_and_before_the_pod_and_its_secret_id_is_a_file() {
+        let dir = std::env::temp_dir().join(format!("ferrum-kms-approle-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mounted = |fixed: &str| Some(dir.join(std::path::Path::new(fixed).file_name()?)).filter(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned());
+        let both = |name: &str| match name {
+            "FERRUM_KMS_APPROLE_ROLE_ID" => Some("role-1".to_string()),
+            "FERRUM_KMS_KUBERNETES_ROLE" => Some("ferrum".to_string()),
+            _ => None,
+        };
+        let t = Transit::from_settings("https://b/transit/k", both, mounted).unwrap();
+        assert!(
+            matches!(&t.auth, TransitAuth::AppRole { role_id, mount, secret_id_file } if role_id == "role-1" && mount == "approle" && secret_id_file.ends_with("kms.secret-id")),
+            "an AppRole before the pod's identity, its file named though it is not there yet: {:?}",
+            t.auth
+        );
+        std::fs::write(dir.join("kms.token"), "s.mounted\n").unwrap();
+        assert!(matches!(Transit::from_settings("https://b/transit/k", both, mounted).unwrap().auth, TransitAuth::TokenFile(_)), "a mounted token first");
+        std::fs::remove_file(dir.join("kms.token")).unwrap();
+        let named = |name: &str| match name {
+            "FERRUM_KMS_APPROLE_ROLE_ID" => Some(" role-2 ".to_string()),
+            "FERRUM_KMS_APPROLE_MOUNT" => Some("machines".to_string()),
+            _ => None,
+        };
+        std::fs::write(dir.join("kms.secret-id"), "the-secret\n").unwrap();
+        let t = Transit::from_settings("https://b/transit/k", named, mounted).unwrap();
+        assert!(
+            matches!(&t.auth, TransitAuth::AppRole { role_id, mount, secret_id_file } if role_id == "role-2" && mount == "machines" && secret_id_file == &dir.join("kms.secret-id").to_string_lossy()),
+            "{:?}",
+            t.auth
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_ciphertext_says_which_version_of_the_key_made_it() {
+        assert_eq!(ciphertext_version("vault:v1:abc"), Some(1));
+        assert_eq!(ciphertext_version(" vault:v12:abc "), Some(12));
+        for not in ["", "vault:vx:abc", "MDEy", "vault:v:abc"] {
+            assert_eq!(ciphertext_version(not), None, "{not}");
+        }
     }
 
     #[test]

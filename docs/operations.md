@@ -51,10 +51,12 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `jwt_secret` | `JWT_SECRET` | text |  | secret: the environment, else the vault (session) | Base64, at least 32 random bytes: `openssl rand -base64 48`. Changing it signs everyone out. Without it the vault's keys sign sessions, each named by the tokens it signs and replaced without signing anyone out (*The key that signs sessions*); then it is required only while the vault is closed. |
 | `jwt_expiration_seconds` | `JWT_EXPIRATION_SECONDS` | int | `28800` | installation, at once | How long a bearer token from signing in lasts, in seconds (default 8 hours). |
 | `secret_key_command` | `FERRUM_SECRET_KEY_COMMAND` | text |  | secret: the environment | The vault's `kms` slot through a command (run with `sh -c`, 30 seconds at most) that prints its key, such as a KMS's own CLI. Only ever from the environment, and outside the boot contract: a command line is never read from the database, where whoever writes a row would run a program. Prefer the key file (`/run/ferrum/root.key`) or the key-management service (`kms_transit`). |
-| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | installation, next start | The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with, and the token goes nowhere else: changed here, the slot is not asked until it is made again (`ferrum task vault_add_slot kind:kms`). A move's source keys given as its ciphertext are unwrapped only at an address the environment gives. |
+| `kms_transit` | `FERRUM_KMS_TRANSIT` | text |  | installation, next start | The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the token mounted at `/run/ferrum/kms.token`, as an AppRole (`kms_approle_role_id`, with the secret id mounted at `/run/ferrum/kms.secret-id`), or as the pod's service account (`kms_kubernetes_role`); its certificate is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with, and the token goes nowhere else: changed here, the slot is not asked until it is made again (`ferrum task vault_add_slot kind:kms`). A move's source keys given as its ciphertext are unwrapped only at an address the environment gives. |
 | `kms_token_file` | `FERRUM_KMS_TOKEN_FILE` | text |  | the environment (the key-management client (through R1; the token's file is /run/ferrum/kms.token from now on)) | A file a Vault Agent keeps the Transit token in, read at each use. Mount it at `/run/ferrum/kms.token` instead. |
 | `bao_token` | `BAO_TOKEN` | text |  | secret: the environment | The OpenBao token for `kms_transit`, through R1: give it as the file `/run/ferrum/kms.token` instead. |
 | `vault_token` | `VAULT_TOKEN` | text |  | secret: the environment | The Vault token for `kms_transit`, when `BAO_TOKEN` is not set, through R1: give it as the file `/run/ferrum/kms.token` instead. |
+| `kms_approle_role_id` | `FERRUM_KMS_APPROLE_ROLE_ID` | text |  | installation, next start | Signs in to Transit as an AppRole with this role id, when no token is mounted, for a server that is not in Kubernetes. The secret id is never a setting: mount it as the file `/run/ferrum/kms.secret-id` (read at each sign-in, so a replaced file is used with no restart), and let the role's secret id be used more than once, as each use signs in again. The role's policy needs `encrypt` and `decrypt` on the Transit key, and `read` on it for the doctor's check of its versions. |
+| `kms_approle_mount` | `FERRUM_KMS_APPROLE_MOUNT` | text | `approle` | installation, next start | The AppRole auth mount for `kms_approle_role_id`. |
 | `kms_kubernetes_role` | `FERRUM_KMS_KUBERNETES_ROLE` | text |  | installation, next start | Signs in to Transit as the pod's service account, with this role, when no token is mounted. The service account's token is read at its standard path. |
 | `kms_kubernetes_mount` | `FERRUM_KMS_KUBERNETES_MOUNT` | text | `kubernetes` | installation, next start | The Kubernetes auth mount for `kms_kubernetes_role`. |
 | `kms_kubernetes_token_file` | `FERRUM_KMS_KUBERNETES_TOKEN_FILE` | text | `/var/run/secrets/kubernetes.io/serviceaccount/token` | the environment (the key-management client (through R1; a file the server sends is never named by the database)) | The service account's token file, where it is not at its standard path. |
@@ -1226,14 +1228,29 @@ start-up, the key then living only in the server's memory. Two ways:
 
 * **OpenBao or Vault Transit.** Make a Transit key (`bao secrets enable transit`,
   `bao write -f transit/keys/ferrum`), give Ferrum a policy allowing `update` on
-  `transit/encrypt/ferrum` and `transit/decrypt/ferrum`, and set `FERRUM_KMS_TRANSIT` to
+  `transit/encrypt/ferrum` and `transit/decrypt/ferrum` (and `read` on `transit/keys/ferrum`, which lets the doctor say
+  which version of the key wraps the slot; Ferrum runs without it), and set `FERRUM_KMS_TRANSIT` to
   `https://bao.internal:8200/transit/ferrum`. The slot keeps its key wrapped by the service, and the service's address
   it was made with: its token goes nowhere else, and a changed address is not asked until the slot is made again
-  (`ferrum task vault_add_slot kind:kms`). When the service rotates its Transit key, what it wrapped before still opens.
-  The token is never a setting: mount it at `/run/ferrum/kms.token` (a Secret, or a Vault Agent's file; the chart's
-  `vault.kms.tokenSecret`), or sign in as the pod (the setting `kms_kubernetes_role`, the Kubernetes auth method; the
-  chart's `vault.kms.serviceAccount`). `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` in the environment still
-  work, and win.
+  (`ferrum task vault_add_slot kind:kms`). Nothing here is a setting that holds a secret; a server signs in one of
+  these ways, the first that is there:
+  1. a token in the file `/run/ferrum/kms.token` (a Secret, or a Vault Agent's file; the chart's `vault.kms.tokenSecret`),
+     read at each use, so a replaced file is used by the next one with nothing restarted;
+  2. an AppRole: the setting `kms_approle_role_id` (and `kms_approle_mount`, default `approle`) with the secret id in
+     the file `/run/ferrum/kms.secret-id`, for a server outside Kubernetes. The file is read, and the role signed in to,
+     at each use (so the role's secret id must be usable more than once, `secret_id_num_uses=0`, and a new secret id is
+     put in place by replacing the file). Nothing but the file holds the secret id;
+  3. the pod's own identity (the setting `kms_kubernetes_role`, the Kubernetes auth method; the chart's
+     `vault.kms.serviceAccount`).
+
+  `BAO_TOKEN`, `VAULT_TOKEN` and `FERRUM_KMS_TOKEN_FILE` in the environment still work, and win. A refusal (a token or
+  secret id the service does not know or has expired, a policy that does not allow the key) is said as one, "a refusal,
+  not an outage", and is not tried again; a service that does not answer is tried five times at start, then said.
+  **Rotating the Transit key** needs no Ferrum code: `bao write -f transit/keys/ferrum/rotate`; what the key wrapped
+  before still opens; then `ferrum task vault_rotate level:slot kind:kms` wraps a new slot key by the latest version
+  (Transit's own `rewrap` is not used: a new slot key is better than the same one under a new version); and only then
+  raise `min_decryption_version` of the Transit key, which makes the version before refuse. `ferrum task doctor` says
+  (`vault.root.key`) when the slot's version is below what the service decrypts, and when the token expires within a day.
 * **A command.** `FERRUM_SECRET_KEY_COMMAND` runs once at start and must print the slot's key (base64 of 32 bytes), as
   PostgreSQL's `ssl_passphrase_command` does. It is tried before the service. It stays in the environment, outside the
   boot contract: a command line is never read from the database, where whoever writes a row would run a program.
@@ -1244,7 +1261,19 @@ start-up, the key then living only in the server's memory. Two ways:
 
 Where the `kms` slot is the only one that opens the vault, a server that cannot reach the service does not start, and
 says why (`ferrum task doctor` says which slot opens the vault here). The service is then part of starting: run it, and
-back it up, accordingly, and keep another way in (the key file, the recovery key) where your recovery plan says.
+back it up, accordingly, and keep another way in (the key file, the recovery key) where your recovery plan says. A server
+that is running when the service goes away keeps working: it holds the installation key in memory and asks the service
+only when it starts, and when a task makes the slot again. Where the vault has a credential slot as well, a start that
+cannot reach the service opens with it, and the log says that the `kms` slot did not open and why.
+
+**The production profile.** A `kms` slot, a `recovery` slot whose key is kept offline (`ferrum task vault_recovery`),
+and no `credential` slot: whoever has the database and `DATABASE_URL` still cannot open the vault, and the service
+records each use. It is a recommendation and the doctor's finding (`vault.root`), never a refusal: an installation on one
+machine with a key file, or with only the database password, is legitimate, and the doctor says so beside what it
+suggests. To get there from the default: set `kms_transit` and its way in, `ferrum task vault_add_slot kind:kms`,
+`ferrum task vault_add_slot kind:recovery` (keep what it prints), then `ferrum task vault_remove_slot kind:credential`.
+A new installation started with `kms_transit` set and no key file takes the `kms` slot and no credential slot to begin
+with. `scripts/bao_rehearsal.sh dev|file` runs this against a real OpenBao started privately on this machine (it is not a job of `scripts/local_ci.sh`).
 
 ## The vault
 
