@@ -6,8 +6,9 @@
    control heights, motion, type roles). This file is the platform's own copy of them under the
    `--ferrum-*` names, in plain CSS (these pages do not use Tailwind). Change a value there first,
    then here, so the bar and the suite never drift; `docs/design/FOUNDATIONS.md` there says what each is for. */
-/* The accent (--ferrum-primary*) is the suite's default. A workspace brand accent, once something sets
-   one, is applied inline on <html> after this file (lib/theme.ts's accentTokens) and wins. */
+/* The accent (--ferrum-primary*) and --ferrum-font are the suite's defaults. On public and portal pages a workspace's
+   Brand stylesheet (/_brand/{workspace}/{brand}.css, docs/builder/decisions.md BD-79), linked after this file, sets
+   them, nudged for contrast, and wins. */
 :root {
   color-scheme: light dark;
   --ferrum-bg: light-dark(#f6f7f9, #111317);

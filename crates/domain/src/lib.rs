@@ -7,6 +7,7 @@
 //! Everything plugs into the kernel through `DocHook`s registered by entity name, each for the
 //! workspaces with its package.
 
+pub mod brand;
 pub mod contacts;
 pub mod countries;
 pub mod flow;
@@ -29,7 +30,7 @@ pub fn packages() -> std::result::Result<Vec<ferrum_meta::Package>, ferrum_meta:
 pub fn register(h: &mut HookRegistry) {
     let only = |p: &str| vec![p.to_string()];
     h.scoped(&only("core"), |h| {
-        h.register("Company", Arc::new(countries::CountryHook));
+        h.register("Company", Arc::new(countries::CountryHook)).register("Brand", Arc::new(brand::BrandHook));
     });
     h.scoped(&only("contacts"), |h| {
         h.register("Contact", Arc::new(contacts::ContactHook)).register("Address", Arc::new(contacts::AddressHook));

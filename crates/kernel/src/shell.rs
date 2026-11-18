@@ -154,6 +154,8 @@ pub struct TenantHost {
     pub proved_at: Option<DateTime<Utc>>,
     /// It forwards ([`HostShape::forward`]).
     pub forward: bool,
+    /// The Brand its pages show ([`Kernel::set_host_brand`]); none: the workspace's default.
+    pub brand: Option<Uuid>,
 }
 
 /// What one check of a domain of a workspace's own found ([`Kernel::check_host`]).
@@ -198,6 +200,8 @@ pub struct HostPatch {
 pub struct HostShown {
     pub shape: HostShape,
     pub primary: bool,
+    /// The Brand its pages show (crate::brand); none: the workspace's default.
+    pub brand: Option<Uuid>,
 }
 
 /// How many live addresses a workspace holds when its plan names no `addresses` quota (crate::plans): as before quotas.
@@ -843,6 +847,14 @@ impl Kernel {
         })
     }
 
+    /// The Brand a host that serves a workspace shows ([`Kernel::set_host_brand`]), cached as [`Kernel::route_host`] is.
+    pub async fn host_brand(&self, host: &str) -> Result<Option<Uuid>> {
+        Ok(match self.host_row(host).await? {
+            (HostRoute::Serve { .. } | HostRoute::Leaving { .. }, _, shown) => shown.brand,
+            _ => None,
+        })
+    }
+
     async fn host_row(&self, host: &str) -> Result<(HostRoute, Option<String>, HostShown)> {
         let Some(host) = normalize_host(host) else { return Ok((HostRoute::Unknown, None, HostShown::default())) };
         // Kept 20 s, and only while no workspace's settings changed meanwhile, here or on another replica (a workspace that
@@ -871,12 +883,13 @@ impl Kernel {
             label: Option<String>,
             is_primary: bool,
             forward: bool,
+            brand: Option<Uuid>,
         }
         // A workspace that moved to another installation (workspace_move.rs) answers as moved on every host it had here. A
         // domain claimed for mail leads nowhere, claimed or released: it is no address.
         let row: Option<Row> = sqlx::query_as(
             "select h.tenant_id, h.kind, h.target, h.verified_at, h.released_at, h.zone, m.workspace is not null as moved, m.moved_to, h.leaving_until, \
-             h.home, h.apps, h.label, h.is_primary, h.forward from tenant_host h \
+             h.home, h.apps, h.label, h.is_primary, h.forward, h.brand from tenant_host h \
              join tenant t on t.id = h.tenant_id left join workspace_move m on m.workspace = h.tenant_id and m.state = 'moved' \
              where h.host = $1 and h.target <> 'mail'",
         )
@@ -889,6 +902,7 @@ impl Kernel {
             .map(|r| HostShown {
                 shape: HostShape { home: r.home.clone(), apps: r.apps.clone(), label: r.label.clone(), forward: r.forward },
                 primary: r.is_primary,
+                brand: r.brand,
             })
             .unwrap_or_default();
         let route = match row {
@@ -942,7 +956,7 @@ impl Kernel {
         let mut tx = self.db.system_tx().await?;
         let rows = sqlx::query_as(
             "select host, kind, target, is_primary, verify_token, verified_at, checked_at, failures, released_at, created_at, leaving_until, \
-             zone, home, apps, label, base_name, proved_at, forward from tenant_host where tenant_id = $1 order by created_at",
+             zone, home, apps, label, base_name, proved_at, forward, brand from tenant_host where tenant_id = $1 order by created_at",
         )
         .bind(ctx.tenant)
         .fetch_all(&mut *tx)
@@ -1923,7 +1937,7 @@ impl Kernel {
 
 /// Administrators change a workspace's addresses and short paths; nobody does while the workspace is read-only (closed or
 /// restricted): they stay as they are, so people can still read and export there. The operator's tasks still can.
-fn may_change_addresses(ctx: &Ctx) -> Result<()> {
+pub(crate) fn may_change_addresses(ctx: &Ctx) -> Result<()> {
     if !ctx.is_admin {
         return Err(Error::Forbidden("administrator access required".into()));
     }

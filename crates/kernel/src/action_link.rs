@@ -100,8 +100,11 @@ pub struct Issued {
 pub struct LinkPage {
     pub tenant: Uuid,
     pub workspace: String,
-    /// The workspace's colour (`#rrggbb`, its `brand_color` setting), if it set one.
-    pub color: Option<String>,
+    /// The workspace's address name, as in the link's address.
+    pub slug: String,
+    /// The brand the page wears: the workspace's default (crate::brand); none, the platform's look.
+    #[serde(skip)]
+    pub brand: Option<crate::brand::PublicBrand>,
     pub language: String,
     /// The record's entity label and title.
     pub kind: String,
@@ -420,24 +423,20 @@ impl Kernel {
     }
 
     /// The workspace at `slug`, active: its id and schema. `None` otherwise, as for an unknown link.
-    async fn link_workspace(&self, slug: &str) -> Result<Option<(Uuid, String, Option<String>, Option<String>)>> {
+    async fn link_workspace(&self, slug: &str) -> Result<Option<(Uuid, String, Option<String>)>> {
         let mut tx = self.db.system_tx().await?;
-        let row: Option<(Uuid, String, String, Option<String>, Option<String>)> =
-            sqlx::query_as("select id, status, name, settings->>'brand_color', settings->>'language' from tenant where slug = $1")
-                .bind(slug.trim().to_lowercase())
-                .fetch_optional(&mut *tx)
-                .await?;
+        let row: Option<(Uuid, String, String, Option<String>)> = sqlx::query_as("select id, status, name, settings->>'language' from tenant where slug = $1")
+            .bind(slug.trim().to_lowercase())
+            .fetch_optional(&mut *tx)
+            .await?;
         tx.commit().await?;
-        Ok(row.filter(|r| r.1 == "active").map(|(id, _, name, color, language)| {
-            let color = color.filter(|c| c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit()));
-            (id, name, color, language)
-        }))
+        Ok(row.filter(|r| r.1 == "active").map(|(id, _, name, language)| (id, name, language)))
     }
 
     /// The page of the link `token` of the workspace at `slug`, or `None` when there is no such link working (unknown,
     /// expired, revoked, used up, an inactive workspace or a record gone: all alike).
     pub async fn link_page(&self, slug: &str, token: &str) -> Result<Option<LinkPage>> {
-        let Some((tenant, workspace, color, language)) = self.link_workspace(slug).await? else { return Ok(None) };
+        let Some((tenant, workspace, language)) = self.link_workspace(slug).await? else { return Ok(None) };
         let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let Some(link) = find(&mut tx, tenant, token, false).await? else { return Ok(None) };
@@ -484,10 +483,12 @@ impl Kernel {
             .filter_map(|a| ent.def.actions.iter().find(|d| &d.name == a))
             .map(|d| (d.name.clone(), d.label.clone(), d.params.iter().filter(|p| !fixed.contains_key(&p.name) && p.ptype != "link").cloned().collect()))
             .collect();
+        let brand = self.public_brand(tenant, None, None).await?;
         Ok(Some(LinkPage {
             tenant,
             workspace,
-            color,
+            slug: slug.trim().to_lowercase(),
+            brand,
             language,
             kind: ent.def.label.clone(),
             title,
@@ -555,7 +556,7 @@ impl Kernel {
     /// language: `(title, text)`.
     pub async fn link_wording(&self, slug: &str, done: bool) -> Result<(String, Option<String>)> {
         let fallback = || if done { ("Thank you".to_string(), None) } else { ("This link does not work any more".to_string(), None) };
-        let Some((tenant, _, _, language)) = self.link_workspace(slug).await? else { return Ok(fallback()) };
+        let Some((tenant, _, language)) = self.link_workspace(slug).await? else { return Ok(fallback()) };
         let schema = self.registry.schema(tenant).await?;
         let sys = Ctx::system(tenant, schema);
         let mut tx = self.db.system_tenant_tx(tenant).await?;
