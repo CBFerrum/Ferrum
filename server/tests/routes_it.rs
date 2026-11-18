@@ -13,7 +13,7 @@ use std::panic::AssertUnwindSafe;
 async fn every_controller_mounts_once_and_is_reached() {
     let env = Environment::Test;
     let config = env.load_from_folder(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config")).expect("config/test.yaml");
-    let ctx = AppContext::builder(env, Default::default(), config).build();
+    let ctx = AppContext::builder(env, config).build();
     let routes = App::routes(&ctx);
     let listed: Vec<(Method, String)> = routes.collect().iter().flat_map(|r| r.actions.iter().map(|m| (m.clone(), r.uri.clone()))).collect();
     let built = std::panic::catch_unwind(AssertUnwindSafe(|| routes.to_router::<App>(ctx.clone(), axum::Router::new())));

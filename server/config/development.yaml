@@ -34,23 +34,13 @@ workers:
 mailer:
   stub: true
 
-database:
-  uri: <%= get_env(name="DATABASE_URL", default="postgres://ferrum:ferrum@localhost:5432/ferrum_dev") %>
-  enable_logging: false
-  connect_timeout: 5000
-  idle_timeout: 600000
-  min_connections: 1
-  max_connections: 2
-  auto_migrate: true
-  dangerously_truncate: false
-  dangerously_recreate: false
-
 auth:
   jwt:
     secret: <%= get_env(name="JWT_SECRET", default="ZGV2LW9ubHktc2VjcmV0LWNoYW5nZS1tZS0wMTIzNDU2Nzg5YWJjZGVm") %>
     expiration: 43200
 
 settings:
+  database_url: "<%= get_env(name="DATABASE_URL", default="postgres://ferrum:ferrum@localhost:5432/ferrum_dev") %>"
   default_workspace: "<%= get_env(name="FERRUM_DEFAULT_WORKSPACE", default="") %>"
   ui_dir: "<%= get_env(name="FERRUM_UI_DIR", default="") %>"
   session_days: <%= get_env(name="FERRUM_SESSION_DAYS", default="14") %>

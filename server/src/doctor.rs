@@ -267,7 +267,7 @@ pub async fn report(st: &AppState, ctx: &AppContext) -> Result<Vec<Finding>, fer
     });
     out.extend(marker_findings(st));
     out.extend(openid_findings(st).await?);
-    out.extend(stored_host_findings(st, &ctx.config.database.uri));
+    out.extend(stored_host_findings(st, crate::settings::database_url(&ctx.config)));
     if st.kernel.db.fenced() {
         out.push(Finding::blocker("authority", "this region does not hold the right to write", "See docs/operations.md, Regions."));
     }

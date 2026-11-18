@@ -27,9 +27,9 @@ async fn scenario() {
     pool.close().await;
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = url;
+    ferrum_server::settings::set_database_url(&mut config, url);
     config.settings.as_mut().unwrap()["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
-    let ctx = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("set-up");
+    let ctx = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("set-up");
     let routes = <App as Hooks>::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
     let app = <App as Hooks>::after_routes(routes, &ctx).await.expect("layers");
     let st = ctx.shared_store.get::<AppState>().expect("state");

@@ -64,10 +64,10 @@ pub fn pool_floor(upkeep: u32) -> u32 {
 
 /// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]), the
 /// direct pool's `direct` (the listeners, session locks and upkeep at once: [`crate::db::DbConfig::direct_connections`]),
-/// the read pool's `read` (none unless a read address is set) and Loco's own 2 (docs/operations.md, "Database role").
+/// and the read pool's `read` (none unless a read address is set; docs/operations.md, "Database role").
 /// Each pool is named in PostgreSQL's `pg_stat_activity` (`ferrum`, `ferrum-side`, `ferrum-direct`, `ferrum-read`).
 pub fn beside_pool(pool_size: u32, direct: u32, read: u32) -> u32 {
-    crate::db::side_connections(pool_size) + direct + read + 2
+    crate::db::side_connections(pool_size) + direct + read
 }
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
@@ -90,12 +90,15 @@ impl Kernel {
         let read = if self.db.read.is_some() { crate::replica::READ_CONNECTIONS } else { 0 };
         let beside = beside_pool(pool_size, direct, read);
         out.push(if ((pool_size + beside) * 2 + 20) as i32 <= max_connections {
-            Finding::ok("database.connections", format!("{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and Loco's own)"))
+            Finding::ok(
+                "database.connections",
+                format!("{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct and read)"),
+            )
         } else {
             Finding::warning(
                 "database.connections",
                 format!(
-                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and Loco's own): room for fewer than two replicas"
+                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct and read): room for fewer than two replicas"
                 ),
                 "Raise max_connections, or lower FERRUM_DB_MAX_CONNECTIONS (docs/operations.md, Database role).",
             )

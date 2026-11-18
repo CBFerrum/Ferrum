@@ -452,8 +452,16 @@ pub struct Base {
     loco: BTreeMap<String, String>,
     /// Stored settings under `settings:`, as the file holds them.
     settings: BTreeMap<String, Value>,
-    /// Loco's own migrator's switch (`database.auto_migrate`), which follows `migrate_at_start`.
-    auto_migrate: bool,
+}
+
+/// The database address (`DATABASE_URL`): Loco without its database layer has no `database:` section, so the address
+/// is kept in the configuration's `settings:` where the start reads it.
+pub fn database_url(config: &Config) -> &str {
+    config.settings.as_ref().and_then(|s| s.get("database_url")).and_then(Value::as_str).unwrap_or("")
+}
+
+pub fn set_database_url(config: &mut Config, url: String) {
+    config.settings.get_or_insert_with(|| json!({}))["database_url"] = Value::String(url);
 }
 
 impl Base {
@@ -462,7 +470,7 @@ impl Base {
         if let Some(base) = config.settings.as_ref().and_then(|s| s.get(BASE)).and_then(|b| serde_json::from_value(b.clone()).ok()) {
             return base;
         }
-        let mut base = Base { auto_migrate: config.database.auto_migrate, ..Default::default() };
+        let mut base = Base::default();
         let empty = json!({});
         let settings = config.settings.as_ref().unwrap_or(&empty);
         for def in registry().iter().filter(|d| d.stored()) {
@@ -507,11 +515,6 @@ impl Base {
                 }
             }
         }
-        // Loco's own migrator follows the same setting (it has no migrations: the kernel owns the schema).
-        config.database.auto_migrate = match snap.get("migrate_at_start") {
-            (Source::Database, Some(text)) => text.trim().eq_ignore_ascii_case("true"),
-            _ => self.auto_migrate,
-        };
         settings[BASE] = serde_json::to_value(self).map_err(|e| e.to_string())?;
         config.settings = Some(settings);
         Ok(())
@@ -1559,7 +1562,7 @@ mod tests {
         assert_eq!(settings.session_days, 7);
         assert_eq!(settings.apps.uploads, crate::state::Uploads::Cluster);
         assert_eq!(settings.zones, r#"{"public": {"staff": "none"}}"#);
-        assert!(!settings.require_object_storage && !settings.migrate_at_start && !c.database.auto_migrate);
+        assert!(!settings.require_object_storage && !settings.migrate_at_start);
         assert_eq!(settings.tenant_requests, Some(4));
         assert_eq!((c.server.port, c.server.host.as_str()), (6160, "https://erp.example.com"));
         assert!(matches!(c.logger.level, loco_rs::logger::LogLevel::Debug));
@@ -1570,10 +1573,7 @@ mod tests {
         let back: crate::state::Settings = serde_json::from_value(c.settings.clone().unwrap()).unwrap();
         let first: crate::state::Settings = serde_json::from_value(before.settings.clone().unwrap()).unwrap();
         assert_eq!(format!("{back:?}"), format!("{first:?}"));
-        assert_eq!(
-            (c.server.port, c.server.host.clone(), c.database.auto_migrate),
-            (before.server.port, before.server.host.clone(), before.database.auto_migrate)
-        );
+        assert_eq!((c.server.port, c.server.host.clone()), (before.server.port, before.server.host.clone()));
         assert_eq!(c.auth.as_ref().unwrap().jwt.as_ref().unwrap().expiration, before.auth.as_ref().unwrap().jwt.as_ref().unwrap().expiration);
     }
 

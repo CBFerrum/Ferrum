@@ -20,10 +20,11 @@ fn config(application: Option<&str>) -> Config {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
     let url = url();
-    config.database.uri = match application {
+    let address = match application {
         Some(a) => format!("{url}{}application_name={a}", if url.contains('?') { '&' } else { '?' }),
         None => url,
     };
+    ferrum_server::settings::set_database_url(&mut config, address);
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
     }
@@ -32,7 +33,7 @@ fn config(application: Option<&str>) -> Config {
 
 /// One replica's set-up, as `ferrum start` makes it.
 async fn replica(config: Config) -> AppContext {
-    <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("set-up")
+    <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("set-up")
 }
 
 fn state(ctx: &AppContext) -> AppState {
@@ -488,7 +489,7 @@ async fn pools(st: &AppState) {
     assert_eq!(plain.settings.db_max_connections, 10, "no pool named: the default pool, which has no row; the file's 10");
     assert!(!plain.settings.run_background, "the test file's");
     plain.kernel.db.close().await;
-    let refused = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config(Some("pool:Web"))).build()).await;
+    let refused = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config(Some("pool:Web"))).build()).await;
     let said = refused.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(said.contains("lower-case letters, digits and dashes"), "{said}");
     let written = ferrum_server::settings::adopt(&st.kernel.db, "web", &|n: &str| (n == "FERRUM_ZONE").then(|| "office".to_string())).await.unwrap();

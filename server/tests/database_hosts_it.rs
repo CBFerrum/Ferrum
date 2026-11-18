@@ -25,7 +25,7 @@ fn url() -> String {
 fn config() -> Config {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = url();
+    ferrum_server::settings::set_database_url(&mut config, url());
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
     }
@@ -141,7 +141,7 @@ async fn scenario() {
     let pool = sqlx::PgPool::connect(&url()).await.expect("connect");
     common::reset(&pool).await;
     pool.close().await;
-    let ctx = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("set-up");
+    let ctx = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config()).build()).await.expect("set-up");
     let st = ctx.shared_store.get::<AppState>().expect("state");
     let port = free_port();
     for (key, value) in [
@@ -230,13 +230,13 @@ async fn scenario() {
     // A replica's set-up does no app's upkeep: that is the round's (crate::packages::round), one replica at a time under
     // each app's lock. A second replica starting on this database leaves ERP's (here: next year's ledger partition, gone)
     // as it found it, and the next round does it.
-    let one = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("a replica");
+    let one = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config()).build()).await.expect("a replica");
     let one = one.shared_store.get::<AppState>().expect("state");
     let pool = sqlx::PgPool::connect(&url()).await.expect("connect");
     let next: String = sqlx::query_scalar("select format('journal_line_y%s', extract(year from now())::int + 1)").fetch_one(&pool).await.unwrap();
     assert!(table(&pool, &next).await, "ERP's ledger has next year's partition");
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("drop table {next}"))).execute(&pool).await.unwrap();
-    let two = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config()).build()).await.expect("another replica");
+    let two = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config()).build()).await.expect("another replica");
     two.shared_store.get::<AppState>().expect("state").kernel.db.close().await;
     assert!(!table(&pool, &next).await, "a replica's start ran ERP's upkeep itself, outside the round and its lock");
     ferrum_server::packages::round(&one.kernel.db.direct, ferrum_server::packages::upkeep_jobs(&one.kernel), 4, std::time::Duration::from_secs(60)).await;

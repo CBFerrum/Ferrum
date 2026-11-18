@@ -15,7 +15,6 @@ use loco_rs::environment::Environment;
 use loco_rs::storage::Storage;
 use loco_rs::task::Tasks;
 use loco_rs::{Error, Result};
-use migration::{Migrator, MigratorTrait};
 use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
@@ -67,15 +66,16 @@ impl Hooks for App {
         let mut config = env.load()?;
         // D7's hosts in the address itself (`ferrum_direct_host`, `ferrum_read_host`): no connection's parameters, so
         // taken out before anything connects, and kept where the start reads them (Settings::database_address).
-        let (uri, hosts) = ferrum_kernel::db::address_hosts(&config.database.uri).map_err(|e| Error::Message(e.to_string()))?;
-        config.database.uri = uri;
+        let (uri, hosts) = ferrum_kernel::db::address_hosts(crate::settings::database_url(&config)).map_err(|e| Error::Message(e.to_string()))?;
+        crate::settings::set_database_url(&mut config, uri);
         if hosts != Default::default() {
             let settings = config.settings.get_or_insert_with(|| serde_json::json!({}));
             settings["database_address"] = serde_json::to_value(&hosts).map_err(|e| Error::Message(e.to_string()))?;
         }
         if let Some(ca) = ferrum_kernel::db::database_ca() {
-            config.database.uri = ferrum_kernel::db::with_ca(&config.database.uri, &ca).map_err(|e| Error::Message(format!("DATABASE_URL: {e}")))?;
-            ferrum_kernel::db::check_certificate(&config.database.uri, &ca).await.map_err(|e| Error::Message(e.to_string()))?;
+            let uri = ferrum_kernel::db::with_ca(crate::settings::database_url(&config), &ca).map_err(|e| Error::Message(format!("DATABASE_URL: {e}")))?;
+            ferrum_kernel::db::check_certificate(&uri, &ca).await.map_err(|e| Error::Message(e.to_string()))?;
+            crate::settings::set_database_url(&mut config, uri);
         }
         Ok(config)
     }
@@ -147,7 +147,7 @@ impl Hooks for App {
     }
 
     async fn boot(mode: StartMode, environment: &Environment, config: Config) -> Result<BootResult> {
-        create_app::<Self, Migrator>(mode, environment, config).await
+        create_app::<Self>(mode, environment, config).await
     }
 
     async fn initializers(_ctx: &AppContext) -> Result<Vec<Box<dyn Initializer>>> {
@@ -166,8 +166,8 @@ impl Hooks for App {
             return Err(Error::Message(format!("settings: {clash}")));
         }
         // The address names the replica's pool (`application_name=pool:<name>`), whose rows hold its own settings.
-        let pool = crate::settings::pool_name(&ctx.config.database.uri).map_err(Error::Message)?;
-        let stored = crate::settings::read(&ctx.config.database.uri).await.map_err(Error::Message)?;
+        let pool = crate::settings::pool_name(crate::settings::database_url(&ctx.config)).map_err(Error::Message)?;
+        let stored = crate::settings::read(crate::settings::database_url(&ctx.config)).await.map_err(Error::Message)?;
         // (The installation's root, D3, is opened below, once the database's own pools are open: their sizes come from
         // these settings, the vault's key cache and transactions belong to them, and on a database not migrated yet it
         // can open only once the kernel has migrated it. No setting holds a secret, so nothing before reads the vault.)
@@ -187,16 +187,6 @@ impl Hooks for App {
         // `ferrum task migrate` is what brings the database up to date, whatever the setting says.
         let migrating = is_migrate_task(std::env::args());
         let migrate_now = settings.migrate_at_start || migrating;
-        if !migrate_now {
-            // Loco's own migrator (empty today: the kernel owns the schema): nothing may be waiting for it.
-            let waiting = Migrator::get_pending_migrations(&ctx.db).await.map_err(|e| Error::Message(format!("database: {e}")))?;
-            if !waiting.is_empty() {
-                return Err(Error::Message(format!(
-                    "the database is not ready for this build: {} Loco migrations are not applied. Run `ferrum task migrate`, or start with FERRUM_MIGRATE_AT_START=true",
-                    waiting.len()
-                )));
-            }
-        }
         crate::extract::PROXY_HOPS.store(settings.proxy_hops, std::sync::atomic::Ordering::Relaxed);
         let floor = ferrum_kernel::doctor::pool_floor(crate::packages::upkeep_concurrency() as u32);
         if settings.db_max_connections < floor {
@@ -215,21 +205,21 @@ impl Hooks for App {
                 return ferrum_kernel::db::trusted(full).map(Some).map_err(|e| Error::Message(format!("{}: {e}", name.replace("_HOST", "_URL"))));
             }
             let Some((host, from_table)) = crate::settings::host_to_use(&snapshot, key, host, in_address) else { return Ok(None) };
-            if from_table && let Err(why) = crate::settings::stored_host_refused(&snapshot, key, &ctx.config.database.uri) {
+            if from_table && let Err(why) = crate::settings::stored_host_refused(&snapshot, key, crate::settings::database_url(&ctx.config)) {
                 tracing::error!("the setting {key} from the database is not used: {why}");
                 return Ok(None);
             }
-            ferrum_kernel::db::with_host(&ctx.config.database.uri, host).map(Some).map_err(|e| Error::Message(format!("{name}: {e}")))
+            ferrum_kernel::db::with_host(crate::settings::database_url(&ctx.config), host).map(Some).map_err(|e| Error::Message(format!("{name}: {e}")))
         };
         let hosts = &settings.database_address;
         let direct =
             at(&settings.database_direct_url, &settings.database_direct_host, &hosts.direct_host, "database_direct_host", "FERRUM_DATABASE_DIRECT_HOST")?;
         let read = at(&settings.database_read_url, &settings.database_read_host, &hosts.read_host, "database_read_host", "FERRUM_DATABASE_READ_HOST")?;
         let db = Db::connect(DbConfig {
-            url: ctx.config.database.uri.clone(),
+            url: crate::settings::database_url(&ctx.config).to_string(),
             max_connections: settings.db_max_connections,
             // Unset: the same address as DATABASE_URL, one pool for everything as before.
-            direct_url: Some(direct.unwrap_or_else(|| ctx.config.database.uri.clone())),
+            direct_url: Some(direct.unwrap_or_else(|| crate::settings::database_url(&ctx.config).to_string())),
             direct_connections: ferrum_kernel::db::LISTENERS + ferrum_kernel::db::DIRECT_LOCKS + crate::packages::upkeep_concurrency() as u32,
             read_url: read,
             read_max_lag: Duration::from_secs(settings.database_read_max_lag_secs),
@@ -244,7 +234,8 @@ impl Hooks for App {
         // (crate::secrets): the mail password, the audit sink's key, the object store's and the model provider's keys.
         let transit = kms_transit(&settings)?;
         let vault_opens =
-            crate::tasks::open_vault(&db, &settings, &ctx.config.database.uri, transit.as_ref(), ctx.environment == Environment::Production).await?;
+            crate::tasks::open_vault(&db, &settings, crate::settings::database_url(&ctx.config), transit.as_ref(), ctx.environment == Environment::Production)
+                .await?;
         let mut hooks = HookRegistry::default();
         let platform = hooks.platform_vault();
         let revealed = crate::secrets::at_start(&db, &hooks, &platform, &mut ctx.config, &snapshot).await.map_err(Error::Message)?;
@@ -814,14 +805,6 @@ impl Hooks for App {
             (app.tasks)(tasks);
         }
     }
-
-    async fn truncate(_ctx: &AppContext) -> Result<()> {
-        Ok(())
-    }
-
-    async fn seed(_ctx: &AppContext, _base: &Path) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Whether `FERRUM_DOMAIN_PROOF` asks for proof by record in so many words, which puts its floor in place.
@@ -1149,7 +1132,6 @@ pub(crate) async fn start(command: StartCommand) -> Result<()> {
     if !App::init_logger(&ctx)? {
         loco_rs::logger::init::<App>(&ctx.config.logger)?;
     }
-    loco_rs::db::converge::<App, Migrator>(&ctx, &ctx.config.database).await?;
     let boot = loco_rs::boot::run_app::<App>(&StartMode::ServerOnly, ctx).await?;
     let params = ServeParams { port: boot.app_context.config.server.port, binding: boot.app_context.config.server.binding.clone() };
     loco_rs::boot::start::<App>(boot, params, command.no_banner).await

@@ -112,12 +112,12 @@ async fn scenario() {
     }
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
-    config.database.uri = url.clone();
+    ferrum_server::settings::set_database_url(&mut config, url.clone());
     if let Some(s) = config.settings.as_mut() {
         s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
         assert_eq!(s["host_leaving_days"], json!(14), "the default leaving period");
     }
-    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, Default::default(), config).build()).await.expect("boot");
+    let base = <App as Hooks>::after_context(AppContext::builder(Environment::Test, config).build()).await.expect("boot");
     let st = base.shared_store.get::<AppState>().expect("state");
     let router = App::routes(&base).to_router::<App>(base.clone(), axum::Router::new()).expect("router");
     let router = App::after_routes(router, &base).await.expect("layers");
@@ -400,7 +400,7 @@ async fn shapes(base: &AppContext, st: &AppState) {
     let storage = Arc::new(loco_rs::storage::Storage::single(loco_rs::storage::drivers::mem::new()));
     let shell = Arc::new(ferrum_server::shell::Shell::new(k.clone(), storage, &settings, "http://localhost:5150"));
     let st = AppState { settings, shell, zones, ..st.clone() };
-    let ctx = AppContext::builder(Environment::Test, Default::default(), base.config.clone()).build();
+    let ctx = AppContext::builder(Environment::Test, base.config.clone()).build();
     ctx.shared_store.insert(st.clone());
     let router = App::routes(&ctx).to_router::<App>(ctx.clone(), axum::Router::new()).expect("router");
     let router = App::after_routes(router, &ctx).await.expect("layers");
