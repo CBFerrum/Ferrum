@@ -1,7 +1,9 @@
-{{- if .Values.database.enabled }}
+{{- if contains "CHANGE-ME" .Values.database.backup.destinationPath }}
+{{- fail "database.backup.destinationPath ships as a placeholder: set it to the bucket (and path) the backups go to, s3://<bucket>/<path>" }}
+{{- end }}
 {{- $n := include "ferrum.fullname" . }}
 {{- $d := .Values.database }}
-# PostgreSQL with synchronous replication, automatic failover, continuous WAL archiving and daily
+# PostgreSQL (the example Ferrum is given an address of: reference/kubernetes/README.md) with synchronous replication, automatic failover, continuous WAL archiving and daily
 # base backups through the Barman Cloud plugin. CloudNativePG creates the `{{ $n }}-db-app` secret.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -85,9 +87,6 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Pooler
 metadata:
   name: {{ $n }}-db-pooler
-  annotations:
-    # Read by scripts/check_manifests.py for the connection budget.
-    ferrum.dev/direct-connections-per-replica: {{ .directConnectionsPerReplica | quote }}
 spec:
   cluster: {name: {{ $n }}-db}
   type: rw
@@ -124,9 +123,9 @@ spec:
 {{- end }}
 {{- if $.Values.networkPolicy.enabled }}
 ---
-# Only the server's pods reach the pooler, and Prometheus its metrics. Its way out is not narrowed: its
-# instance manager talks to the Kubernetes API as well as to PostgreSQL. (The server's own policy already
-# lets it reach the pooler: its pods carry the cluster's cnpg.io/cluster label.)
+# Only the server's pods (values.yaml, serverPods) reach the pooler, and Prometheus its metrics. Its way out is not
+# narrowed: its instance manager talks to the Kubernetes API as well as to PostgreSQL. (The server chart's own policy lets
+# it reach the pooler: ferrum-values.yaml names the pods that carry the cluster's cnpg.io/cluster label.)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -138,7 +137,7 @@ spec:
   ingress:
     - from:
         - podSelector:
-            {{- include "ferrum.serverPods" $ | nindent 12 }}
+            matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: {{ toJson $.Values.serverPods }}}]
       ports:
         - {port: 5432}
     {{- with $.Values.networkPolicy.monitoringNamespaces }}
@@ -164,6 +163,15 @@ spec:
     - port: metrics
 {{- end }}
 {{- end }}{{ end }}
-{{- else if .Values.database.pooler.enabled }}
-{{- fail "database.pooler is CloudNativePG's Pooler, so it needs database.enabled; in front of your own database, run PgBouncer yourself and point database.urlSecret at it" }}
+{{- if .Values.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $n }}-db
+spec:
+  selector:
+    matchLabels: {cnpg.io/cluster: {{ $n }}-db}
+  podMetricsEndpoints:
+    - port: metrics
 {{- end }}

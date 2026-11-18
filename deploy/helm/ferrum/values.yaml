@@ -1,7 +1,7 @@
-# Ferrum: the stateless server, its PostgreSQL cluster (CloudNativePG), the PDF renderer, the
-# online editor for Word, Excel and PowerPoint files (Collabora Online), the Gateway in front, and
-# two optional parts. The defaults render what deploy/k8s renders
-# (deploy/helm/test.sh checks that). Install: docs/operations.md, "Installing with the Helm chart".
+# Ferrum: the stateless server, the PDF renderer, the online editor for Word, Excel and PowerPoint files (Collabora
+# Online), the Gateway in front, and two optional parts. It takes the address of a PostgreSQL (database.urlSecret) and a
+# bucket (storage.bucket) and runs neither: reference/kubernetes/ is an example of both. Install: docs/operations.md,
+# "Installing with the Helm chart".
 
 # Names are "<fullnameOverride>", "<fullnameOverride>-pdf", "<fullnameOverride>-db" and so on.
 fullnameOverride: ferrum
@@ -13,9 +13,9 @@ image:
   digest: ""    # sha256:...
   tag: ""       # a commit's full SHA
 
-# The address users open; the Gateway's host below should match. This, storage.bucket, gateway.hostname,
-# database.backup.destinationPath and office.host (editors.host, privateGateway.hostnames when those are on) ship as
-# placeholders: the chart refuses to render until each is your own.
+# The address users open; the Gateway's host below should match. This, storage.bucket, gateway.hostname and office.host
+# (editors.host, privateGateway.hostnames when those are on) ship as placeholders: the chart refuses to render until each
+# is your own. database.urlSecret.name, database.connectionLimit and database.backupReachDays have no default either.
 publicUrl: https://erp.example.com
 # Names that should never change (docs/operations.md, "Names that should never change"); empty
 # keeps each as the server had it before the setting existed.
@@ -29,16 +29,22 @@ names:
   dnsResolvers: ""    # FERRUM_DNS_RESOLVERS: DNS servers asked for that record, comma-separated; empty: the system's
 logLevel: info
 # Connections each replica may open (plus 6 beside them: 4 on the side, an eighth of this past 32, and 2 direct: the
-# connection that LISTENs and a session lock). Autoscaling's maxReplicas x (this + 6) must fit the database's
-# connectionLimit.
+# connection that LISTENs and a session lock). Autoscaling's maxReplicas x (this + 6) must fit database.connectionLimit.
 dbMaxConnections: 30
 
-# Attachments must be shared by all replicas: object storage. The credentials are
-# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the Secret below.
+# Attachments must be shared by all replicas: object storage, a bucket that exists (the chart never makes one:
+# `ferrum task bucket_set_up` does, docs/operations.md, "Object storage"). The credentials are AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY in the Secret below, or the pod's own identity.
 storage:
   bucket: CHANGE-ME-files-bucket
   region: ap-south-1
   endpoint: ""  # MinIO, Cloudflare R2 and other S3-compatible stores: https://<account>.r2.cloudflarestorage.com
+  # The network policy's way out to it (networkPolicy.enabled), beside the HTTPS that egressAnyHost allows: `to` is a list
+  # of NetworkPolicy peers (an `ipBlock` for a provider, a `podSelector` and `namespaceSelector` for a store in this
+  # cluster) and `ports` their ports. Empty `to`: no rule of its own.
+  egress:
+    to: []
+    ports: [443]
 
 # The name of a Secret you created, read where it is there: none of its keys is required any more, as the vault holds
 # the platform's secrets (docs/operations.md, "The platform's secrets"; `ferrum task secret_set`). Its keys, each
@@ -66,10 +72,10 @@ vault:
   # <fullname>-vault-key once, with a random key, kept when the release is removed and never changed by an upgrade (it
   # looks the Secret up and keeps what it holds). Every cluster then has a slot beside the credential one, so a changed
   # database password (an import, a copy, a recovery, a provider's reset) closes nothing: the next start makes the
-  # credential slot again by itself. Name an existing Secret to bring the key along: a new cluster that takes another's
-  # database (database.bootstrap import, copy or recovery) names a copy of the old cluster's key Secret. A tool that
-  # renders the chart without the cluster (Argo CD, `helm template`) cannot look the Secret up and would make a new key
-  # each time: with one, make the Secret yourself (`kubectl create secret generic ferrum-vault-key
+  # credential slot again by itself. Name an existing Secret to bring the key along: an installation that takes another's
+  # database (restored, copied or moved) names a copy of the old installation's key Secret. A tool that renders the chart
+  # without the cluster (Argo CD, `helm template`) cannot look the Secret up and would make a new key each time: with one,
+  # make the Secret yourself (`kubectl create secret generic ferrum-vault-key
   # --from-literal=root.key="$(openssl rand -base64 32)"`) and name it here.
   keySecret: {name: "", key: root.key}
   # The key-management service of the vault's `kms` slot (the settings kms_transit, kms_kubernetes_role, ...: in
@@ -86,8 +92,7 @@ extraEnv: []
 # - {name: FERRUM_PROXY_HOPS, value: "2"}
 
 # Settings kept in the database (docs/operations.md, "Settings in the database"), applied by a Job before the pods
-# start, as the migrate Job runs (`ferrum task apply_settings`; on the first install with the chart's own database,
-# which does not exist yet when hooks run, from the first upgrade on). Name each setting by its key:
+# start, as the migrate Job runs (`ferrum task apply_settings`). Name each setting by its key:
 #   settings:
 #     installation: {session_days: "7", user_requests_per_minute: "1200"}
 #     pools: {default: {db_max_connections: "40"}}   # a pool's own; `default` with no `pools`
@@ -98,8 +103,7 @@ settings: {}
 # The server pods' environment: `full` (the default), every setting as a variable, as before; or `minimal`: the
 # database's address with the pool in it (`application_name=pool:<name>`), the secrets, and the variables apps
 # compiled into the server still read themselves. Every other setting then comes from the table: the settings Job
-# writes the values the full environment would have held, with `settings` over them. Not on the first install with
-# the chart's own database (the Job cannot run before it exists): install with `full`, then switch.
+# writes the values the full environment would have held, with `settings` over them.
 environment: full
 
 # No replicas are set while autoscaling is enabled: the autoscaler owns the count.
@@ -109,7 +113,7 @@ autoscaling:
   minReplicas: 3
   # Each replica may open dbMaxConnections + 6 connections, and 2 more while it starts: (9 + 1 in a rollout) x 36,
   # 1 starting x 2 and 20 for others = 382 fit connectionLimit 390 (a full restart's 9 x 38 = 342 is less).
-  # Add a PgBouncer pooler before raising this.
+  # Put a pooler in front of the database (database.directHost) before raising this.
   maxReplicas: 9
   cpuUtilization: 70
   scaleDownStabilizationSeconds: 300
@@ -191,8 +195,8 @@ networkPolicy:
   egressAnyHost: true
   egressCIDRs: []
 
-# Needs the Prometheus operator. Also scrapes the database's exporter when database.enabled. It sends FERRUM_METRICS_TOKEN
-# from the Secret above, which it needs: in production /metrics answers nobody while no token is set.
+# Needs the Prometheus operator. It sends FERRUM_METRICS_TOKEN from the Secret above, which it needs: in production
+# /metrics answers nobody while no token is set.
 serviceMonitor:
   enabled: true
   interval: 30s
@@ -234,126 +238,44 @@ privateGateway:
       # GCP:   networking.gke.io/load-balancer-type: Internal
       # Azure: service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 
-# A CloudNativePG Cluster with continuous backups (Barman Cloud plugin). Off: bring your own
-# database (`external` below; docs/operations.md, "Any PostgreSQL").
+# The PostgreSQL Ferrum uses, which the chart does not run: Amazon RDS or Aurora, Cloud SQL, Azure, Supabase, Neon, a
+# cluster of your own (reference/kubernetes/ is one example). Its backups, failover, upgrades and pooler are its owner's
+# (docs/operations.md, "Any PostgreSQL"). The three values without a default are required: rendering fails naming each.
 database:
-  enabled: true
-  urlSecret: {name: "", key: uri}   # with enabled false: the older name of external.urlSecret, still read
-  # With enabled false: a PostgreSQL the chart does not run (Amazon RDS or Aurora, Cloud SQL, Azure, Supabase, Neon,
-  # or your own). The chart then makes no Cluster, backups, pooler, read service, database PodMonitor or bootstrap:
-  # pooler, readReplicas, bootstrap, backup, instances and parameters below apply to its own database only, and the
-  # service's own tools back up, restore and fail over. It still runs the migrate and settings Jobs, sets the pods'
-  # environment and network policy, and mounts the certificate authority.
-  external:
-    urlSecret: {name: "", key: uri}  # the Secret holding DATABASE_URL: the ordinary role's address (the pooler's, if any)
-    # host or host:port of PostgreSQL itself when urlSecret's address is a pooler in transaction mode (RDS Proxy,
-    # PgBouncer, Supabase's or Neon's pooled address): listeners, session locks and migrations go there, with
-    # urlSecret's role, password, database and TLS options (FERRUM_DATABASE_DIRECT_HOST; with `environment: minimal`,
-    # the address's own `ferrum_direct_host`). The migrate and settings Jobs get it too. Empty: everything through
-    # urlSecret's address.
-    directHost: ""
-    # host or host:port of a read replica reports and exports may read from (FERRUM_DATABASE_READ_HOST; with
-    # `environment: minimal`, the address's own `ferrum_read_host`). Empty: none.
-    readHost: ""
-    # A Secret holding the certificate authority the database's certificate is checked against (Amazon's RDS bundle,
-    # Google's server CA, ...), mounted at /run/ferrum/db-ca.pem in the pods and Jobs. With it, an address that asks
-    # for no TLS mode is checked in full (verify-full), `require` checks the certificate (verify-ca, as libpq does),
-    # and the server refuses to start, saying why, when the certificate does not verify.
-    caSecret: {name: "", key: ca.crt}
-    # The network policy's way out to it (networkPolicy.enabled): the address ranges of the database and its pooler,
-    # and their ports. Empty cidrs: no rule, and the pods cannot reach it while the policy is on.
-    egress:
-      cidrs: []
-      ports: [5432]
+  # The Secret holding DATABASE_URL: the ordinary role's address (the pooler's, if there is one).
+  urlSecret: {name: "", key: uri}
+  # host or host:port of PostgreSQL itself when urlSecret's address is a pooler in transaction mode (RDS Proxy, PgBouncer,
+  # Supabase's or Neon's pooled address): listeners, session locks and migrations go there, with urlSecret's role,
+  # password, database and TLS options (FERRUM_DATABASE_DIRECT_HOST; with `environment: minimal`, the address's own
+  # `ferrum_direct_host`). The migrate and settings Jobs get it too. Empty: everything through urlSecret's address. With
+  # it, only each replica's direct connections count in the budget below: the pooler's own connections to PostgreSQL are
+  # the provider's to fit.
+  directHost: ""
+  # host or host:port of a read replica reports and exports may read from (FERRUM_DATABASE_READ_HOST; with
+  # `environment: minimal`, the address's own `ferrum_read_host`). Empty: none.
+  readHost: ""
+  # A Secret holding the certificate authority the database's certificate is checked against (Amazon's RDS bundle,
+  # Google's server CA, ...), mounted at /run/ferrum/db-ca.pem in the pods and Jobs. With it, an address that asks
+  # for no TLS mode is checked in full (verify-full), `require` checks the certificate (verify-ca, as libpq does),
+  # and the server refuses to start, saying why, when the certificate does not verify.
+  caSecret: {name: "", key: ca.crt}
   # With `environment: minimal`: whether that address already has a query (`?sslmode=require`), so that the pool's
   # name is added to it with `&` instead of `?`.
   urlHasQuery: false
-  instances: 3
-  imageName: ghcr.io/cloudnative-pg/postgresql:17
-  storageSize: 100Gi
-  walStorageSize: 20Gi
-  # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
-  # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart.
-  connectionLimit: 390
-  parameters:
-    max_connections: "410"
-    shared_buffers: 2GB
-    effective_cache_size: 6GB
-    work_mem: 16MB
-    idle_in_transaction_session_timeout: 60s
-    lock_timeout: 15s
-  resources:
-    requests: {cpu: "1", memory: 4Gi}
-    limits: {memory: 8Gi}
-  backup:
-    destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
-    endpointURL: ""                    # S3-compatible stores
-    credentialsSecret: ferrum-backup-s3  # keys ACCESS_KEY_ID, ACCESS_SECRET_KEY
-    retention: 30d
-    schedule: "0 0 2 * * *"            # six fields, seconds first
-    # The name this cluster's backups and WAL go under in destinationPath (empty: "<fullname>-db"). A new
-    # cluster refuses to archive where one of the same name already did: give it a new name when it starts
-    # from a copy or a backup of a cluster that wrote there.
-    serverName: ""
-  # A connection pooler (PgBouncer, as CloudNativePG's Pooler) in front of the primary, in transaction mode,
-  # with protocol-level prepared statements (PgBouncer 1.21 or later; CloudNativePG's own image is newer).
-  # On, the server's DATABASE_URL points at it and FERRUM_DATABASE_DIRECT_URL at the primary, which the
-  # server uses for LISTEN, session locks and migrations (the migrate Job always connects directly). Only
-  # with a server that reads FERRUM_DATABASE_DIRECT_URL: an older one would LISTEN through the pooler.
-  # PostgreSQL then sees `instances x poolSize` connections from the pooler (plus reserve_pool_size, if
-  # set in parameters) and directConnectionsPerReplica from each server replica.
-  pooler:
-    enabled: false
-    # false keeps the pooler running while the server connects directly: turn it off in two upgrades
-    # (used: false, then enabled: false), so no pod is left pointing at a pooler that is gone.
-    used: true
-    instances: 2
-    poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
-    maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
-    maxPreparedStatements: 200    # max_prepared_statements; must be at least 1: the server uses prepared statements
-    parameters: {}                # other PgBouncer settings CloudNativePG allows
-    # Each replica's direct connections: the one that LISTENs on every channel and 1 session lock at a time (apps'
-    # upkeep holds none: it works in the pool). scripts/check_manifests.py fails when the code opens another number.
-    directConnectionsPerReplica: 2
-    resources:
-      requests: {cpu: 100m, memory: 64Mi}
-      limits: {memory: 256Mi}
-  # Reports and the reading of exports from the standbys (CloudNativePG's read-only service, `-ro`): sets
-  # FERRUM_DATABASE_READ_URL. Each read goes there only while the standby is within maxLagSeconds and has
-  # replayed what the primary had committed when the read began; otherwise to the primary. Needs instances >= 2.
-  readReplicas:
-    enabled: false
-    maxLagSeconds: 10
-  # How the database starts, read once when the Cluster is created (docs/operations.md, "Moving from one
-  # shape to another"). Keep the same values on later upgrades.
-  #   empty     a new, empty database
-  #   import    a dump of one database from a running PostgreSQL (pg_dump, then pg_restore here); any
-  #             version up to imageName's. The server treats the result as restored from a backup and holds
-  #             mail, webhooks, jobs and commands until an operator releases them. The vault comes with it,
-  #             but this cluster's role has a password of its own: run `ferrum task vault_rewrap` once with
-  #             the old one (docs/operations.md, "The vault", After a restore, a copy or a move).
-  #   copy      a physical copy of a running PostgreSQL (pg_basebackup), which must run imageName's major
-  #             version (17) on the same architecture with the same tablespaces, allow a replication
-  #             connection from this cluster in pg_hba.conf and have max_wal_senders free for two. It keeps
-  #             the database's identity, but starts on a new timeline: the server holds as after a restore
-  #             unless FERRUM_HOLD_ON_TIMELINE is false. Stop writes to the source first.
-  #   recovery  the newest state, or the state at targetTime, from the backups in object storage (the Barman
-  #             Cloud plugin, as this chart backs up). Held as after a restore.
-  bootstrap:
-    mode: empty
-    source:                    # import and copy: the existing server, reachable from this cluster
-      host: ""
-      port: 5432
-      database: ferrum         # the database to import or, for copy, the one the application uses
-      user: ""                 # import: the role the server runs as there (it reads every row through row-level
-                               # security as the system's own session; a superuser also will do);
-                               # copy: a role with REPLICATION and LOGIN
-      passwordSecret: {name: "", key: password}   # a Secret you created, holding that role's password
-      sslmode: prefer
-    recovery:
-      objectStore: ""          # an ObjectStore holding the backups; empty: this chart's own "<fullname>-backups"
-      serverName: ""           # the name they were taken under; empty: "<fullname>-db"
-      targetTime: ""           # e.g. "2026-11-14 10:00:00+00"; empty: up to the last archived change
+  # How many connections the role may hold on PostgreSQL for this installation: its `rolconnlimit`, or `max_connections`
+  # less what you keep for administration, replication and monitoring. Rendering fails when the pools, a rollout and the
+  # Jobs together may open more (and 20 for other users of the role). No default: it is the database's, not the chart's.
+  connectionLimit: ~
+  # How many days back the database's backups reach: FERRUM_BACKUP_REACH_DAYS, and how long a deleted file stays in the
+  # bucket (FERRUM_FILES_DELETE_AFTER_DAYS), so that a database restored to any moment its backups reach finds its files
+  # (docs/operations.md, "Backups of files"). No default: a database without backups is 0, and says so.
+  backupReachDays: ~
+  # The network policy's way out to it (networkPolicy.enabled): `to` is a list of NetworkPolicy peers (an `ipBlock` for a
+  # provider, a `podSelector` and `namespaceSelector` for a database in this cluster) and `ports` their ports (the pooler's
+  # too). Empty `to`: no rule, and the pods cannot reach it while the policy is on.
+  egress:
+    to: []
+    ports: [5432]
 
 # The PDF renderer (Gotenberg). The server needs it for print formats.
 pdf:
@@ -427,17 +349,15 @@ metricsEngine:
 
 # A Job that migrates the database before an install or upgrade (Helm hook): it runs the server
 # image with `args`, `task migrate`, which applies the kernel's SQL migrations and syncs the schema, and
-# fails the release when one fails. While it is enabled the
-# server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
+# fails the release when one fails: a database that is down or refuses the role stops the release, and nothing rolls out.
+# While it is enabled the server's pods also get `serverEnv`, FERRUM_MIGRATE_AT_START=false: they no longer migrate as they
 # start, only check that the Job did, and refuse to start (naming the command) when it has not.
 # Pods of the release before keep starting once the Job has run: on a database a newer build migrated,
 # a build its COMPATIBLE_FROM lets in runs as a guest that changes nothing (docs/operations.md, Rolling
 # back), so a paused or failed rollout keeps its capacity and `helm rollback` needs no Job.
 # Off, each pod migrates itself at start, as the Compose files do.
-# With database.enabled the Cluster does not exist yet on the first install (hooks run first), so on
-# that install the chart renders no Job and the pods migrate themselves; every upgrade after uses the Job.
 migrate:
-  enabled: false
+  enabled: true
   args: ["task", "migrate"]
   serverEnv:   # entries of `env`, added to the server while the Job is enabled
     - {name: FERRUM_MIGRATE_AT_START, value: "false"}

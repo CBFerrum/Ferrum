@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Changes how many database instances there are, or how large their volumes are (deploy/k8s/database.yaml), only
-# when that is safe now:
+# The example database's (reference/kubernetes, not the product's): changes how many database instances there are, or how
+# large their volumes are (reference/kubernetes/database), only when that is safe now:
 #   * every instance ready, and every standby streaming within MAX_LAG_BYTES of the primary;
 #   * at least minSyncReplicas + 1 instances left, so that writes keep a synchronous standby;
 #   * volumes that only grow, on a storage class that can grow them.
@@ -8,8 +8,8 @@
 # healthy first. More instances are more copies to read from (ferrum-db-ro) and to fail over to: every write still
 # goes to the one primary (ferrum-db-rw), so they are never more room for writes.
 #
-#   deploy/scale-database.sh --instances 4 [--wait 600]
-#   deploy/scale-database.sh --storage 200Gi [--wait 600]
+#   reference/kubernetes/scale-database.sh --instances 4 [--wait 600]
+#   reference/kubernetes/scale-database.sh --storage 200Gi [--wait 600]
 set -euo pipefail
 
 NS=${NS:-ferrum}

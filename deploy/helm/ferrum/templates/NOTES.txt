@@ -1,4 +1,8 @@
-Ferrum is installed as {{ include "ferrum.fullname" . }} in namespace {{ .Release.Namespace }}; it needs the Secret {{ .Values.secrets.existingSecret }} (see docs/operations.md).
+Ferrum is installed as {{ include "ferrum.fullname" . }} in namespace {{ .Release.Namespace }}; it needs the Secret {{ .Values.secrets.existingSecret }} (see docs/operations.md) and the Secret {{ .Values.database.urlSecret.name }}, the address of your PostgreSQL.
+It takes a database and a bucket and operates neither: backups, failover and upgrades of PostgreSQL, and the bucket's versioning, lifecycle rules and encryption (`ferrum task bucket_set_up` turns them on, once, with keys that may change the bucket) are yours.
+{{- if .Values.database.directHost }}
+A pooler is in front of the database (database.directHost is set): only each replica's direct connections count in the connection budget (database.connectionLimit); the pooler's own connections to PostgreSQL are yours to fit within it.
+{{- end }}
 Wait for the pods: kubectl -n {{ .Release.Namespace }} get pods
 Create the first tenant: kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "ferrum.fullname" . }} -- ferrum task create_tenant slug:acme name:"Acme Ltd" email:admin@acme.com password:'<strong password>'
 {{- if .Values.office.enabled }}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The chart against deploy/k8s: lint, the image rule, and a resource-by-resource comparison, with
-# the defaults and with the optional components on. Needs helm, kubectl and python3 with pyyaml;
-# no cluster, no network. Run from the repo root: bash deploy/helm/test.sh
+# The product chart: lint, the image rule, the values that have no default, what it renders for a database it is given
+# the address of (no Cluster, no backups, no pooler) and for the optional components. Needs helm and python3 with
+# pyyaml; no cluster, no network. Run from the repo root: bash deploy/helm/test.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 chart=deploy/helm/ferrum
@@ -11,17 +11,18 @@ digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 printf 'image:\n  digest: %s\n' "$digest" > "$tmp/digest.yaml"
 # What ships as a placeholder is a site's own to set (the chart refuses it otherwise): one site's, for every render.
-printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {backup: {destinationPath: "s3://acme-backups/ferrum"}}\n' > "$tmp/site.yaml"
+# The database's three values have no default either: the address's Secret, the role's connections (the default 9 replicas,
+# a rollout and both Jobs fit 458) and the days the backups reach.
+printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {urlSecret: {name: db}, connectionLimit: 460, backupReachDays: 30}\n' > "$tmp/site.yaml"
 printf 'image:\n  tag: abc\neditors:\n  enabled: true\n  image: {tag: abc}\nmetricsEngine:\n  enabled: true\n  image: {tag: abc}\n' > "$tmp/all.yaml"
-# The Namespace is rendered here because deploy/k8s has it; with Helm, --create-namespace does it.
-tpl() { helm template ferrum "$chart" --namespace ferrum --set namespace.create=true "$@" -f "$tmp/site.yaml"; }
+tpl() { helm template ferrum "$chart" --namespace ferrum "$@" -f "$tmp/site.yaml"; }
 
 echo "lint"
 helm lint "$chart" -f "$tmp/digest.yaml" -f "$tmp/site.yaml"
 
 echo "the placeholders fail, naming each one still set"
 if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" 2>&1); then echo "rendered with its placeholders"; exit 1; fi
-for v in publicUrl storage.bucket database.backup.destinationPath gateway.hostname office.host; do
+for v in publicUrl storage.bucket gateway.hostname office.host; do
   grep -q "$v" <<<"$err" || { echo "the error does not name $v: $err"; exit 1; }
 done
 if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" -f "$tmp/site.yaml" --set editors.enabled=true --set editors.image.tag=abc \
@@ -38,43 +39,28 @@ grep -q 'editors.image' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
 echo "a digest wins over a tag"
 tpl -f "$tmp/digest.yaml" --set image.tag=abc | grep -q "image: ghcr.io/cbferrum/ferrum@$digest"
 
-# The online editor is a second kustomization (its own namespace): the two are compared with the chart together.
-kust() {
-  { kubectl kustomize "$1"; echo ---; kubectl kustomize "$1/office"; } | sed -e 's/erp\.example\.com/erp.acme.test/g' \
-    -e 's/office\.example\.com/office.acme.test/g' -e 's/editors\.example\.com/editors.acme.test/g' \
-    -e 's/CHANGE-ME-files-bucket/acme-files/g' -e 's/CHANGE-ME-backup-bucket/acme-backups/g' > "$2"
-}
-
-echo "defaults against deploy/k8s and deploy/k8s/office"
-kust deploy/k8s "$tmp/k.yaml"
-tpl -f "$tmp/digest.yaml" > "$tmp/c.yaml"
-python3 deploy/helm/compare.py "$tmp/k.yaml" "$tmp/c.yaml"
-
-echo "editors and metrics engine against deploy/k8s with both components"
-cp -R deploy/k8s "$tmp/k8s"
-sed -i.bak -e 's/^# components:/components:/' -e 's/^#   - editors/  - editors/' -e 's/^#   - metrics-engine/  - metrics-engine/' "$tmp/k8s/kustomization.yaml"
-grep -q '^  - metrics-engine' "$tmp/k8s/kustomization.yaml"
-cp -R deploy/k8s/office "$tmp/k8s/office"
-kust "$tmp/k8s" "$tmp/k.yaml"
+echo "the optional components render with their own settings"
 tpl -f "$tmp/all.yaml" > "$tmp/c.yaml"
-python3 deploy/helm/compare.py "$tmp/k.yaml" "$tmp/c.yaml"
+python3 - "$tmp/c.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+for want in [("Deployment", "ferrum-editors"), ("Deployment", "ferrum-metrics-engine"), ("Deployment", "ferrum-pdf"), ("Deployment", "ferrum-office")]:
+    assert want in names, want
+PY
 
-echo "the metrics engine's token rendered as it starts, against deploy/k8s with its files component too"
-sed -i.bak -e 's/^  - metrics-engine$/  - metrics-engine\
-  - metrics-engine-files/' "$tmp/k8s/kustomization.yaml"
-grep -q '^  - metrics-engine-files' "$tmp/k8s/kustomization.yaml"
-kust "$tmp/k8s" "$tmp/k.yaml"
-tpl -f "$tmp/all.yaml" --set metricsEngine.files=rendered > "$tmp/c.yaml"
-python3 deploy/helm/compare.py "$tmp/k.yaml" "$tmp/c.yaml"
+echo "no database in the chart: no Cluster, Pooler, backup or CloudNativePG object, whatever is set"
+! grep -qiE 'kind: (Cluster|Pooler|ScheduledBackup|ObjectStore)$|cnpg|barman' "$tmp/c.yaml" || exit 1
 
 echo "the engine's files: its Secret by default and when asked; rendered with environment: minimal (the image declares its service) and when asked"
-engine=(-f "$tmp/digest.yaml" --set metricsEngine.enabled=true --set metricsEngine.image.tag=abc)
+engine=(-f "$tmp/digest.yaml" --set metricsEngine.enabled=true --set metricsEngine.image.tag=abc
+  --set-json 'database.egress.to=[{"podSelector":{"matchLabels":{"app":"pg"}}}]')
 tpl "${engine[@]}" > "$tmp/e-default.yaml"
-tpl "${engine[@]}" --is-upgrade --set environment=minimal > "$tmp/e-minimal.yaml"
-tpl "${engine[@]}" --set metricsEngine.files=rendered --set database.enabled=false --set database.external.urlSecret.name=db \
-  --set database.external.directHost=db-direct.internal:5432 --set-json 'database.external.egress.cidrs=["10.20.0.0/16"]' > "$tmp/e-rendered.yaml"
+tpl "${engine[@]}" --set environment=minimal > "$tmp/e-minimal.yaml"
+tpl "${engine[@]}" --set metricsEngine.files=rendered --set database.directHost=db-direct.internal:5432 \
+  --set-json 'database.egress.to=[{"ipBlock":{"cidr":"10.20.0.0/16"}}]' > "$tmp/e-rendered.yaml"
 grep -q 'list "metrics-engine"' "$chart/templates/_helpers.tpl"
-tpl "${engine[@]}" --is-upgrade --set environment=minimal --set metricsEngine.files=secret > "$tmp/e-kept.yaml"
+tpl "${engine[@]}" --set environment=minimal --set metricsEngine.files=secret > "$tmp/e-kept.yaml"
 python3 - "$tmp" <<'PY'
 import sys, yaml
 tmp = sys.argv[1]
@@ -106,7 +92,7 @@ def rendered(name, egress):
     assert eng["automountServiceAccountToken"] is False
     assert policy["egress"][0] == egress and {"port": 53, "protocol": "UDP"} in policy["egress"][1]["ports"], policy["egress"]
     return init
-own_db = {"to": [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "ferrum-db"}}}], "ports": [{"port": 5432}]}
+own_db = {"to": [{"podSelector": {"matchLabels": {"app": "pg"}}}], "ports": [{"port": 5432}]}
 for name in ["e-default", "e-kept"]:
     secret(name)
 init = rendered("e-rendered", {"to": [{"ipBlock": {"cidr": "10.20.0.0/16"}}], "ports": [{"port": 5432}]})
@@ -149,16 +135,14 @@ senv = {e["name"]: e.get("value") for e in srv["spec"]["template"]["spec"]["cont
 assert senv["FERRUM_OFFICE_ORIGIN"] == "https://office.acme.test", senv
 PY
 
-echo "migration job is a pre-install,pre-upgrade hook, and off by default"
-! tpl -f "$tmp/digest.yaml" | grep -q 'kind: Job' || exit 1
-tpl -f "$tmp/digest.yaml" --set migrate.enabled=true --is-upgrade | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
-tpl -f "$tmp/digest.yaml" --set migrate.enabled=true,database.enabled=false,database.urlSecret.name=db | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+echo "the migrate Job is a pre-install,pre-upgrade hook, on by default (the database is there before the release), on a first install too"
+tpl -f "$tmp/digest.yaml" | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+tpl -f "$tmp/digest.yaml" --is-upgrade | grep -q 'helm.sh/hook: pre-install,pre-upgrade'
+echo "off, no Job, and the pods migrate themselves"
+! tpl -f "$tmp/digest.yaml" --set migrate.enabled=false | grep -qE 'kind: Job|FERRUM_MIGRATE_AT_START' || exit 1
 
-echo "on the first install with the chart's own database (not there yet when hooks run), the pods migrate themselves"
-! tpl -f "$tmp/digest.yaml" --set migrate.enabled=true | grep -qE 'kind: Job|FERRUM_MIGRATE_AT_START' || exit 1
-
-echo "enabling it runs the migrate task and stops the server from migrating itself"
-tpl -f "$tmp/digest.yaml" --set migrate.enabled=true --is-upgrade > "$tmp/m.yaml"
+echo "it runs the migrate task and stops the server from migrating itself"
+tpl -f "$tmp/digest.yaml" > "$tmp/m.yaml"
 python3 - "$tmp/m.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -168,13 +152,13 @@ dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"
 env = {e["name"]: e.get("value") for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
 assert env.get("FERRUM_MIGRATE_AT_START") == "false", env
 PY
-! tpl -f "$tmp/digest.yaml" | grep -q FERRUM_MIGRATE_AT_START || exit 1
+! tpl -f "$tmp/digest.yaml" --set migrate.enabled=false | grep -q FERRUM_MIGRATE_AT_START || exit 1
 
 echo "by default no settings Job, and the pods' environment as before"
-! tpl -f "$tmp/digest.yaml" --is-upgrade | grep -qE 'ferrum-settings|application_name|FERRUM_DATABASE_ADDRESS' || exit 1
+! tpl -f "$tmp/digest.yaml" | grep -qE 'ferrum-settings|application_name|FERRUM_DATABASE_ADDRESS' || exit 1
 
 echo "a settings document alone: a Job applies it after the migrate Job, and the pods keep their environment"
-tpl -f "$tmp/digest.yaml" --is-upgrade --set migrate.enabled=true --set-json 'settings={"installation":{"session_days":"7"},"others":"keep"}' > "$tmp/s.yaml"
+tpl -f "$tmp/digest.yaml" --set-json 'settings={"installation":{"session_days":"7"},"others":"keep"}' > "$tmp/s.yaml"
 python3 - "$tmp/s.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -190,16 +174,16 @@ dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"
 env = {e["name"] for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
 assert {"PUBLIC_URL", "FERRUM_S3_BUCKET", "LOG_LEVEL"} <= env, env
 PY
-! tpl -f "$tmp/digest.yaml" --set-json 'settings={"installation":{"session_days":"7"}}' | grep -q 'name: ferrum-settings' || exit 1
+tpl -f "$tmp/digest.yaml" --set-json 'settings={"installation":{"session_days":"7"}}' | grep -q 'name: ferrum-settings'
 
 echo "environment: minimal: each pod has its database address naming its pool, the secrets and what apps read themselves"
-tpl -f "$tmp/digest.yaml" --is-upgrade --set environment=minimal --set-json 'settings={"installation":{"session_days":"7","log_level":"warn"}}' > "$tmp/min.yaml"
+tpl -f "$tmp/digest.yaml" --set environment=minimal --set-json 'settings={"installation":{"session_days":"7","log_level":"warn"}}' > "$tmp/min.yaml"
 # The preset fills the role's connection limit; the settings Job is counted in it too.
-tpl -f "$tmp/digest.yaml" --is-upgrade --set environment=minimal -f "$chart/presets/pools.yaml" --set dbMaxConnections=16 > "$tmp/minp.yaml"
+tpl -f "$tmp/digest.yaml" --set environment=minimal -f "$chart/presets/pools.yaml" --set dbMaxConnections=16 > "$tmp/minp.yaml"
 python3 - "$tmp/min.yaml" "$tmp/minp.yaml" <<'PY'
 import sys, yaml
-KEPT = {"FERRUM_DATABASE_ADDRESS", "FERRUM_DB_USER", "FERRUM_DB_PASSWORD", "FERRUM_DB_NAME", "FERRUM_DATABASE_DIRECT_URL",
-        "FERRUM_DATABASE_READ_URL", "FERRUM_OFFICE_URL", "FERRUM_OFFICE_WOPI_URL", "FERRUM_EDITORS_URL", "FERRUM_METRICS_ENGINE_URL"}
+# The migrate Job is on, so the pods are told not to migrate themselves (migrate.serverEnv).
+KEPT = {"FERRUM_DATABASE_ADDRESS", "FERRUM_OFFICE_URL", "FERRUM_OFFICE_WOPI_URL", "FERRUM_EDITORS_URL", "FERRUM_METRICS_ENGINE_URL", "FERRUM_MIGRATE_AT_START"}
 def load(path):
     docs = [d for d in yaml.safe_load_all(open(path)) if d]
     servers = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment" and any(
@@ -210,7 +194,7 @@ def check(dep, pool):
     env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
     by = {e["name"]: e for e in env}
     assert by["DATABASE_URL"]["value"] == f"$(FERRUM_DATABASE_ADDRESS)?application_name=pool:{pool}", by["DATABASE_URL"]
-    assert by["FERRUM_DATABASE_ADDRESS"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}
+    assert by["FERRUM_DATABASE_ADDRESS"]["valueFrom"]["secretKeyRef"] == {"name": "db", "key": "uri"}
     plain = {e["name"] for e in env if "value" in e} - {"DATABASE_URL"} - KEPT
     assert not plain, f"{dep['metadata']['name']}: settings left in the environment: {plain}"
     names = [e["name"] for e in env]
@@ -234,18 +218,15 @@ for name, pool in pools.items():
 assert doc["pools"]["general"] == {"db_max_connections": "16", "run_background": "false", "zone": ""}, doc["pools"]
 assert doc["pools"]["worker"]["run_background"] == "true", doc["pools"]
 PY
-if err=$(tpl -f "$tmp/digest.yaml" --set environment=minimal 2>&1); then echo "rendered minimal on a first install with the chart's own database"; exit 1; fi
-grep -q 'install with environment: full' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
-tpl -f "$tmp/digest.yaml" --set environment=minimal,database.enabled=false,database.urlSecret.name=db,database.urlHasQuery=true \
+tpl -f "$tmp/digest.yaml" --set environment=minimal,database.urlHasQuery=true \
   | grep -q 'value: $(FERRUM_DATABASE_ADDRESS)&application_name=pool:default'
 
-echo "an outside database: no Cluster, the address from its Secret, a way out to it, its certificate authority at the fixed path"
-ext=(--set database.enabled=false --set database.external.urlSecret.name=db --set-json 'database.external.egress.cidrs=["10.20.0.0/16"]'
-  --set database.external.caSecret.name=db-ca --set migrate.enabled=true --set-json 'settings={"installation":{"session_days":"7"}}' --is-upgrade)
+echo "the database it is given: no Cluster, the address from its Secret, a way out to it, its certificate authority at the fixed path, the days its backups reach"
+ext=(--set database.caSecret.name=db-ca --set-json 'database.egress.to=[{"ipBlock":{"cidr":"10.20.0.0/16"}}]' --set-json 'settings={"installation":{"session_days":"7"}}')
 tpl -f "$tmp/digest.yaml" "${ext[@]}" > "$tmp/ext.yaml"
-tpl -f "$tmp/digest.yaml" "${ext[@]}" --set database.external.directHost=db-direct.internal:5432 --set database.external.readHost=db-ro.internal \
-  --set-json 'database.external.egress.ports=[5432,6432]' > "$tmp/extp.yaml"
-tpl -f "$tmp/digest.yaml" --set database.enabled=false --set database.urlSecret.name=old-db > "$tmp/exto.yaml"
+tpl -f "$tmp/digest.yaml" "${ext[@]}" --set database.directHost=db-direct.internal:5432 --set database.readHost=db-ro.internal \
+  --set-json 'database.egress.ports=[5432,6432]' > "$tmp/extp.yaml"
+tpl -f "$tmp/digest.yaml" --set database.urlSecret.name=other-db > "$tmp/exto.yaml"
 python3 - "$tmp/ext.yaml" "$tmp/extp.yaml" "$tmp/exto.yaml" <<'PY'
 import sys, yaml
 def load(path):
@@ -265,6 +246,9 @@ for w in workloads(docs):
     e = env(w)
     assert e["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "db", "key": "uri"}, w["metadata"]["name"]
     assert not {"FERRUM_DATABASE_DIRECT_HOST", "FERRUM_DATABASE_READ_HOST"} & set(e), "nothing direct without a host"
+    assert w["metadata"]["name"] != "ferrum-migrate" or e["FERRUM_BACKUP_REACH_DAYS"]["value"] == "30"
+    if w["kind"] == "Deployment":
+        assert e["FERRUM_BACKUP_REACH_DAYS"]["value"] == "30" and e["FERRUM_FILES_DELETE_AFTER_DAYS"]["value"] == "30", "the days the backups reach, and a deletion waits"
     mounts = {m["name"]: m for m in pod(w)["containers"][0]["volumeMounts"]}
     assert mounts["run"] == {"name": "run", "mountPath": "/run/ferrum", "readOnly": True}, mounts
     vols = {v["name"]: v for v in pod(w)["volumes"]}
@@ -286,19 +270,45 @@ assert {"to": [{"ipBlock": {"cidr": "10.20.0.0/16"}}], "ports": [{"port": 5432},
 
 docs = load(sys.argv[3])
 dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
-assert env(dep)["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "old-db", "key": "uri"}, "the older name still works"
+assert env(dep)["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "other-db", "key": "uri"}, "the Secret named, under its key"
 run = {v["name"]: v for v in pod(dep)["volumes"]}["run"]
 assert [s["secret"]["name"] for s in run["projected"]["sources"]] == ["ferrum-vault-key"], "no certificate authority: the key file alone"
 PY
-if err=$(tpl -f "$tmp/digest.yaml" --set database.enabled=false 2>&1); then echo "rendered an outside database without its address"; exit 1; fi
-grep -q 'database.external.urlSecret.name' <<<"$err" || { echo "unexpected error: $err"; exit 1; }
-echo "the chart's own database: none of the outside database's settings show"
-! tpl -f "$tmp/digest.yaml" --set database.external.directHost=x --set database.external.caSecret.name=y --set-json 'database.external.egress.cidrs=["10.0.0.0/8"]' \
-  | grep -qE 'DIRECT_HOST|db-ca.pem|ipBlock: \{cidr: 10.0.0.0/8\}' || exit 1
+echo "the values with no default fail naming each, and a value that is gone says what to set instead"
+nodb=$(mktemp)
+sed -e 's/^database: .*$/database: {}/' "$tmp/site.yaml" > "$nodb"
+refuses() {
+  local want=$1; shift
+  if err=$(helm template ferrum "$chart" -f "$tmp/digest.yaml" "$@" 2>&1); then echo "rendered, but should have refused: $want"; exit 1; fi
+  grep -qF "$want" <<<"$err" || { echo "refused for another reason than \"$want\": $err"; exit 1; }
+}
+refuses "database.urlSecret.name is required" -f "$nodb" --set database.connectionLimit=460 --set database.backupReachDays=30
+refuses "database.connectionLimit is required" -f "$nodb" --set database.urlSecret.name=db --set database.backupReachDays=30
+refuses "database.backupReachDays is required" -f "$nodb" --set database.urlSecret.name=db --set database.connectionLimit=460
+refuses "database.backupReachDays is a whole number" -f "$tmp/site.yaml" --set database.backupReachDays=thirty
+for gone in enabled=true external.urlSecret.name=db instances=3 backup.retention=30d pooler.enabled=true readReplicas.enabled=true bootstrap.mode=import; do
+  refuses "is gone:" -f "$tmp/site.yaml" --set "database.$gone"
+done
+refuses "database.enabled is gone: the chart no longer runs a database" -f "$tmp/site.yaml" --set database.enabled=true
+refuses "set database.backupReachDays" -f "$tmp/site.yaml" --set database.backup.retention=30d
+refuses "set database.directHost" -f "$tmp/site.yaml" --set database.pooler.enabled=true
+rm -f "$nodb"
+echo "no backups to reach is said: 0 days, and a deleted file then goes at once"
+tpl -f "$tmp/digest.yaml" --set database.backupReachDays=0 | grep -A1 'FERRUM_BACKUP_REACH_DAYS' | grep -q 'value: "0"'
+
+echo "a store in this cluster: its pods are a peer of the server's way out, on the port it gives"
+tpl -f "$tmp/digest.yaml" --set-json 'storage.egress.to=[{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"ferrum-store"}}}]' --set-json 'storage.egress.ports=[8333]' > "$tmp/store.yaml"
+python3 - "$tmp/store.yaml" <<'PY'
+import sys, yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
+policy = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ferrum")
+assert {"to": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "ferrum-store"}}}], "ports": [{"port": 8333}]} in policy["spec"]["egress"], policy["spec"]["egress"]
+PY
+! tpl -f "$tmp/digest.yaml" | grep -q 'The object store (storage.egress)' || exit 1
 
 echo "the vault's key: a Secret made once and kept, mounted in every pod and Job; nothing of the server's Secret required"
-tpl -f "$tmp/digest.yaml" --is-upgrade --set migrate.enabled=true --set-json 'settings={"installation":{"session_days":"7"}}' > "$tmp/key.yaml"
-tpl -f "$tmp/digest.yaml" --is-upgrade --set migrate.enabled=true --set vault.keySecret.name=old-cluster-key \
+tpl -f "$tmp/digest.yaml" --set-json 'settings={"installation":{"session_days":"7"}}' > "$tmp/key.yaml"
+tpl -f "$tmp/digest.yaml" --set vault.keySecret.name=old-cluster-key \
   --set vault.kms.tokenSecret.name=bao-token --set vault.kms.caSecret.name=bao-ca --set vault.kms.serviceAccount=true > "$tmp/keyn.yaml"
 python3 - "$tmp/key.yaml" "$tmp/keyn.yaml" <<'PY'
 import base64, sys, yaml
@@ -313,6 +323,10 @@ def run(w):
 docs = load(sys.argv[1])
 key = next(d for d in docs if d["kind"] == "Secret" and d["metadata"]["name"] == "ferrum-vault-key")
 assert key["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep", "kept when the release is removed"
+hook = {d["metadata"]["name"]: d["metadata"]["annotations"] for d in docs if d["kind"] == "Job"}
+assert key["metadata"]["annotations"]["helm.sh/hook"] == "pre-install,pre-upgrade" and key["metadata"]["annotations"]["helm.sh/hook-weight"] == "-1", "there before the migrate Job of a first install"
+assert "helm.sh/hook-delete-policy" not in key["metadata"]["annotations"], "no delete policy of its own"
+assert int(hook["ferrum-migrate"]["helm.sh/hook-weight"]) > -1, "the migrate Job runs after it"
 assert len(base64.b64decode(base64.b64decode(key["data"]["root.key"]))) == 32, "base64 of 32 random bytes, as /run/ferrum/root.key holds them"
 assert len(workloads(docs)) == 3
 for w in workloads(docs):
@@ -330,23 +344,8 @@ for w in workloads(docs):
     assert sources["root.key"]["name"] == "old-cluster-key" and sources["kms.token"]["name"] == "bao-token" and sources["kms-ca.pem"]["name"] == "bao-ca", sources
     assert w["spec"]["template"]["spec"]["automountServiceAccountToken"] is True, "signs in to the key-management service as the pod"
 PY
-echo "a new cluster that takes another's database (import, copy, recovery) mounts the key named for it"
-for mode in import copy recovery; do
-  tpl -f "$tmp/digest.yaml" --is-upgrade --set database.bootstrap.mode=$mode --set database.bootstrap.source.host=old-db \
-    --set database.bootstrap.source.user=ferrum --set database.bootstrap.source.passwordSecret.name=old-pw \
-    --set database.backup.serverName=ferrum-db-2 --set vault.keySecret.name=old-cluster-key > "$tmp/$mode.yaml"
-  python3 - "$tmp/$mode.yaml" "$mode" <<'PY'
-import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-assert any(d["kind"] == "Cluster" for d in docs), sys.argv[2]
-dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum")
-run = {v["name"]: v for v in dep["spec"]["template"]["spec"]["volumes"]}["run"]
-assert run["projected"]["sources"][0]["secret"]["name"] == "old-cluster-key", (sys.argv[2], run)
-PY
-done
-echo "environment: minimal with an outside database: the direct and read hosts are the address's own parameters"
-tpl -f "$tmp/digest.yaml" --is-upgrade --set environment=minimal --set database.enabled=false --set database.external.urlSecret.name=db \
-  --set database.external.directHost=db-direct.internal:5432 --set database.external.readHost=db-ro.internal > "$tmp/minh.yaml"
+echo "environment: minimal with a pooler in front: the direct and read hosts are the address's own parameters"
+tpl -f "$tmp/digest.yaml" --set environment=minimal --set database.directHost=db-direct.internal:5432 --set database.readHost=db-ro.internal > "$tmp/minh.yaml"
 python3 - "$tmp/minh.yaml" <<'PY'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]

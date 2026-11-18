@@ -241,6 +241,7 @@ spec:
         - {port: 5150}
   egress:
     {{- include "ferrum.databaseEgress" . | nindent 4 }}
+    {{- include "ferrum.storageEgress" . | nindent 4 }}
     {{- if .Values.pdf.enabled }}
     - to:
         - podSelector:
@@ -329,17 +330,5 @@ spec:
       authorization:
         type: Bearer
         credentials: {name: {{ .Values.secrets.existingSecret }}, key: FERRUM_METRICS_TOKEN}
-{{- end }}
-{{- if .Values.database.enabled }}
----
-apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
-metadata:
-  name: {{ $n }}-db
-spec:
-  selector:
-    matchLabels: {cnpg.io/cluster: {{ $n }}-db}
-  podMetricsEndpoints:
-    - port: metrics
 {{- end }}
 {{- end }}

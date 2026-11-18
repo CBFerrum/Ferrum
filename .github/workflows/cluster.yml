@@ -1,9 +1,10 @@
 name: cluster
 
-# Deploys an image with deploy/k8s to a Kubernetes cluster (kind: a control plane and three
+# Deploys an image with deploy/helm/ferrum to a Kubernetes cluster (kind: a control plane and three
 # workers) next to the database operator and its backup plugin, a Gateway API implementation and
-# cert-manager, and checks it as an operator would (deploy/kind/smoke.sh): failover, rolling
-# restarts under traffic, attachments across replicas, backup and restore. Runs for each release CI
+# cert-manager, on the reference stack's example database and bucket (reference/kubernetes), and checks it as an operator
+# would (deploy/kind/smoke.sh): rolling restarts under traffic, attachments across replicas; and the example database
+# (reference/kubernetes/smoke.sh): failover, scaling, backup and restore. Runs for each release CI
 # publishes from main, and on demand for any image. A release from main that passes here becomes
 # `latest`, by digest, once its provenance has been verified.
 on:

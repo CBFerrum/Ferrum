@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs what deploy/k8s needs into a cluster without internet, from a bundle made with
+# Installs what the product chart (deploy/helm/ferrum) needs into a cluster without internet, from a bundle made with
 # `deploy/offline/bundle.py --kubernetes` and loaded with `load.py --registry` (docs/operations.md,
 # "A site without internet"): the manifests deploy/kind/install.sh would download, at the same
 # versions, applied from the bundle. Certificates come from the site's own authority, not ACME: put
@@ -52,7 +52,7 @@ if ! kubectl -n cert-manager get secret site-ca >/dev/null 2>&1; then
   echo "  kubectl -n cert-manager create secret tls site-ca --cert=ca.crt --key=ca.key" >&2
   exit 1
 fi
-# Named as the Gateway names its issuer (deploy/k8s/gateway.yaml); browsers must trust the site's authority.
+# Named as the Gateway names its issuer (deploy/helm/ferrum/templates/gateway.yaml); browsers must trust the site's authority.
 apply <<'EOF'
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -63,12 +63,6 @@ spec:
     secretName: site-ca
 EOF
 kubectl wait clusterissuer/letsencrypt --for=condition=Ready --timeout=3m
-
-step "CloudNativePG and the Barman Cloud plugin"
-kubectl apply --server-side -f "$manifests/cloudnative-pg.yaml" >/dev/null
-ready cnpg-system cnpg-controller-manager
-apply < "$manifests/barman-cloud.yaml"
-ready cnpg-system barman-cloud
 
 step "metrics-server"
 kubectl apply -f "$manifests/metrics-server.yaml" >/dev/null
@@ -81,4 +75,4 @@ ready kube-system metrics-server
 step "Prometheus operator definitions (ServiceMonitor, PodMonitor)"
 kubectl apply --server-side -f "$manifests/servicemonitors.yaml" -f "$manifests/podmonitors.yaml" >/dev/null
 
-step "ready: edit deploy/k8s as docs/operations.md says, then kubectl apply -k deploy/k8s"
+step "ready: install the chart as docs/operations.md says (helm upgrade --install, with image.tag the release bundle.json names)"

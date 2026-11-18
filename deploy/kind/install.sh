@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Installs what deploy/k8s needs into the current cluster, at the versions CI tests: Envoy Gateway
-# (Gateway API), cert-manager with Gateway API support, the CloudNativePG operator and its Barman
-# Cloud plugin, metrics-server (for the autoscaler) and the Prometheus operator's
-# ServiceMonitor/PodMonitor definitions. For CI it also
-# adds a self-signed issuer named like the production one and an S3 emulator with the two buckets.
+# Installs what the product chart (deploy/helm/ferrum) needs into the current cluster, at the versions CI tests: Envoy
+# Gateway (Gateway API), cert-manager with Gateway API support, metrics-server (for the autoscaler) and the Prometheus
+# operator's ServiceMonitor/PodMonitor definitions. For CI it also adds a self-signed issuer named like the production one.
+# The database and the bucket the chart is given are not here: reference/kubernetes/install.sh makes the example of both and
+# installs the product on them (deploy/kind/smoke.sh runs it).
 #
 #   kind create cluster --config deploy/kind/kind.yaml && deploy/kind/install.sh
 set -euo pipefail
@@ -11,8 +11,6 @@ cd "$(dirname "$0")"
 
 ENVOY_GATEWAY=v1.9.3
 CERT_MANAGER=v1.21.3
-CNPG=1.30.1
-BARMAN_PLUGIN=v0.15.1
 PROMETHEUS_OPERATOR=v0.94.2
 METRICS_SERVER=v0.9.0
 
@@ -79,12 +77,6 @@ spec:
 EOF
 kubectl wait clusterissuer/letsencrypt --for=condition=Ready --timeout=3m
 
-step "CloudNativePG $CNPG and the Barman Cloud plugin $BARMAN_PLUGIN"
-kubectl apply --server-side -f "https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-${CNPG%.*}/releases/cnpg-$CNPG.yaml" >/dev/null
-ready cnpg-system cnpg-controller-manager
-curl -fsSL "https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/$BARMAN_PLUGIN/manifest.yaml" | apply
-ready cnpg-system barman-cloud
-
 step "metrics-server $METRICS_SERVER"
 kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/$METRICS_SERVER/components.yaml" >/dev/null
 # kind's kubelets serve self-signed certificates.
@@ -97,13 +89,4 @@ for crd in servicemonitors podmonitors; do
   kubectl apply --server-side -f "https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/$PROMETHEUS_OPERATOR/example/prometheus-operator-crd/monitoring.coreos.com_$crd.yaml" >/dev/null
 done
 
-step "S3 emulator"
-kubectl apply -f s3.yaml >/dev/null
-ready ci-s3 s3
-kubectl -n ci-s3 exec deploy/s3 -- python -c "
-import boto3
-s3 = boto3.client('s3', endpoint_url='http://localhost:5000', region_name='us-east-1', aws_access_key_id='test', aws_secret_access_key='test')
-for b in ('ferrum-files', 'ferrum-backups'):
-    s3.create_bucket(Bucket=b)
-"
 step "ready"

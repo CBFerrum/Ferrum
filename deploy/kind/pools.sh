@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rehearses moving between deployment shapes with the Helm chart (docs/operations.md, "Moving from one shape
-# to another") on the cluster install.sh prepared, with the image ferrum:ci loaded:
+# to another") on the cluster install.sh prepared, with the image ferrum:ci loaded, on the Kubernetes reference stack
+# (reference/kubernetes/install.sh: the example database and bucket the chart is given the addresses of):
 #   * installs the chart with its default values (one pool), then upgrades it to presets/zones.yaml, and
 #     proves that the first pool's Deployment was upgraded in place (same UID), that every rollout finished,
 #     and that the server's Service answered every request meanwhile (a client that must see no failure);
@@ -42,25 +43,19 @@ finish() {
 }
 trap finish EXIT
 
-# The values kind needs: the loaded image, the S3 emulator (install.sh), a smaller database, no online editor, and its
-# own names for what the chart ships as placeholders (given last, so that a preset's do not come back).
+# The values kind needs, over the reference stack's (reference/kubernetes/ferrum-values.yaml): the loaded image, no online
+# editor and no browser editors, and its own names for what the chart ships as placeholders (given last, so that a preset's do
+# not come back).
 cat >"$work/kind.yaml" <<'EOF'
-image: {repository: ferrum, tag: ci}
-publicUrl: https://erp.kind.test
-gateway: {hostname: erp.kind.test}
-storage: {bucket: ferrum-files, region: us-east-1, endpoint: "http://s3.ci-s3.svc.cluster.local:5000"}
 office: {enabled: false}
+editors: {enabled: false}
 privateGateway: {clusterIssuer: letsencrypt, hostnames: [erp.internal.kind.test]}
-database:
-  storageSize: 5Gi
-  walStorageSize: 2Gi
-  resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {memory: 1Gi}}
-  parameters: {max_connections: "400", shared_buffers: 128MB, effective_cache_size: 512MB, work_mem: 4MB}
-  backup:
-    destinationPath: s3://ferrum-backups/pools
-    endpointURL: "http://s3.ci-s3.svc.cluster.local:5000"
 EOF
-upgrade() { helm upgrade --install ferrum "$CHART" -n "$NS" --create-namespace "$@" -f "$work/kind.yaml" --wait --timeout 20m; }
+upgrade() {
+  # --wait would hold the first install: the server is not ready until the bucket exists (made by install.sh, once).
+  helm upgrade --install ferrum "$CHART" -n "$NS" "$@" -f reference/kubernetes/ferrum-values.yaml -f deploy/kind/values.yaml \
+    -f "$work/kind.yaml" --timeout 20m
+}
 servers() { k get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E '^ferrum($|-general$|-public$|-finance$|-worker$)' | sort | tr '\n' ' '; }
 rollouts() { for d in $(servers); do k rollout status "deploy/$d" --timeout=10m; done; }
 
@@ -97,36 +92,11 @@ traffic_stop() { # what: says how many requests failed, and fails when any did
   [ "$failed" = 0 ] || fail "requests failed while $1: $(grep -v '^200$' "$work/traffic.log" | sort | uniq -c | tr '\n' ' ')"
 }
 
-step "secrets"
+step "the reference stack, and the chart with its default values"
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-secret() { k create secret generic "$@" --dry-run=client -o yaml | k apply -f - >/dev/null; }
-secret ferrum-secrets \
-  --from-literal=JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
-  --from-literal=FERRUM_BOOTSTRAP_TOKEN="" \
-  --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" \
-  --from-literal=AWS_ACCESS_KEY_ID=test --from-literal=AWS_SECRET_ACCESS_KEY=test
-secret ferrum-backup-s3 --from-literal=ACCESS_KEY_ID=test --from-literal=ACCESS_SECRET_KEY=test
-# The emulator listens on 5000, which no pool's policy allows (deploy/kind/s3-egress.yaml, for every pool).
-k apply -f - >/dev/null <<EOF
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: ferrum-ci-s3
-spec:
-  podSelector:
-    matchExpressions: [{key: app.kubernetes.io/name, operator: In, values: [ferrum, ferrum-public, ferrum-finance, ferrum-worker]}]
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: ci-s3}
-      ports:
-        - {port: 5000}
-EOF
-
-step "installing the chart with its default values"
-upgrade
-k wait cluster/ferrum-db --for=condition=Ready --timeout=15m
+k create secret generic ferrum-secrets --from-literal=JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
+  --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" --dry-run=client -o yaml | k apply -f - >/dev/null
+reference/kubernetes/install.sh -f deploy/kind/values.yaml -f "$work/kind.yaml" -d deploy/kind/database.yaml
 rollouts
 [ "$(servers)" = "ferrum " ] || fail "the default values should make one server Deployment, not: $(servers)"
 uid=$(k get deploy ferrum -o jsonpath='{.metadata.uid}')
@@ -144,9 +114,9 @@ step "which gateway reaches which pool"
 kubectl create namespace pools-probe --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n pools-probe run plain --image="$PROBE_IMAGE" --restart=Never --command -- sleep 600 >/dev/null
 kubectl -n pools-probe wait pod/plain --for=condition=Ready --timeout=3m >/dev/null
-plain() { kubectl -n pools-probe exec plain -- curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
+plain() { kubectl -n pools-probe exec plain -- curl -sk -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
 for attempt in $(seq 1 15); do
-  [[ "$(plain "http://s3.ci-s3.svc.cluster.local:5000/")" =~ ^[1-5][0-9][0-9]$ ]] && break
+  [[ "$(plain "https://kubernetes.default.svc.cluster.local/")" =~ ^[1-5][0-9][0-9]$ ]] && break
   [ "$attempt" -lt 15 ] || fail "a plain pod reaches nothing, so it proves nothing about the policies"
   sleep 2
 done

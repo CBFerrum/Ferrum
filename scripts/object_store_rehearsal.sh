@@ -117,7 +117,7 @@ launch() {
 store_up() {
   STORE_DATA="$work/store" STORE_ACCESS_KEY="$STORE_KEY" STORE_SECRET_KEY="$STORE_SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$S3_PORT \
     STORE_ARGS="-master.port=$((BASE + 10)) -volume.port=$((BASE + 11)) -filer.port=$((BASE + 12)) -master.volumeSizeLimitMB=64" \
-    sh "$ROOT/deploy/store/start.sh" >>"$work/store.log" 2>&1 &
+    sh "$ROOT/reference/store/start.sh" >>"$work/store.log" 2>&1 &
   STORE_PID=$!
   for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S3_PORT/healthz" >/dev/null 2>&1 && return 0; sleep 1; done
   fail "the store did not come up"

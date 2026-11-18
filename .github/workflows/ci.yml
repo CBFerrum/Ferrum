@@ -216,9 +216,12 @@ jobs:
       # (crates/kernel/src/window.rs, docs/operations.md).
       - name: Two-version window
         run: python3 scripts/test_window.py && python3 scripts/window.py --range "${{ github.event.pull_request.base.sha || github.event.before }}..${{ github.sha }}"
-      # The Helm chart renders what deploy/k8s renders (same resources, same environment variables).
-      - name: Helm chart against deploy/k8s
+      # The product chart: the values with no default, what a gone value says, what it renders for a database it is given.
+      - name: Helm chart
         run: bash deploy/helm/test.sh
+      # The example database (reference/kubernetes/database): its bootstrap modes and its pooler.
+      - name: Reference database chart
+        run: bash reference/kubernetes/database/test.sh
       # Pools, zones and gateways: each preset keeps its promises, each refusal refuses.
       - name: Helm chart's deployment shapes
         run: bash deploy/helm/test_pools.sh

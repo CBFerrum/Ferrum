@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A private PostgreSQL on this machine that behaves like a managed service (docs/operations.md, "Any PostgreSQL"):
 # the application's role is no superuser, has no BYPASSRLS, cannot make databases or roles, owns its database and
-# nothing else, holds no grant on session_replication_role, and finds btree_gist, citext and pg_trgm already created
+# nothing else, holds no grant on session_replication_role, and finds btree_gist and citext already created
 # by an administrator (in a schema of their own, `extensions`, on the role's search path, as Supabase has them). It is
 # reached through PgBouncer in transaction mode (the pooled address), with PostgreSQL itself beside it (the direct
 # address), as a managed service's pooler and primary are.
@@ -53,7 +53,7 @@ database() {
   admin postgres "create database $1 owner $ROLE"
   admin "$1" "revoke all on database $1 from public; grant connect, temporary on database $1 to $ROLE"
   admin "$1" "create schema extensions; grant usage on schema extensions to $ROLE; \
-    create extension btree_gist schema extensions; create extension citext schema extensions; create extension pg_trgm schema extensions"
+    create extension btree_gist schema extensions; create extension citext schema extensions"
   # PgBouncer is told of every database by name.
   printf '%s = host=127.0.0.1 port=%s dbname=%s\n' "$1" "$port" "$1" >>"$dir/databases.ini"
   if [ -f "$dir/pgbouncer.pid" ]; then kill -HUP "$(cat "$dir/pgbouncer.pid")"; sleep 0.5; fi

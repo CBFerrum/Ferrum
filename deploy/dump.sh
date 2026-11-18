@@ -13,7 +13,7 @@
 #
 # The restore leaves out what the role cannot make and the database already has: a schema that is there already (an
 # administrator's `extensions`), and comments on extensions (only their owner may write them). Extensions themselves
-# are made if missing (btree_gist, citext and pg_trgm are trusted: the database's owner may), and kept if present.
+# are made if missing (btree_gist and citext are trusted: the database's owner may), and kept if present.
 # Afterwards the server holds what reaches outside until a person releases it (`ferrum task release_restore`), as
 # after any restore; run `ferrum task reapply_erasures` first ("After restoring a backup").
 #

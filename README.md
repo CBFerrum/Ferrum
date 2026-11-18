@@ -594,12 +594,13 @@ flowchart LR
   docs/operations.md "Meetings"), a Stalwart mail server (`deploy/mail.yml`), a Media over QUIC relay for Live
   (`deploy/live.yml`), a Temporal server for durable processes (`deploy/temporal.yml`) and Metrics' engine
   (`deploy/metrics-engine.yml`).
-* Single host: `deploy/docker-compose.yml`.
-* Production: `deploy/k8s` (CloudNativePG with synchronous replica and PITR backups through the
-  Barman Cloud plugin, 3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA,
-  NetworkPolicy, probes), deployed and exercised on a kind cluster in CI (`deploy/kind`) — see
-  [docs/operations.md](docs/operations.md).
-* Helm: `deploy/helm/ferrum` renders what `deploy/k8s` renders.
+* The product takes the address of a PostgreSQL and a bucket of an S3-compatible store and operates neither. Single host:
+  `deploy/docker-compose.yml` (the server, the PDF renderer, the online editor). Kubernetes: `deploy/helm/ferrum`, the one
+  description (3+ API replicas, Gateway API routes with cert-manager TLS, PDB, HPA, NetworkPolicy, probes), deployed and
+  exercised on a kind cluster in CI (`deploy/kind`) — see [docs/operations.md](docs/operations.md).
+* Examples that run a database and a store for you, and say what you are then responsible for: `reference/single-host`
+  (Compose: PostgreSQL, SeaweedFS, a daily dump) and `reference/kubernetes` (CloudNativePG with synchronous replica and
+  PITR backups through the Barman Cloud plugin, SeaweedFS). They are not the product.
 
 ## Scope and known limits
 

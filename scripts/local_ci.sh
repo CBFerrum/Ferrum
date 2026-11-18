@@ -40,7 +40,7 @@
 #           default 8a34644e, the first with floors) and this one on one database. The older build is made once and kept
 #           in WINDOW_WORK (about 3 GB while it builds; refused under 8 GB free).
 #   objects not in the workflow, and only when named: scripts/object_store_rehearsal.sh, the server without apps on real
-#           S3 servers (SeaweedFS from Homebrew, run by deploy/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a start
+#           S3 servers (SeaweedFS from Homebrew, run by reference/store/start.sh, and moto 5.0.28 in OBJECT_PYTHON): a start
 #           without a bucket refused, `bucket_set_up` making the bucket, two replicas, the doctor's bucket lines, the
 #           restore drill, direct links and a machine's identity in place of keys.
 #   oneinput not in the workflow, and only when named: scripts/one_input.sh, the server with its apps started with
@@ -245,9 +245,10 @@ job_audit() {
   base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD)
   run "audit registry, accepted advisories and generated documents" sh -c 'python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py'
   run "audit two-version window (since $(git rev-parse --short "$base"))" sh -c "python3 scripts/test_window.py && python3 scripts/window.py --range $base..HEAD"
-  run "audit Compose files pin their image" sh -c '! grep -rnE "FERRUM_(EDITORS_)?IMAGE:-" deploy --include="*.yml" --include="*.yaml"'
-  run "audit Helm chart against deploy/k8s" bash deploy/helm/test.sh
+  run "audit Compose files pin their image" sh -c '! grep -rnE "FERRUM_(EDITORS_)?IMAGE:-" deploy reference --include="*.yml" --include="*.yaml"'
+  run "audit Helm chart" bash deploy/helm/test.sh
   run "audit Helm chart's deployment shapes" bash deploy/helm/test_pools.sh
+  run "audit the reference stacks' database chart" bash reference/kubernetes/database/test.sh
   run "audit offline bundles" python3 deploy/offline/test_offline.py
   run "audit the bar runtime's pure helpers" node --test server/shell/runtime.test.mjs
   run "audit licenses" python3 scripts/licenses.py check

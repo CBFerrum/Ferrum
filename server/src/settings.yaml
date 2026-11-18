@@ -445,7 +445,7 @@
   applies: live
   path: settings.backup_reach_days
   doc: >-
-    How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not
+    How many days back the database's backups reach (the chart sets it from `database.backupReachDays`; 0: not
     said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule.
 - key: files_direct_links
   env: FERRUM_FILES_DIRECT_LINKS

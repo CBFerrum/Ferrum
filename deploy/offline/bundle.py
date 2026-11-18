@@ -5,7 +5,7 @@ Run on a connected machine, from a checkout at the release's commit (docs/operat
 without internet"). It writes a directory to carry across:
 
     images/      every image, copied with its digest kept (skopeo; `docker save` without it)
-    manifests/   with --kubernetes, the operators' manifests at the versions CI tests
+    manifests/   with --kubernetes, the operators' manifests at the versions CI tests (Gateway API, cert-manager, metrics-server)
     deploy/      this checkout's deploy/ directory, these tools included
     bundle.json  the release, each image with its digest, each manifest with where it came from
     SHA256SUMS   every file's checksum; load.py refuses a bundle that does not match it
@@ -14,7 +14,8 @@ without internet"). It writes a directory to carry across:
                              [--platform linux/amd64] [--out ferrum-offline-<commit>]
 
 Needs python3 with PyYAML and skopeo (or docker), signed in to ghcr.io while its packages are
-private; --kubernetes needs kubectl too (kustomize is built in). Images named by a moving tag
+private; --kubernetes needs helm too (the product chart, deploy/helm/ferrum, is rendered to find its images; the database and
+the bucket it is given are the site's, so no database operator is carried). Images named by a moving tag
 (`latest`, `stable`) are copied as they are that day; pin them with the variables the Compose
 files read (COLLABORA_TAG, STALWART_TAG, CLAMAV_TAG). The online editor (Collabora) and the PDF
 renderer are part of the base stack, so their images are always in the bundle.
@@ -133,20 +134,17 @@ def versions() -> dict[str, str]:
     """The operators' versions CI tests, from deploy/kind/install.sh: one place to change them."""
     text = (DEPLOY / "kind" / "install.sh").read_text()
     out = dict(re.findall(r"^([A-Z_]+)=(\S+)$", text, re.M))
-    for name in ("ENVOY_GATEWAY", "CERT_MANAGER", "CNPG", "BARMAN_PLUGIN", "PROMETHEUS_OPERATOR", "METRICS_SERVER"):
+    for name in ("ENVOY_GATEWAY", "CERT_MANAGER", "PROMETHEUS_OPERATOR", "METRICS_SERVER"):
         if name not in out:
             sys.exit(f"deploy/kind/install.sh no longer sets {name}")
     return out
 
 
 def operator_manifests(v: dict[str, str]) -> dict[str, str]:
-    cnpg_minor = v["CNPG"].rsplit(".", 1)[0]
     prom = f"https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/{v['PROMETHEUS_OPERATOR']}/example/prometheus-operator-crd"
     return {
         "envoy-gateway.yaml": f"https://github.com/envoyproxy/gateway/releases/download/{v['ENVOY_GATEWAY']}/install.yaml",
         "cert-manager.yaml": f"https://github.com/cert-manager/cert-manager/releases/download/{v['CERT_MANAGER']}/cert-manager.yaml",
-        "cloudnative-pg.yaml": f"https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-{cnpg_minor}/releases/cnpg-{v['CNPG']}.yaml",
-        "barman-cloud.yaml": f"https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/{v['BARMAN_PLUGIN']}/manifest.yaml",
         "metrics-server.yaml": f"https://github.com/kubernetes-sigs/metrics-server/releases/download/{v['METRICS_SERVER']}/components.yaml",
         "servicemonitors.yaml": f"{prom}/monitoring.coreos.com_servicemonitors.yaml",
         "podmonitors.yaml": f"{prom}/monitoring.coreos.com_podmonitors.yaml",
@@ -193,13 +191,23 @@ def copy_image(ref: str, dest: Path, platform: str, tool: str) -> tuple[str, str
     return "docker-archive", pinned.rpartition("@")[2]
 
 
-def pin_kustomization(path: Path, commit: str) -> None:
-    """The bundle's deploy/k8s names the release's images, whatever tag the checkout named."""
-    text = path.read_text()
-    pinned, n = re.subn(r"(- name: (?:ferrum|ghcr\.io/cbferrum/ferrum-editors)\n(?:\s+newName: \S+\n)?\s+newTag: )\S+", rf"\g<1>{commit}", text)
-    if n != 2:
-        sys.exit("deploy/k8s/kustomization.yaml no longer names the server's and the editors' images as bundle.py expects")
-    path.write_text(pinned)
+def render_chart(commit: str, extras: set[str]) -> str:
+    """The product chart as `helm template` renders it, to find its images: the release's server image (and the editors', with
+    them), and placeholders for what the chart refuses to render without (hosts, a bucket, the database's three values)."""
+    values = {
+        "image.tag": commit,
+        "publicUrl": "https://erp.bundle.invalid",
+        "storage.bucket": "bundle",
+        "gateway.hostname": "erp.bundle.invalid",
+        "office.host": "office.bundle.invalid",
+        "database.urlSecret.name": "bundle",
+        "database.connectionLimit": "1000",
+        "database.backupReachDays": "30",
+    }
+    if "editors" in extras:
+        values |= {"editors.enabled": "true", "editors.host": "editors.bundle.invalid", "editors.image.tag": commit}
+    args = [a for k, v in values.items() for a in ("--set", f"{k}={v}")]
+    return run("helm", "template", "ferrum", str(DEPLOY / "helm" / "ferrum"), *args)
 
 
 def sha256(path: Path) -> str:
@@ -218,7 +226,7 @@ def write_sums(out: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("commit", help="the release: a commit CI published images for (docs/operations.md, Images)")
-    ap.add_argument("--kubernetes", action="store_true", help="for deploy/k8s, with the operators it needs")
+    ap.add_argument("--kubernetes", action="store_true", help="for deploy/helm/ferrum, with the operators it needs")
     ap.add_argument("--with", dest="extras", default="", help=f"also: {', '.join(sorted(EXTRAS))}")
     ap.add_argument("--platform", default="linux/amd64", help="the site's machines (default linux/amd64)")
     ap.add_argument("--image", action="append", default=[], help="another image to carry (repeatable)")
@@ -257,13 +265,8 @@ def main() -> None:
     wanted: set[str] = set(a.image)
     manifests: list[dict] = []
     if a.kubernetes:
-        # The online editor is a second kustomization, in a namespace of its own.
-        rendered = run("kubectl", "kustomize", str(DEPLOY / "k8s")) + "\n---\n" + run("kubectl", "kustomize", str(DEPLOY / "k8s" / "office"))
-        # The server's images are the release's, whatever tag the kustomization names today.
-        wanted |= {i for i in images_in(rendered) if not i.startswith(("ghcr.io/cbferrum/ferrum:", "ghcr.io/cbferrum/ferrum-editors:"))}
-        wanted.add(server)
-        if "editors" in extras:
-            wanted.add(editors)
+        # The chart names no default server image: the release's is given to it, and rendered here.
+        wanted |= images_in(render_chart(commit, extras))
         v = versions()
         (out / "manifests").mkdir()
         for name, url in operator_manifests(v).items():
@@ -288,8 +291,6 @@ def main() -> None:
         images.append({"ref": ref, "name": normalize(ref), "digest": digest, "file": file.as_posix(), "format": fmt})
 
     shutil.copytree(DEPLOY, out / "deploy", ignore=shutil.ignore_patterns("__pycache__", ".env", "test"))
-    if a.kubernetes:
-        pin_kustomization(out / "deploy" / "k8s" / "kustomization.yaml", commit)
     (out / "bundle.json").write_text(
         json.dumps(
             {

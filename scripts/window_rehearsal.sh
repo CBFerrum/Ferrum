@@ -18,7 +18,7 @@
 # 2. the older build starts again, with FERRUM_MIGRATE_AT_START=false and then true: each time it must start as a guest,
 #    read and write the records it knows, leave the schema, the vault and the stored settings exactly as they were, and
 #    leave this build's waiting work alone (this build then takes it);
-# 3. every start is given an object store (SeaweedFS on the PATH, deploy/store/start.sh as the reference stacks run it, its
+# 3. every start is given an object store (SeaweedFS on the PATH, reference/store/start.sh as the reference stacks run it, its
 #    bucket made over S3 with curl): the older build's file is read by this build, the older build writes one on the
 #    database this build migrated, and this build reads what it wrote.
 #
@@ -108,7 +108,7 @@ done
 KEY=FERRUMWINDOW SECRET=window-secret-key-0123456789
 STORE_DATA="$work/store" STORE_ACCESS_KEY="$KEY" STORE_SECRET_KEY="$SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$SPORT \
   STORE_ARGS="-master.port=$((SPORT + 10)) -volume.port=$((SPORT + 11)) -filer.port=$((SPORT + 12)) -master.volumeSizeLimitMB=64" \
-  sh "$ROOT/deploy/store/start.sh" >"$work/store.log" 2>&1 &
+  sh "$ROOT/reference/store/start.sh" >"$work/store.log" 2>&1 &
 STORE_PID=$!
 for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$SPORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user "$KEY:$SECRET" "http://127.0.0.1:$SPORT/ferrum" >/dev/null || fail "making the store's bucket"

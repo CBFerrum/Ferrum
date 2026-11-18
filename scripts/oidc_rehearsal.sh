@@ -73,7 +73,7 @@ mkdir -p "$work/files"
 S_PORT=$((PORT + 2)) S_KEY=FERRUMOIDC S_SECRET=oidc-secret-key-0123456789
 STORE_DATA="$work/store" STORE_ACCESS_KEY="$S_KEY" STORE_SECRET_KEY="$S_SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$S_PORT \
   STORE_ARGS="-master.port=$((S_PORT + 10)) -volume.port=$((S_PORT + 11)) -filer.port=$((S_PORT + 12)) -master.volumeSizeLimitMB=64" \
-  sh "$ROOT/deploy/store/start.sh" >"$work/store.log" 2>&1 &
+  sh "$ROOT/reference/store/start.sh" >"$work/store.log" 2>&1 &
 STORE_PID=$!
 for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S_PORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user "$S_KEY:$S_SECRET" "http://127.0.0.1:$S_PORT/ferrum" >/dev/null || fail "making the store's bucket"

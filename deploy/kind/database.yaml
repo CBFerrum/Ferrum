@@ -1,0 +1,8 @@
+# The example database as CI deploys it to kind: smaller than the example's own (reference/kubernetes/database/values.yaml),
+# and the role may hold 450, so that every preset and the migrate Job fit (values.yaml says the same to the chart).
+database:
+  connectionLimit: 450
+  storageSize: 5Gi
+  walStorageSize: 2Gi
+  resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {memory: 1Gi}}
+  parameters: {max_connections: "470", shared_buffers: 128MB, effective_cache_size: 512MB, work_mem: 4MB}
