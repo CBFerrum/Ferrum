@@ -173,7 +173,7 @@ line entity, a ledger and a custom entity (whose tables come with its definition
 are in follows the child (`ChildInfo.table`), so load, save, filters, scopes, erasure, merge links and the delete
 guard read them as they read a custom entity's lines. The self foreign key on `parent_id` could not hold a parent
 in a package's table, so it gave way to a statement trigger on `custom_record` doing what its cascade did
-(migration `20261110000010_packaged_lines.sql`, nothing rewritten). **Deleting a package's record** deletes the
+(in the kernel baseline migration). **Deleting a package's record** deletes the
 `custom_record` rows under its id, also while the customization is off. **Uninstalling the package** keeping its
 data keeps them, as it keeps its own rows; deleting its data deletes exactly the `custom_record` rows under its
 entities' records, never the table (which holds every custom record of the workspace), and leaves the package's

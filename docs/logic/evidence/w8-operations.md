@@ -135,8 +135,8 @@ at the site as its run began waiting for it left both waiting forever. Each tran
 uncommitted row. Accepting an event and registering a wait now take one advisory lock per workspace, event and
 correlation. `process_it` runs sixty such races, and the mutant `signal-and-wait-unlocked` is caught.
 
-**Attempts (FLC-OPS-001).** Every invocation of a step is counted with how it went (`logic_attempt`, migration
-20261108000006), and the run's page shows how often each step was tried and its last outcome (Frontend
+**Attempts (FLC-OPS-001).** Every invocation of a step is counted with how it went (`logic_attempt`, the kernel
+baseline migration), and the run's page shows how often each step was tried and its last outcome (Frontend
 CBFerrum/Ferrum-Frontend#58). Mutant `tries-not-counted`.
 
 **Moves inside blocks (FLC-MIG-004).**

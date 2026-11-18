@@ -4,7 +4,8 @@
 #
 #   scripts/window_rehearsal.sh <older commit> ferrum_windowrehearsal_<name>
 #
-# The older build: the tree of <older commit> (a commit of main that has the window, before the newest migration), read
+# The older build: the tree of <older commit> (a commit of main that has the window and the kernel's one baseline
+# migration, before the newest change to it), read
 # with `git archive` into WINDOW_WORK and built there in a directory of its own, offline, with the core packages only and
 # BUILD_DATE set to the commit's date as the image build does. Its build directory is deleted afterwards and the binary
 # kept, so the next run reuses it. The build takes about 3 GB while it runs: it is refused with less than 8 GB free.

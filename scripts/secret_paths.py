@@ -29,10 +29,7 @@ BASELINE = ROOT / "docs/registry/secret-paths.md"
 VAULT = ("crates/kernel/src/vault/",)
 VAULT_TX = (
     "crates/kernel/src/db.rs",
-    "crates/kernel/migrations/20261119000201_vault.sql",
-    "crates/kernel/migrations/20261119000202_vault_event.sql",
-    "crates/kernel/migrations/20261119000401_vault_transfer.sql",
-    "crates/kernel/migrations/20261119000801_vault_managed.sql",
+    "crates/kernel/migrations/20261201000001_baseline.sql",
 )
 # Apps in this workspace (the rest come from their own repositories): their packages are compiled in as apps.
 WORKSPACE_APPS = {"ferrum-studio", "ferrum-ops"}

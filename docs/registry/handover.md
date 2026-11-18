@@ -479,7 +479,7 @@ outside the workspace, which it is.
 | Where | What |
 |---|---|
 | This PR | `/metrics` counts the submits, cancels, actions and workflow steps that did not go through, per package, entity and operation (FERRUM-OPS-009): `refused` by their own rules (a posting with no account to post to, a stale version) or a `fault`, which is also logged with its cause. Who may not do something, or a record that is not there, is not the operation failing and is not counted. Workspaces name their own workflow steps, so label values are quoted as the exposition format says |
-| This PR: role pairs | A grant already held is no new grant: an identity provider re-syncing someone who held both roles of a pair before it was declared is no longer refused (migration `20261105000004_role_conflicts_held.sql`); granting either afresh still is |
+| This PR: role pairs | A grant already held is no new grant: an identity provider re-syncing someone who held both roles of a pair before it was declared is no longer refused; granting either afresh still is |
 | This PR: history | The platform's audit payloads other than record diffs were read (FERRUM-PRIVACY-007): ids, flags, settings, hosts and reasons, except a passkey's name, written when its owner added it. Erasing a person now takes their passkeys' names out of that history, also of passkeys removed since, keeping each event's hash. A support grant keeps its grantee's name, an outside party's |
 
 **Evidence:**

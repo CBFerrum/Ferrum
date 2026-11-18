@@ -293,8 +293,8 @@ pub(crate) async fn finish(db: &Db) -> Result<()> {
     }
 }
 
-/// The kernel's last migration of the vault (its tables, then its record of the installation's own events).
-const MIGRATION: i64 = 20261119000202;
+/// The kernel's baseline migration, which makes the vault's tables with the rest.
+const MIGRATION: i64 = 20261201000001;
 
 /// Whether this database is migrated as far as the vault: its migration recorded, and with it every table it and the
 /// vault's module use (the workspaces', the audit trail's, the jobs'). A database not yet migrated (a new one, an

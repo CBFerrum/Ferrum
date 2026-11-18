@@ -22,7 +22,7 @@ progress after a lesson changes.
 - **Workspaces stay apart.** Every entity table forces row-level security: a statement in one
   workspace's transaction reads and writes that workspace's rows only, whatever its SQL says.
 - **Held records stay.** A record under a legal hold is not deleted by any statement: every entity
-  table has the `ferrum_held` guard (migration `20261105000006`).
+  table has the `ferrum_held` guard (the kernel baseline migration).
 - **Actions are on the record.** The kernel audits every document action (`action:<name>`, with
   its parameters) before its handler runs, so what an action's handler then writes directly is
   under that entry.

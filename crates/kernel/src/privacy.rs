@@ -52,7 +52,7 @@ const MAX_RETAINED: i64 = 20_000;
 pub const TOOL_RESULT_DAYS: i32 = 90;
 
 /// The assistant's messages that hold a tool result not blanked yet: the same text as the index
-/// `assistant_message_results` (kernel migration 20261031000050), so that it is used.
+/// `assistant_message_results` (kernel baseline migration), so that it is used.
 const HOLDS_RESULTS: &str =
     r#"role = 'user' and jsonb_path_exists(content, '$[*] ? (@.type == "tool_result" && !(@.content[0].text starts with "(removed"))')"#;
 
