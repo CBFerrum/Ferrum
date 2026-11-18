@@ -16,7 +16,8 @@
 #           XMLSEC_PREFIX: an xmlsec1 install to build against instead of the one on PATH (e.g. 1.2.37, the image's,
 #           built from source); its OpenSSL is taken from it unless OPENSSL_DIR is set. When the xmlsec1 differs from
 #           the last run's, samael is built again: its bindings come from the headers, and nothing else tells cargo.
-#   audit   cargo audit (cargo install cargo-audit --locked) and the job's scripts (pyyaml, helm, node).
+#   audit   cargo audit (cargo install cargo-audit --locked), cargo deny check (cargo install cargo-deny --locked; deny.toml:
+#           licences, sources, duplicate versions) and the job's scripts (pyyaml, helm, node).
 #   move    the server without apps, and scripts/move_rehearsal.sh on databases of its own: an installation moved, one
 #           workspace moved between two running servers and back, a sandbox, all as the servers' own role with no grant
 #           on session_replication_role (D7).
@@ -244,6 +245,7 @@ job_saml() {
 
 job_audit() {
   if cargo audit --version >/dev/null 2>&1; then run "audit cargo audit" cargo audit; else report "audit cargo audit" 1 0 /dev/null "cargo-audit is not installed (cargo install cargo-audit --locked)"; fi
+  if cargo deny --version >/dev/null 2>&1; then run "audit cargo deny (licences, sources, duplicate versions; deny.toml)" cargo deny check; else skip "audit cargo deny" "cargo-deny (cargo install cargo-deny --locked)"; fi
   local base
   base=$(git merge-base HEAD origin/main 2>/dev/null || git rev-parse HEAD)
   run "audit registry, accepted advisories and generated documents" sh -c 'python3 scripts/registry.py check && python3 scripts/test_registry.py && python3 scripts/test_manifests.py && python3 scripts/mutants.py --check && python3 scripts/test_baseline.py && python3 scripts/test_mutation_paths.py && python3 scripts/test_builder_inventory.py'
