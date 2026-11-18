@@ -1,5 +1,6 @@
 //! Being called (BD-30): an inbound address per connection (`POST /api/connections/inbound/{id}`). The caller is
-//! verified as the connection describes (a signature over the raw body with a timestamp, or a secret both sides hold),
+//! verified as the connection describes (a signature over the raw body with a timestamp, a secret both sides hold in a
+//! header, or one in the inbound address's query),
 //! a replay is refused, and what is accepted is recorded once and processed once by a job: mapped to "find a record of
 //! this entity by this key and change it, or make it", or handed to an app registered for the connection.
 //!
@@ -15,7 +16,7 @@ use crate::jobs::{Job, JobHandler, NewJob};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +28,8 @@ const DEFAULT_MAX_BYTES: u64 = 256 << 10;
 const MAX_BYTES: u64 = 1 << 20;
 const DEFAULT_WINDOW_SECS: i64 = 300;
 const MAX_WINDOW_SECS: i64 = 3600;
+/// The bounds of [`Inbound::repeats_after_secs`].
+const REPEATS: std::ops::RangeInclusive<u32> = 10..=3600;
 /// The most items one call or one page maps.
 pub(crate) const MAX_ITEMS: usize = 500;
 /// Inbound calls refused because they named no connection that takes them.
@@ -105,9 +108,47 @@ pub enum Verify {
         prefix: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window_secs: Option<i64>,
+        #[serde(default, skip_serializing_if = "is_default")]
+        algorithm: Algorithm,
+        /// One header of `key=value` pairs (`t=…,v1=…,v1=…`) instead of `timestamp_header` and the signature alone: the
+        /// timestamp is `parts.timestamp`'s value, and any `parts.signature` value that verifies passes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parts: Option<Parts>,
     },
     /// A secret both sides hold, sent as it is in `header`.
     Token { header: String, secret: String },
+    /// A secret both sides hold, in the inbound address's query (`?{param}=…`, `{{ connection.inbound_url }}`), for a
+    /// service that signs nothing.
+    Query {
+        param: String,
+        secret: String,
+        /// A query secret signs nothing, so a service that sends the same notice again (Mollie's `id=tr_…`) would be
+        /// refused as a replay forever: with this, when no delivery id is named, the same body is taken again after this
+        /// many seconds (10 to 3600). Here, not on [`Inbound`], so that apps building an `Inbound` keep compiling.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeats_after_secs: Option<u32>,
+    },
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// The hash a signature's HMAC is made with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Algorithm {
+    #[default]
+    Sha256,
+    Sha512,
+}
+
+/// The names of the timestamp and of the signature in a header of `key=value` pairs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Parts {
+    pub timestamp: String,
+    pub signature: String,
 }
 
 /// A payload, or each item of it, onto records: the one record of `entity` whose `by` fields hold the values given is
@@ -224,11 +265,23 @@ impl Mapping {
 impl Inbound {
     pub(crate) fn problem(&self, apps: &[String]) -> Option<String> {
         let (header, secret) = match &self.verify {
-            Verify::Signature { header, secret, timestamp_header, window_secs, .. } => {
+            Verify::Signature { header, secret, timestamp_header, window_secs, parts, .. } => {
                 if let Some(p) = timestamp_header.as_deref().and_then(super::header_problem) {
                     return Some(p);
                 }
-                if timestamp_header.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {
+                if let Some(p) = parts {
+                    if timestamp_header.is_some() {
+                        return Some("inbound.verify: parts carry the timestamp; timestamp_header is not given with them".into());
+                    }
+                    if p.timestamp.is_empty()
+                        || p.signature.is_empty()
+                        || p.timestamp == p.signature
+                        || [&p.timestamp, &p.signature].iter().any(|n| n.contains([',', '=']))
+                    {
+                        return Some("inbound.verify.parts names the timestamp's key and the signature's key, two different names".into());
+                    }
+                }
+                if timestamp_header.is_none() && parts.is_none() && self.delivery_header.is_none() && self.delivery_at.is_none() {
                     return Some("inbound: a signature without a timestamp names the caller's delivery id (delivery_header or delivery_at)".into());
                 }
                 if window_secs.is_some_and(|w| !(1..=MAX_WINDOW_SECS).contains(&w)) {
@@ -237,8 +290,17 @@ impl Inbound {
                 (header, secret)
             }
             Verify::Token { header, secret } => (header, secret),
+            Verify::Query { param, secret, repeats_after_secs } => {
+                if repeats_after_secs.is_some_and(|r| !REPEATS.contains(&r)) {
+                    return Some(format!("inbound.verify.repeats_after_secs is {} to {}", REPEATS.start(), REPEATS.end()));
+                }
+                if param.is_empty() || param.len() > 64 || !param.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)) {
+                    return Some("inbound.verify.param is a query parameter's name (letters, digits, _ - .)".into());
+                }
+                (&String::new(), secret)
+            }
         };
-        if let Some(p) = super::header_problem(header) {
+        if let Some(p) = Some(header).filter(|h| !h.is_empty()).and_then(|h| super::header_problem(h)) {
             return Some(p);
         }
         if secret.is_empty() {
@@ -261,41 +323,64 @@ impl Inbound {
     }
 }
 
-/// HMAC-SHA256 of `parts` under `secret`, checked against `given` (hex or base64) in constant time.
-fn signed(secret: &str, parts: &[&[u8]], given: &str, encoding: Encoding) -> bool {
+/// The HMAC of `parts` under `secret` with `algorithm`, checked against `given` (hex or base64) in constant time.
+fn signed(secret: &str, parts: &[&[u8]], given: &str, encoding: Encoding, algorithm: Algorithm) -> bool {
     use base64::Engine as _;
-    use hmac::Mac;
-    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else { return false };
-    for p in parts {
-        mac.update(p);
-    }
     let given = match encoding {
-        Encoding::Hex => hex::decode(given.trim()),
-        Encoding::Base64 => base64::engine::general_purpose::STANDARD.decode(given.trim()).map_err(|_| hex::FromHexError::InvalidStringLength),
+        Encoding::Hex => hex::decode(given.trim()).ok(),
+        Encoding::Base64 => base64::engine::general_purpose::STANDARD.decode(given.trim()).ok(),
     };
-    given.is_ok_and(|g| mac.verify_slice(&g).is_ok())
+    let Some(given) = given else { return false };
+    fn check<M: hmac::Mac + hmac::digest::KeyInit>(secret: &str, parts: &[&[u8]], given: &[u8]) -> bool {
+        let Ok(mut mac) = <M as hmac::digest::KeyInit>::new_from_slice(secret.as_bytes()) else { return false };
+        for p in parts {
+            mac.update(p);
+        }
+        mac.verify_slice(given).is_ok()
+    }
+    match algorithm {
+        Algorithm::Sha256 => check::<hmac::Hmac<Sha256>>(secret, parts, &given),
+        Algorithm::Sha512 => check::<hmac::Hmac<Sha512>>(secret, parts, &given),
+    }
 }
 
 /// Whether the call is the caller the connection describes, and when; the id that stands for its delivery.
-fn verified(conn: &Loaded, inbound: &Inbound, header: &dyn Fn(&str) -> Option<String>, body: &[u8], now: i64) -> Option<String> {
+fn verified(
+    conn: &Loaded,
+    inbound: &Inbound,
+    query: &BTreeMap<String, String>,
+    header: &dyn Fn(&str) -> Option<String>,
+    body: &[u8],
+    now: i64,
+) -> Option<String> {
     let secret = |name: &str| conn.secrets.get(name).filter(|s| !s.is_empty()).cloned();
+    let fresh = |ts: &str, window: &Option<i64>| ts.parse::<i64>().ok().is_some_and(|when| (now - when).abs() <= window.unwrap_or(DEFAULT_WINDOW_SECS));
     let stands_for = match &inbound.verify {
-        Verify::Signature { header: h, secret: s, timestamp_header, encoding, prefix, window_secs } => {
+        Verify::Signature { header: h, secret: s, timestamp_header, encoding, prefix, window_secs, algorithm, parts } => {
             let secret = secret(s)?;
-            let what = match timestamp_header {
-                Some(th) => {
-                    let ts = header(th)?.trim().to_string();
-                    let when: i64 = ts.parse().ok()?;
-                    if (now - when).abs() > window_secs.unwrap_or(DEFAULT_WINDOW_SECS) {
+            let (what, given) = match (parts, timestamp_header) {
+                // `t=…,v1=…,v1=…`: split on `,`, each piece on its first `=`.
+                (Some(p), _) => {
+                    let value = header(h)?;
+                    let pairs: Vec<(&str, &str)> = value.split(',').filter_map(|piece| piece.trim().split_once('=')).collect();
+                    let ts = pairs.iter().find(|(k, _)| *k == p.timestamp).map(|(_, v)| v.trim().to_string())?;
+                    if !fresh(&ts, window_secs) {
                         return None;
                     }
-                    [ts.as_bytes(), b".", body].concat()
+                    let given: Vec<String> = pairs.iter().filter(|(k, _)| *k == p.signature).map(|(_, v)| v.trim().to_string()).collect();
+                    ([ts.as_bytes(), b".", body].concat(), given)
                 }
-                None => body.to_vec(),
+                (None, Some(th)) => {
+                    let ts = header(th)?.trim().to_string();
+                    if !fresh(&ts, window_secs) {
+                        return None;
+                    }
+                    ([ts.as_bytes(), b".", body].concat(), vec![header(h)?])
+                }
+                (None, None) => (body.to_vec(), vec![header(h)?]),
             };
-            let given = header(h)?;
-            let given = given.strip_prefix(prefix.as_str()).unwrap_or(&given).to_string();
-            if !signed(&secret, &[&what], &given, *encoding) {
+            let ok = given.iter().any(|g| signed(&secret, &[&what], g.strip_prefix(prefix.as_str()).unwrap_or(g), *encoding, *algorithm));
+            if !ok {
                 return None;
             }
             hex::encode(Sha256::digest(&what))
@@ -308,14 +393,31 @@ fn verified(conn: &Loaded, inbound: &Inbound, header: &dyn Fn(&str) -> Option<St
             }
             hex::encode(Sha256::digest(body))
         }
+        Verify::Query { param, secret: s, .. } => {
+            let secret = secret(s)?;
+            // Missing and wrong are refused alike, and compared in constant time.
+            let given = query.get(param).map(String::as_str).unwrap_or_default();
+            if !crate::messages::subtle_eq(given.as_bytes(), secret.as_bytes()) {
+                return None;
+            }
+            hex::encode(Sha256::digest(body))
+        }
     };
-    Some(stands_for)
+    let repeats = match &inbound.verify {
+        Verify::Query { repeats_after_secs, .. } => *repeats_after_secs,
+        _ => None,
+    };
+    Some(match repeats {
+        // The same notice again is taken again once its window has passed.
+        Some(r) if inbound.delivery_header.is_none() && inbound.delivery_at.is_none() => format!("{stands_for}:{}", now.div_euclid(i64::from(r.max(1)))),
+        _ => stands_for,
+    })
 }
 
 impl Kernel {
     /// A call from outside to connection `id` (no session): verified, refused when replayed, recorded, and queued to be
-    /// processed once. Every refusal is the same `Unauthorized`.
-    pub async fn connection_inbound(&self, id: Uuid, headers: &BTreeMap<String, String>, body: &[u8]) -> Result<Value> {
+    /// processed once. Every refusal is the same `Unauthorized`. `query`: the inbound address's query parameters.
+    pub async fn connection_inbound(&self, id: Uuid, headers: &BTreeMap<String, String>, query: &BTreeMap<String, String>, body: &[u8]) -> Result<Value> {
         let mut tx = self.db.system_tx().await?;
         let tenant: Option<Uuid> = sqlx::query_scalar("select tenant_id from conn where id = $1 and enabled").bind(id).fetch_optional(&mut *tx).await?;
         tx.commit().await?;
@@ -329,7 +431,7 @@ impl Kernel {
         };
         let header = |h: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(h)).map(|(_, v)| v.trim().to_string());
         let fits = body.len() as u64 <= inbound.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
-        let stands_for = if fits { verified(&conn, &inbound, &header, body, chrono::Utc::now().timestamp()) } else { None };
+        let stands_for = if fits { verified(&conn, &inbound, query, &header, body, chrono::Utc::now().timestamp()) } else { None };
         let Some(stands_for) = stands_for else { return self.refuse_inbound(&conn).await };
         let form = header("content-type").is_some_and(|c| c.starts_with("application/x-www-form-urlencoded"));
         let payload: Value = if form {
@@ -347,7 +449,7 @@ impl Kernel {
             .filter(|d| !d.is_empty() && d.len() <= 200)
             .unwrap_or(stands_for);
         // Signed without a timestamp: the body is taken once too, whatever delivery id comes beside it.
-        let untimed = matches!(inbound.verify, Verify::Signature { timestamp_header: None, .. });
+        let untimed = matches!(inbound.verify, Verify::Signature { timestamp_header: None, parts: None, .. });
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
         let fresh =
             sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload, body_digest) values ($1, $2, $3, $4, $5) on conflict do nothing")
@@ -566,12 +668,12 @@ mod tests {
             }
         };
         let now = 1_800_000_000;
-        assert!(verified(&c, &i, &with(now, sign(now, body)), body, now).is_some());
-        assert!(verified(&c, &i, &with(now - 299, sign(now - 299, body)), body, now).is_some(), "within the window");
-        assert!(verified(&c, &i, &with(now - 301, sign(now - 301, body)), body, now).is_none(), "stale");
-        assert!(verified(&c, &i, &with(now, sign(now, br#"{"a":2}"#)), body, now).is_none(), "another body");
-        assert!(verified(&c, &i, &with(now, sign(now - 1, body)), body, now).is_none(), "another time");
-        assert!(verified(&c, &i, &|_: &str| None, body, now).is_none(), "unsigned");
+        assert!(verified(&c, &i, &BTreeMap::new(), &with(now, sign(now, body)), body, now).is_some());
+        assert!(verified(&c, &i, &BTreeMap::new(), &with(now - 299, sign(now - 299, body)), body, now).is_some(), "within the window");
+        assert!(verified(&c, &i, &BTreeMap::new(), &with(now - 301, sign(now - 301, body)), body, now).is_none(), "stale");
+        assert!(verified(&c, &i, &BTreeMap::new(), &with(now, sign(now, br#"{"a":2}"#)), body, now).is_none(), "another body");
+        assert!(verified(&c, &i, &BTreeMap::new(), &with(now, sign(now - 1, body)), body, now).is_none(), "another time");
+        assert!(verified(&c, &i, &BTreeMap::new(), &|_: &str| None, body, now).is_none(), "unsigned");
         // Without a timestamp: the body alone.
         let (c, i) = conn(json!({"test": true, "inbound": {"verify": {"type": "signature", "header": "x-sig", "secret": "hook", "encoding": "base64"},
                                   "delivery_header": "x-id", "map": {"entity": "X", "by": {"a": "item.a"}}}}));
@@ -582,15 +684,18 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
         };
         let sig = body_sig(body);
-        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), body, now).is_some());
-        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| sig.clone()), br#"{"a":2}"#, now).is_none(), "another body");
-        assert!(verified(&c, &i, &|h: &str| (h == "x-sig").then(|| body_sig(b"1.{\"a\":1}")), body, now).is_none(), "a timestamped signature");
+        assert!(verified(&c, &i, &BTreeMap::new(), &|h: &str| (h == "x-sig").then(|| sig.clone()), body, now).is_some());
+        assert!(verified(&c, &i, &BTreeMap::new(), &|h: &str| (h == "x-sig").then(|| sig.clone()), br#"{"a":2}"#, now).is_none(), "another body");
+        assert!(
+            verified(&c, &i, &BTreeMap::new(), &|h: &str| (h == "x-sig").then(|| body_sig(b"1.{\"a\":1}")), body, now).is_none(),
+            "a timestamped signature"
+        );
         let (c, i) = conn(
             json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "hook"}, "map": {"entity": "X", "by": {"a": "item.a"}}}}),
         );
-        assert!(verified(&c, &i, &|_: &str| Some("whsec-1234".into()), body, now).is_some());
-        assert!(verified(&c, &i, &|_: &str| Some("whsec-1235".into()), body, now).is_none());
-        assert!(verified(&c, &i, &|_: &str| Some(String::new()), body, now).is_none());
+        assert!(verified(&c, &i, &BTreeMap::new(), &|_: &str| Some("whsec-1234".into()), body, now).is_some());
+        assert!(verified(&c, &i, &BTreeMap::new(), &|_: &str| Some("whsec-1235".into()), body, now).is_none());
+        assert!(verified(&c, &i, &BTreeMap::new(), &|_: &str| Some(String::new()), body, now).is_none());
     }
 
     #[test]

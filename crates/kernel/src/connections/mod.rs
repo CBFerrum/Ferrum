@@ -115,6 +115,10 @@ pub struct Description {
     /// ... and these apps (packages), through [`call`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
+    /// Only the listed `apps` call it: never the system, an administrator or a role (a payment provider: money moves only
+    /// through its app's checks). An administrator's "try" runs only its operations that change nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclusive: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub operations: BTreeMap<String, Operation>,
     /// What it takes from outside, on its inbound address (BD-30).
@@ -1016,6 +1020,13 @@ pub(crate) struct Answer {
 }
 
 impl Answer {
+    /// No answer: what stands for one when a call made earlier is answered from its record.
+    fn none() -> Answer {
+        Answer { status: 0, body: Value::Null, headers: vec![], url: reqwest::Url::parse("https://none.invalid/").expect("a URL"), raw: vec![] }
+    }
+}
+
+impl Answer {
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(h, _)| h.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
@@ -1427,11 +1438,53 @@ pub async fn call(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<
     k.call_connection(ctx, app, c).await
 }
 
+/// What a money caller needs of a call's answer: whether a request left the server (`sent`), the service's status, the
+/// mapped result when it answered as described, whether to try again later (and when), and why not.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct CallAnswer {
+    pub sent: bool,
+    pub status: Option<u16>,
+    pub result: Option<Value>,
+    pub later: bool,
+    pub wait: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// [`call`], answered as [`CallAnswer`]: `Err` only for the platform's own failures (its database), never for what the
+/// service or the connection's checks said.
+pub async fn call_answer(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<CallAnswer> {
+    k.call_answered(ctx, app, c).await
+}
+
+/// `app` holds connection `connection_id` for `reason`: deleting it is refused, naming both, until [`release`].
+pub async fn hold(tx: &mut Tx, tenant: Uuid, connection_id: Uuid, app: &str, reason: &str) -> Result<()> {
+    sqlx::query("insert into conn_hold (tenant_id, conn_id, app, reason) values ($1, $2, $3, $4) on conflict do nothing")
+        .bind(tenant)
+        .bind(connection_id)
+        .bind(app)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Ends `app`'s hold for `reason`.
+pub async fn release(tx: &mut Tx, tenant: Uuid, connection_id: Uuid, app: &str, reason: &str) -> Result<()> {
+    sqlx::query("delete from conn_hold where tenant_id = $1 and conn_id = $2 and app = $3 and reason = $4")
+        .bind(tenant)
+        .bind(connection_id)
+        .bind(app)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 /// Whether `ctx` (as `app`, when one calls) may use the connection.
 pub(crate) fn may_use(ctx: &Ctx, app: Option<&str>, desc: &Description) -> Result<()> {
     let ok = match app {
         Some(app) => desc.apps.iter().any(|a| a == app),
-        None => ctx.is_system || ctx.is_admin || desc.roles.iter().any(|r| ctx.has_role(r)),
+        None => !desc.exclusive && (ctx.is_system || ctx.is_admin || desc.roles.iter().any(|r| ctx.has_role(r))),
     };
     if ok { Ok(()) } else { Err(Error::Forbidden(format!("{} may not use this connection", app.unwrap_or("you")))) }
 }
@@ -1444,6 +1497,35 @@ impl Kernel {
     }
 
     async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
+        // Boxed: an app's future that awaits a call stays within the compiler's depth for layouts.
+        let (outcome, _, _) = Box::pin(self.call_outcome(ctx, app, c)).await?;
+        match outcome {
+            Outcome::Ok(result, _) => Ok(result),
+            Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
+            Outcome::Later(why, _) => Err(Error::Unavailable(why)),
+            Outcome::No(why) => Err(Error::invalid(why)),
+        }
+    }
+
+    async fn call_answered(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<CallAnswer> {
+        let (outcome, status, sent) = match Box::pin(self.call_outcome(ctx, app, c)).await {
+            Ok(o) => o,
+            // Refused before anything was sent: the connection's checks, its inputs, its rights, a key in use.
+            Err(e @ (Error::Db(_) | Error::Internal(_))) => return Err(e),
+            Err(Error::RetryAfter(why, secs)) => (Outcome::Later(why, Some(secs)), None, false),
+            Err(Error::Unavailable(why)) => (Outcome::Later(why, None), None, false),
+            Err(e) => (Outcome::No(e.to_string()), None, false),
+        };
+        Ok(match outcome {
+            Outcome::Ok(result, _) => CallAnswer { sent, status, result: Some(result), ..Default::default() },
+            Outcome::Later(why, wait) => CallAnswer { sent, status, later: true, wait, error: Some(why), ..Default::default() },
+            Outcome::No(why) => CallAnswer { sent, status, error: Some(why), ..Default::default() },
+        })
+    }
+
+    /// One call made, as `call` and `call_answer` both make it: the outcome, the status the service answered, and whether
+    /// a request left the server.
+    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<(Outcome, Option<u16>, bool)> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
@@ -1476,7 +1558,8 @@ impl Kernel {
             held = Some(self.hold_key(&conn, &c.operation, key).await?.ok_or_else(|| Error::RetryAfter(format!("the call {key} is being made"), 5))?);
             if let Some((was, result)) = self.done_before(&conn, &c.operation, key).await? {
                 return if was == given {
-                    Ok(result)
+                    // Made before under this key: what it answered then.
+                    Ok((Outcome::Ok(result, Box::new(Answer::none())), None, true))
                 } else {
                     Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
                 };
@@ -1490,15 +1573,20 @@ impl Kernel {
         let about = c.entity.clone().zip(c.record);
         let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
         let public = self.public_files(ctx, &conn, &c.operation, (&inputs, key), about, more).await?;
-        let outcome = if more.steps.is_empty() {
+        let (outcome, status, sent) = if more.steps.is_empty() {
             let extra = Extra { now: Some(clock), public: Some(&public.vars), ..Default::default() };
-            self.perform(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str())).await?
+            let (o, status, sent) =
+                Box::pin(self.perform_full(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str()))).await?;
+            // No status and a refusal: the guard or the request's making refused it before anything left.
+            let sent = sent && !(status.is_none() && matches!(o, Outcome::No(_)));
+            (o, status, sent)
         } else {
             let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, (&inputs, &public.vars), key, clock, about)).await?;
             if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
                 self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
             }
-            o
+            // Steps: some may have gone out whatever the end was.
+            (o, None, true)
         };
         if let Some(tx) = held {
             tx.commit().await?;
@@ -1507,12 +1595,22 @@ impl Kernel {
         if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
             self.end_public_files(conn.tenant, &public.ends).await?;
         }
-        match outcome {
-            Outcome::Ok(result, _) => Ok(result),
-            Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
-            Outcome::Later(why, _) => Err(Error::Unavailable(why)),
-            Outcome::No(why) => Err(Error::invalid(why)),
+        Ok((outcome, status, sent))
+    }
+
+    /// The `connection` a template reads: its name, id and inbound address (`inbound_url`, with the query secret for a
+    /// `Query` connection; masked wherever calls are logged or captured, as every secret value is). Without a public
+    /// address configured, `inbound_url` is the path alone.
+    fn connection_vars(&self, conn: &Loaded) -> Value {
+        let mut url = format!("{}/api/connections/inbound/{}", self.settings.callback_base().unwrap_or_default(), conn.id);
+        if let Some(inbound::Inbound { verify: inbound::Verify::Query { param, secret, .. }, .. }) = &conn.desc.inbound
+            && let Some(token) = conn.secrets.get(secret).filter(|t| !t.is_empty())
+        {
+            let mut u = reqwest::Url::parse("http://x/").expect("a URL");
+            u.query_pairs_mut().append_pair(param, token);
+            url = format!("{url}?{}", u.query().unwrap_or_default());
         }
+        json!({"name": conn.name, "id": conn.id, "inbound_url": url})
     }
 
     /// The result an earlier call with this key had, and its inputs' digest.
@@ -1930,7 +2028,7 @@ impl Kernel {
     ) -> Result<(Request, Vec<String>)> {
         let page = extra.page;
         let (now, today) = clock_vars(extra.now.unwrap_or_else(Utc::now));
-        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now, "today": today});
+        let mut vars = json!({"inputs": inputs, "secret": conn.secrets, "key": key, "now": now, "today": today, "connection": self.connection_vars(conn)});
         // The signed-in account and what its sign-in kept, read only when the operation's words name them.
         let said = serde_json::to_string(op).unwrap_or_default() + &serde_json::to_string(more).unwrap_or_default();
         if !bare && (said.contains("account") || said.contains("auth.")) {
@@ -2394,6 +2492,16 @@ impl Kernel {
     pub async fn delete_connection_def(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         admin_only(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // An app that holds it says why; turning it off stays possible (its calls wait, not sent, until it is on again).
+        let held: Option<(String, String)> =
+            sqlx::query_as("select app, reason from conn_hold where tenant_id = $1 and conn_id = $2 order by app, reason limit 1 for share")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some((app, reason)) = held {
+            return Err(Error::Conflict(format!("{app} holds this connection ({reason}): turn it off instead, or remove what {app} uses it for")));
+        }
         let n = sqlx::query("delete from conn where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(id).execute(&mut *tx).await?;
         crate::vault::kept::forget(&mut tx, &place(ctx.tenant, id)).await?;
         if n.rows_affected() == 0 {
@@ -2415,6 +2523,13 @@ impl Kernel {
         }
         if conn.desc.signs_in_with(operation) {
             return Err(Error::invalid(format!("{operation} is how {} signs in: it is not tried", conn.name)));
+        }
+        if conn.desc.exclusive && conn.desc.changes(operation) {
+            return Err(Error::Forbidden(format!(
+                "{} is called only by {}: {operation} changes something, so it is not tried here",
+                conn.name,
+                conn.desc.apps.join(", ")
+            )));
         }
         if conn.desc.changes(operation) && key.is_none_or(|k| k.trim().is_empty()) {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));

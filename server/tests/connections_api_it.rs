@@ -36,8 +36,8 @@ async fn serve(k: Arc<Kernel>, admin: Ctx) -> String {
     let app = Router::new()
         .route(
             "/api/connections/inbound/{id}",
-            post(|State(s): State<S>, Path(id): Path<Uuid>, h: HeaderMap, body: Bytes| async move {
-                inbound_answer(&s.0, &s.1, &h, id, &body).await.map_err(|e| e.into_response())
+            post(|State(s): State<S>, Path(id): Path<Uuid>, Query(q): Query<BTreeMap<String, String>>, h: HeaderMap, body: Bytes| async move {
+                inbound_answer(&s.0, &s.1, &h, &q, id, &body).await.map_err(|e| e.into_response())
             }),
         )
         .route(
@@ -122,6 +122,23 @@ async fn scenario() {
     assert_eq!(refused.0, 401, "a replay");
     assert_eq!(post(id, "tok-wrong", "d-2").await, refused, "a wrong token: the same answer");
     assert_eq!(post(Uuid::now_v7(), TOKEN, "d-3").await, refused, "an unknown address: the same answer");
+
+    // ── inbound_route_passes_the_query: a service that signs nothing proves itself by the secret in the address ──
+    let desc = json!({"test": true, "inbound": {"verify": {"type": "query", "param": "t", "secret": "token"},
+        "map": {"entity": "Alert", "by": {"external_id": "item.id"}, "set": {"title": "item.title"}}}});
+    let input: ConnectionInput =
+        serde_json::from_value(json!({"name": "notices", "label": "Notices", "description": desc, "secrets": {"token": TOKEN}, "enabled": true})).unwrap();
+    let notices = k.save_connection_def(&admin, None, &input).await.unwrap();
+    let noticed = |query: String, id: &'static str| {
+        let (http, base) = (http.clone(), base.clone());
+        async move {
+            let r = http.post(format!("{base}/api/connections/inbound/{notices}{query}")).json(&json!({"id": id, "title": "Paid"})).send().await.unwrap();
+            (r.status().as_u16(), r.text().await.unwrap())
+        }
+    };
+    assert_eq!(noticed(format!("?t={TOKEN}"), "N-1").await, (200, json!({"accepted": true}).to_string()));
+    assert_eq!(noticed("?t=tok-wrong".into(), "N-2").await, refused, "a wrong token in the query: the same answer");
+    assert_eq!(noticed(String::new(), "N-3").await, refused, "none: the same answer");
 
     // ── the callback goes nowhere: a page says how it went ──
     let page = http.get(format!("{base}/api/connections/callback?state=forged&code=x")).send().await.unwrap();
