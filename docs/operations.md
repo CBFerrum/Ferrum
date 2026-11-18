@@ -63,7 +63,7 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `bootstrap_token` | `FERRUM_BOOTSTRAP_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables `POST /api/tenants` with header `X-Ferrum-Bootstrap-Token`; empty disables it. |
 | `metrics_token` | `FERRUM_METRICS_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | `/metrics` answers only `Authorization: Bearer <token>`. Required in production: while none is set, `/metrics` answers nobody (`401`); in development and tests it is open without one. |
 | `migrate_at_start` | `FERRUM_MIGRATE_AT_START` | bool | `true` | installation, next start | Default `true`: the server migrates the database and syncs the schema as it starts. `false`: it changes no schema, checks that `ferrum task migrate` has brought the database to this build, and refuses to start, saying so, when it has not. The task does everything either way, and several at once are safe. Either way, on a database a newer build migrated, the server starts as a guest that changes nothing, or refuses (*Rolling back and the two-version window*). |
-| `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). The replica's own job workers and event loops hold at most a quarter of it and 8 more at once (15 of 30): the event dispatcher and the webhook sender take a quarter together, however much is queued. Below 11 they can hold it all and requests wait behind them; the server warns as it starts, and `ferrum task doctor` says so. |
+| `db_max_connections` | `FERRUM_DB_MAX_CONNECTIONS` | int | `30` | each pool, next start | Pool size per replica (default 30). The replica's own job workers and event loops hold at most a quarter of it and 10 more at once (17 of 30): the event dispatcher and the webhook sender take a quarter together, however much is queued. Below 14 they can hold it all and requests wait behind them; the server warns as it starts, and `ferrum task doctor` says so. |
 | `database_direct_url` | `FERRUM_DATABASE_DIRECT_URL` | text |  | secret: the environment | With a pooler: PostgreSQL itself, when `DATABASE_URL` is a connection pooler in transaction mode (PgBouncer): what needs one session for longer than a transaction goes here, the rest through the pooler. Empty (the default): `DATABASE_URL`, one pool as before. See "Deployment shapes", *Connection pooler*. A secret while the address holds the password. |
 | `database_read_url` | `FERRUM_DATABASE_READ_URL` | text |  | secret: the environment | A replica that reports and the reading of exports may use, while it is within the lag limit and has replayed what the primary had committed when the read began; otherwise they read from the primary. Empty (the default): none. See "Deployment shapes", *Read address*. A secret while the address holds the password. |
 | `database_direct_host` | `FERRUM_DATABASE_DIRECT_HOST` | text |  | installation, next start | With a pooler: PostgreSQL itself as `host` or `host:port` (5432 when no port is given), when `DATABASE_URL` is a connection pooler in transaction mode. What needs one session goes there, with `DATABASE_URL`'s role, password, database and TLS options. Empty (the default): `DATABASE_URL`. `FERRUM_DATABASE_DIRECT_URL`, when set, wins. Kept in the table, it is used only on `DATABASE_URL`'s own host or with the certificate and name checked (*Connection pooler*). See *Any PostgreSQL*. |
@@ -373,8 +373,11 @@ isolation, so the server refuses to start with them. CloudNativePG's `ferrum` ap
 the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist`, `citext` and `pg_trgm`, which a database owner can do.
 
-Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 6 (with a pool above 32, plus an eighth of it and 2): 4 for short side writes and the vault
-(document numbering) and 2 of Loco's own. Give the role a connection limit at least 20 below the database's
+Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 14: 4 for short side writes and the vault
+(document numbering; an eighth of the pool when that is more), 8 on the direct pool (the LISTEN loops, a session lock and
+apps' upkeep: 5 + 1 + 2) and 2 of Loco's own; 10 more where a read address is set. Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`: `ferrum`, `ferrum-side`,
+`ferrum-direct`, `ferrum-read`), so `select application_name, state, count(*) from pg_stat_activity group by 1, 2`
+tells them apart, and `ferrum task doctor` (`database.connections`) states the sum. Give the role a connection limit at least 20 below the database's
 `max_connections`, so that however far things scale there are connections left for an administrator,
 replication and a migration: PostgreSQL enforces that one, and `ferrum task doctor` warns without it.
 
@@ -383,18 +386,19 @@ What one replica holds, with the defaults (counted from the code on 14 November 
 
 | What | Connects to | At the most | When |
 |---|---|---|---|
-| The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work. Background work holds at most a quarter of it and 8 more (15): 4 job workers, the event dispatcher and the webhook sender a quarter together (7), the schedule scanner, the OpenID sweep and hourly maintenance 4. Without a direct address the listeners and session locks below come out of it |
-| The side pool | `DATABASE_URL` | 4 (an eighth of the pool when that is more: 8 with a pool of 64) | Short writes while a request's own transaction is open (numbering), and the vault's verbs; idle ones close after a minute |
+| The pool | `DATABASE_URL` | `FERRUM_DB_MAX_CONNECTIONS` (30) | Requests, background work (`application_name` `ferrum`). Background work holds at most a quarter of it and 10 more (17): 4 job workers, the event dispatcher and the webhook sender a quarter together (7), the schedule scanner, the OpenID sweep and hourly maintenance 4, apps' upkeep at once 2 (its working transactions; its lock is below). The listeners and session locks below are never in it, whatever the address |
+| The side pool (`ferrum-side`) | `DATABASE_URL` | 4 (an eighth of the pool when that is more: 8 with a pool of 64) | Short writes while a request's own transaction is open (numbering), and the vault's verbs; idle ones close after a minute |
 | Loco's own pool | `DATABASE_URL` | 2 | Opened at start to check Loco's migrations (there are none); nothing else uses it. Safe through a pooler: it keeps no session |
 | The settings' first read | `DATABASE_URL` | 2 | At start, before the server's own pools open: reads the `setting` table (*Settings in the database*), then closes. Safe through a pooler |
-| Listeners: metadata, users, plugin sockets, live updates, co-editing | the direct address | 5 | One each, for as long as the replica runs |
-| Session locks: apps' upkeep, app stores' revocations | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
+| Listeners: metadata, users, plugin sockets, live updates, co-editing (`ferrum-direct`) | the direct address, which is `DATABASE_URL` itself when no other is set: a pool of its own either way, opened when first used | 5 | One each, for as long as the replica runs |
+| Session locks: apps' upkeep, app stores' revocations (`ferrum-direct`) | the direct address | 3 | One per app whose upkeep runs (`FERRUM_UPKEEP_CONCURRENCY`, 2), one for revocations, while each runs |
 | At start: the two-version window's lock, then the migrations' and the schema sync's locks | the direct address | 2 | Before the replica serves or works: the window's lock is a connection outside every pool, the others one at a time |
 | The Temporal worker (`TEMPORAL_ADDRESS`) | none: it talks to Temporal | 0 | |
 | The region witness (`FERRUM_AUTHORITY_WITNESS_URL`) | another database | 2 there | When set |
 
 So, without a pooler (the direct address is `DATABASE_URL`, the default), a replica holds at most
-`FERRUM_DB_MAX_CONNECTIONS` + 6 = 36: the listeners and locks are inside its pool, and while it starts it
+`FERRUM_DB_MAX_CONNECTIONS` + 4 + 8 + 2 = 44, and an idle one 5 `ferrum-direct` connections and at most 2 `ferrum`:
+the listeners and locks have a pool of their own, so they take no connection a request could use. While it starts it
 holds a few connections of its pool and the window's lock, far fewer. With a pooler (`FERRUM_DATABASE_DIRECT_URL`
 set, see "Deployment shapes"), PostgreSQL sees 8 direct connections from each replica (5 listeners, 1 lock,
 2 upkeep: 6 + `FERRUM_UPKEEP_CONCURRENCY`; at most 3 while it starts), and the pool, the side pool and Loco's
@@ -411,6 +415,9 @@ its own, counted like a replica.
 CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
 the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
 the pooler in front.
+
+The manifests' figures here and in *Deployment shapes* (the chart's refusal and `check_manifests.py`) still add 6 beside
+the pool: they do not yet count the 8 of the direct pool of a replica that has no pooler.
 
 `python3 scripts/check_manifests.py` fails when those stop adding up, and when a workload sets `replicas`
 under an autoscaler: every apply would put the count back. The Helm chart's migrate Job is a process of its own

@@ -46,24 +46,28 @@ impl Finding {
 const STALE_EVENT_SECS: f64 = 300.0;
 /// Connections the application must leave for an administrator, replication and a migration.
 const RESERVED_CONNECTIONS: i32 = 20;
-/// The most connections of a pool of `pool_size` a replica's own work holds at once: one for each job worker, the events
-/// and webhooks it handles together ([`crate::db::background_connections`], a quarter of the pool), one each for the
-/// schedule scanner and the OpenID sweep, and two for hourly maintenance (its lock and the step it is at).
-pub fn background(pool_size: u32) -> u32 {
-    crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 4
+/// The most connections of the main pool (of `pool_size`) a replica's own work holds at once: one for each job worker,
+/// the events and webhooks it handles together ([`crate::db::background_connections`], a quarter of the pool), one each
+/// for the schedule scanner and the OpenID sweep, two for hourly maintenance (its lock and the step it is at) and one
+/// for each of `upkeep` apps' upkeep at once (the working transaction; its session lock and the LISTEN loops are on the
+/// direct pool, [`crate::db::Db::direct`]).
+pub fn background(pool_size: u32, upkeep: u32) -> u32 {
+    crate::jobs::WORKERS as u32 + crate::db::background_connections(pool_size) + 4 + upkeep
 }
 
-/// The smallest pool the replica's own work cannot fill ([`background`]): with fewer connections, requests wait behind
-/// its job workers and event loops. With four, a server could not answer its health check.
-pub const POOL_FLOOR: u32 = 11;
+/// The smallest pool the replica's own work cannot fill ([`background`]) with `upkeep` apps' upkeep at once: with fewer
+/// connections, requests wait behind its job workers and event loops. With four, a server could not answer its health
+/// check.
+pub fn pool_floor(upkeep: u32) -> u32 {
+    (1..).find(|p| background(*p, upkeep) < *p).unwrap_or(u32::MAX)
+}
 
-/// What one server replica opens besides its pool (`FERRUM_DB_MAX_CONNECTIONS`): the side pool's 4 and Loco's own 2
-/// (docs/operations.md, "Database role").
-pub const BESIDE_POOL: u32 = crate::db::SIDE_CONNECTIONS + 2;
-
-/// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]) and Loco's 2.
-pub fn beside_pool(pool_size: u32) -> u32 {
-    crate::db::side_connections(pool_size) + 2
+/// What a replica with a pool of `pool_size` opens beside it: its side pool ([`crate::db::side_connections`]), the
+/// direct pool's `direct` (the listeners, session locks and upkeep at once: [`crate::db::DbConfig::direct_connections`]),
+/// the read pool's `read` (none unless a read address is set) and Loco's own 2 (docs/operations.md, "Database role").
+/// Each pool is named in PostgreSQL's `pg_stat_activity` (`ferrum`, `ferrum-side`, `ferrum-direct`, `ferrum-read`).
+pub fn beside_pool(pool_size: u32, direct: u32, read: u32) -> u32 {
+    crate::db::side_connections(pool_size) + direct + read + 2
 }
 /// Read before anyone's workspace is known, so they hold a tenant's id without row-level security:
 /// the host a request came to, and slugs retired for good. Their migrations say why.
@@ -81,23 +85,30 @@ impl Kernel {
         } else {
             Finding::warning("database.version", format!("PostgreSQL {}, and Ferrum is tested on 17", version / 10000), "Upgrade PostgreSQL to 17.")
         });
-        out.push(if ((pool_size + beside_pool(pool_size)) * 2 + 20) as i32 <= max_connections {
-            Finding::ok("database.connections", format!("{max_connections} allowed, {pool_size} per replica"))
+        let direct = self.db.config.direct_connections.max(crate::db::LISTENERS + crate::db::DIRECT_LOCKS);
+        let upkeep = direct - crate::db::LISTENERS - crate::db::DIRECT_LOCKS;
+        let read = if self.db.read.is_some() { crate::replica::READ_CONNECTIONS } else { 0 };
+        let beside = beside_pool(pool_size, direct, read);
+        out.push(if ((pool_size + beside) * 2 + 20) as i32 <= max_connections {
+            Finding::ok("database.connections", format!("{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and Loco's own)"))
         } else {
             Finding::warning(
                 "database.connections",
-                format!("{max_connections} allowed, {pool_size} per replica: room for fewer than two replicas"),
+                format!(
+                    "{max_connections} allowed, {pool_size} per replica and {beside} beside its pool (side, direct, read and Loco's own): room for fewer than two replicas"
+                ),
                 "Raise max_connections, or lower FERRUM_DB_MAX_CONNECTIONS (docs/operations.md, Database role).",
             )
         });
-        let own = background(pool_size);
-        out.push(if pool_size >= POOL_FLOOR {
+        let own = background(pool_size, upkeep);
+        let floor = pool_floor(upkeep);
+        out.push(if pool_size >= floor {
             Finding::ok("database.pool", format!("{pool_size} connections per replica, of which its job workers and event loops can hold {own} at once"))
         } else {
             Finding::warning(
                 "database.pool",
                 format!("{pool_size} connections per replica, and its job workers and event loops can hold {own} at once: requests wait behind them"),
-                "Set FERRUM_DB_MAX_CONNECTIONS to at least 11 (docs/operations.md, Configuration).",
+                "Raise FERRUM_DB_MAX_CONNECTIONS above that figure (docs/operations.md, Configuration).",
             )
         });
         let limit: i32 = sqlx::query_scalar("select rolconnlimit from pg_roles where rolname = current_user").fetch_one(&mut *tx).await?;
@@ -174,7 +185,7 @@ impl Kernel {
         }
         // The role's own connection limit against what the replicas running now may open.
         let running: i64 = sqlx::query_scalar("select count(*) from replica where seen_at > now() - interval '2 minutes'").fetch_one(&mut *tx).await?;
-        let each = if self.db.pooled() { self.db.config.direct_connections } else { pool_size + beside_pool(pool_size) };
+        let each = if self.db.pooled() { direct } else { pool_size + beside };
         let may = running.max(1) * i64::from(each);
         out.push(if limit < 0 || may + i64::from(RESERVED_CONNECTIONS) <= i64::from(limit) {
             Finding::ok(
@@ -373,9 +384,11 @@ fn newer_packages(rows: &[(String, String, i64)], build: impl Fn(&str) -> Option
 mod tests {
     #[test]
     fn the_floor_is_the_smallest_pool_the_replicas_own_work_cannot_fill() {
-        assert!(super::background(super::POOL_FLOOR) < super::POOL_FLOOR);
-        assert!(super::background(super::POOL_FLOOR - 1) >= super::POOL_FLOOR - 1);
-        assert_eq!(super::background(30), 15, "half of the default pool: 4 job workers, 7 for events and webhooks, 4 more");
+        let floor = super::pool_floor(2);
+        assert!(super::background(floor, 2) < floor);
+        assert!(super::background(floor - 1, 2) >= floor - 1);
+        assert_eq!(floor, 14);
+        assert_eq!(super::background(30, 2), 17, "4 job workers, 7 for events and webhooks, 4 more, 2 apps' upkeep at once");
     }
 
     #[test]
