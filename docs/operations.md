@@ -3131,8 +3131,9 @@ sharing its CPU with the database and the client. No request failed in any run.
 Writes hold their throughput as concurrency grows; queueing shows up as latency. One replica's
 event dispatcher drains about 600 outbox events a second (webhooks, automations, live updates);
 dispatchers on every replica share the outbox. The test found that a NOTIFY sent by each writing
-transaction serialized their commits (creates fell to 330/s at 100 clients); dispatchers poll
-instead, which adds up to 250 ms before an event is handled.
+transaction serialized their commits (creates fell to 330/s at 100 clients); a replica's own writes
+wake its dispatcher in-process instead, about 50 ms before an event is handled, and what another
+replica wrote is found within 5 seconds (docs/events.md).
 
 ### Reference workload and targets
 

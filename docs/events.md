@@ -63,6 +63,16 @@ past its share (*Fairness*) the sink is slowed, its events waiting, rather than 
 whose record was erased while it waited carries nothing of the record any more (it says `erased`): it reaches
 no webhook, follower, automation or sink, and counts as handled.
 
+**When it is looked for.** Nothing is announced through the database: a writer's NOTIFY would serialize the commits
+of every writing transaction. A replica's own writes wake its dispatcher in-process; it looks 50 ms later, and keeps
+looking every 50 ms for a second while the writing transaction may still be committing, so an event is handled about
+50 ms after its commit. A webhook delivery wakes the replica's sender at the commit that queued it, and a job the
+replica queues wakes its runner the same way. With nothing to do, each of the three looks again after 50 ms, then
+twice as long after each look that finds nothing, up to every 5 seconds: an idle replica asks the database about
+a dozen times a minute for each. So what this replica did not write itself is found within 5 seconds of being due: an
+event written by a replica that died right after its commit, a retry or a put-off event coming due, a delivery due
+again, a job queued by another replica or due at its `run_at`.
+
 **Order.** A replica handles one workspace's events one at a time, most urgent first, then oldest first. That is
 all that is promised. A later event of higher priority goes before an earlier one (a record's `created` written under
 bulk priority can follow its `updated`); a retry goes behind later events; two replicas can each hold a share of one

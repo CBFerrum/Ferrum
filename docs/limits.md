@@ -74,7 +74,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   description or account name; other rows count as other charges.
 - **Live pushes** (in-app notifications, chat messages) are NOTIFYs sent at commit, and PostgreSQL
   serializes the commits of notifying transactions: at very high message rates they queue. Record
-  changes do not (they reach live screens through the outbox, within about 250 ms).
+  changes do not (they reach live screens through the outbox, about 50 ms after their commit).
 - **Sign-in**: people sign in with a password, a passkey (WebAuthn) or single sign-on. Two-factor
   sign-in uses authenticator apps (TOTP); there are no text-message codes. Single sign-on speaks
   OpenID Connect and SAML 2.0. An account is linked to one identity at a
