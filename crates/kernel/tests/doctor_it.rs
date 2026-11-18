@@ -194,6 +194,9 @@ async fn scenario() {
         outbox::enqueue(&mut tx, *t, "burst", None, None, json!({})).await.unwrap();
         tx.commit().await.unwrap();
     }
+    // The replica's LISTEN loops run beside it, as in a server: on the direct pool, they take no request connection.
+    let (stop, loops) = tokio::sync::watch::channel(false);
+    let listeners = r.spawn_listeners(loops);
     let draining = {
         let r = r.clone();
         tokio::spawn(async move { while r.dispatch_outbox_once().await.unwrap() > 0 {} })
@@ -214,6 +217,7 @@ async fn scenario() {
     let request = r.db.tenant_tx(burst[0]).await.expect("a request's transaction");
     let waited = asked.elapsed();
     drop(request);
+    eprintln!("F7: a request waited {waited:?} with the burst draining and the listeners running");
     assert!(waited < Duration::from_millis(1500), "a request got a connection within a second or so while the burst drained: it waited {waited:?}");
     draining.await.unwrap();
     assert_eq!(busy.done.load(Ordering::SeqCst), 60, "every event of the burst was handled");
@@ -221,8 +225,17 @@ async fn scenario() {
     let most = busy.most.load(Ordering::SeqCst);
     assert!(most <= share, "events were handled at most {share} at once (a quarter of the pool): {most}");
     let pool = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.pool").unwrap();
-    let own = ferrum_kernel::doctor::background(30);
+    let own = ferrum_kernel::doctor::background(30, 2);
+    assert_eq!(own, 17, "4 job workers + 7 for events and webhooks + 4 + 2 apps' upkeep at once");
     assert!(pool.detail.contains(&format!("can hold {own} at once")) && own as usize >= share + 4, "{pool:?}");
+    // The budget the doctor states is the sum of every pool's maximum: main, side, direct (and read, none here), Loco's 2.
+    let most = |p: &sqlx::PgPool| p.options().get_max_connections();
+    let beside = most(&r.db.side) + most(&r.db.direct) + 2;
+    assert_eq!(most(&r.db.direct), 8, "5 listeners, 1 session lock and 2 apps' upkeep");
+    let budget = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.connections").unwrap();
+    assert!(budget.detail.contains(&format!("30 per replica and {beside} beside its pool")), "{budget:?}");
+    let _ = stop.send(true);
+    futures::future::join_all(listeners).await;
 
     // A release older than its database does not start on it: a migration it does not know was applied by a
     // newer one, and going back that way is refused (FEO-080); the way back is a restore.
@@ -233,5 +246,14 @@ async fn scenario() {
     let refused = k.db.migrate().await.unwrap_err().to_string();
     assert!(refused.contains("29991231000000"), "the migration it does not know is named: {refused}");
     sqlx::query("delete from _sqlx_migrations where version = 29991231000000").execute(&k.db.pool).await.unwrap();
+    // sqlx leaves its migration lock on the connection that refused. Released on whichever of the direct pool's holds it.
+    let mut held = Vec::new();
+    for _ in 0..k.db.direct.options().get_max_connections() {
+        held.push(k.db.direct.acquire().await.unwrap());
+    }
+    for c in &mut held {
+        sqlx::query("select pg_advisory_unlock_all()").execute(&mut **c).await.unwrap();
+    }
+    drop(held);
     k.db.migrate().await.expect("and once it is gone, it starts");
 }

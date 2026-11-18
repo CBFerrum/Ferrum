@@ -198,11 +198,11 @@ impl Hooks for App {
             }
         }
         crate::extract::PROXY_HOPS.store(settings.proxy_hops, std::sync::atomic::Ordering::Relaxed);
-        if settings.db_max_connections < ferrum_kernel::doctor::POOL_FLOOR {
+        let floor = ferrum_kernel::doctor::pool_floor(crate::packages::upkeep_concurrency() as u32);
+        if settings.db_max_connections < floor {
             tracing::warn!(
                 connections = settings.db_max_connections,
-                "fewer than {} database connections: requests will wait behind this replica's own job workers and event loops",
-                ferrum_kernel::doctor::POOL_FLOOR
+                "fewer than {floor} database connections: requests will wait behind this replica's own job workers and event loops",
             );
         }
         // The direct and read addresses: the old full address when set (it wins in R1), else DATABASE_URL at the host the

@@ -21,9 +21,14 @@ use uuid::Uuid;
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Ready once object storage has taken a write and a read since this replica started (crate::store::Health), and while
-/// the database answers. Not ready, it says why at each ask (the log says it once).
+/// the database answers. Not ready, it says why at each ask (the log says it once). Not ready either once the replica
+/// has been told to stop, so a load balancer with no `preStop` pause stops sending at once.
 async fn ready(State(app): State<AppContext>) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    if *st.shutdown.borrow() {
+        let body = json!({"status": "not ready", "error": "unavailable", "message": "this replica is stopping"});
+        return Ok((StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, HeaderValue::from_static("5"))], Json(body)).into_response());
+    }
     if let Err(why) = st.objects.health.ready() {
         let body = json!({"status": "not ready", "error": "unavailable", "message": why});
         return Ok((StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, HeaderValue::from_static("5"))], Json(body)).into_response());

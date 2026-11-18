@@ -34,8 +34,8 @@ pub fn background_connections(main: u32) -> u32 {
 pub const LISTENERS: u32 = 5;
 
 /// What [`Db::direct`] holds besides the listeners and apps' upkeep: one session lock at a time (app revocations; at
-/// start the migrations and the schema sync, one after the other). Its own pool, when the direct address
-/// differs from the main one, opens at most `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
+/// start the migrations and the schema sync, one after the other). Its pool opens at most
+/// `LISTENERS + DIRECT_LOCKS + upkeep at once` ([`DbConfig::direct_connections`]).
 pub const DIRECT_LOCKS: u32 = 1;
 
 /// The most rows one statement of a purge deletes ([`Db::in_batches`]).
@@ -202,7 +202,7 @@ pub struct DbConfig {
     /// `None`: `FERRUM_TEST_DATABASE_DIRECT_URL` when a test sets it, else `url` at `FERRUM_TEST_DATABASE_DIRECT_HOST`
     /// when a test sets that, else `url` itself (the server always says).
     pub direct_url: Option<String>,
-    /// The most connections the direct side opens when it is a pool of its own:
+    /// The most connections the direct pool opens:
     /// [`LISTENERS`] + [`DIRECT_LOCKS`] + apps' upkeep at once (`FERRUM_UPKEEP_CONCURRENCY`, default 2).
     pub direct_connections: u32,
     /// `FERRUM_DATABASE_READ_URL`: a replica that reports and exports may read from ([`Db::read_tx`]). `None`: none.
@@ -237,9 +237,11 @@ pub struct Db {
     /// open (non-gapless numbering). Taking them from `pool` could deadlock the pool under load:
     /// every connection held by a transaction that waits for a second one.
     pub side: sqlx::PgPool,
-    /// Connections that keep one session (LISTEN, session advisory locks, migrations, the schema sync): `pool` itself,
-    /// unless `FERRUM_DATABASE_DIRECT_URL` names another address than `DATABASE_URL` (a pooler's), and then a small pool
-    /// of its own there ([`DbConfig::direct_connections`]).
+    /// Connections that keep one session (LISTEN, session advisory locks, migrations, the schema sync): a small pool of
+    /// its own ([`DbConfig::direct_connections`]), at `FERRUM_DATABASE_DIRECT_URL` when that names another address than
+    /// `DATABASE_URL` (a pooler's), else at `DATABASE_URL` itself, so that what holds a session never takes a request's
+    /// connection. Each pool's connections say which it is (`application_name`: `ferrum`, `ferrum-side`, `ferrum-direct`,
+    /// `ferrum-read`).
     pub direct: sqlx::PgPool,
     /// The read address's pool and what it last found ([`Db::read_tx`]), when one is set.
     pub read: Option<Arc<crate::replica::Reads>>,
@@ -293,8 +295,19 @@ impl Db {
         // A direct connection starts with its session settings; one through a pooler must not send them (PgBouncer
         // refuses startup parameters it does not track) and gets them from each transaction instead (`carrying`).
         let idle = format!("{}s", IDLE_IN_TRANSACTION.as_secs());
-        let session =
-            |o: PgConnectOptions| o.options([("timezone", "UTC"), ("lock_timeout", LOCK_TIMEOUT), ("idle_in_transaction_session_timeout", idle.as_str())]);
+        // The TCP keepalives are per-session server settings: a replica that vanishes leaves its session locks and LISTEN
+        // backends until PostgreSQL notices the dead peer, 30 + 3 x 10 s here (the OS default is two hours). A server that
+        // refuses them fails the start, and its own error names the setting.
+        let session = |o: PgConnectOptions| {
+            o.options([
+                ("timezone", "UTC"),
+                ("lock_timeout", LOCK_TIMEOUT),
+                ("idle_in_transaction_session_timeout", idle.as_str()),
+                ("tcp_keepalives_idle", "30"),
+                ("tcp_keepalives_interval", "10"),
+                ("tcp_keepalives_count", "3"),
+            ])
+        };
         // Tests' own direct addresses, read by a debug build only (a release build reads no test's variable).
         let test = |name: &str| if cfg!(debug_assertions) { std::env::var(name).ok() } else { None };
         let direct_url = config
@@ -306,16 +319,24 @@ impl Db {
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty() && *u != config.url);
         let main = url(&config.url, "database url")?;
+        // The direct side: the direct address when it differs, else the main one, with the session settings. Always a pool of
+        // its own, so that the LISTEN loops and the session locks never hold a connection a request could use.
+        let direct_options = match &direct_url {
+            Some(d) => url(d, "direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST)")?,
+            None => main.clone(),
+        };
+        let direct_options = session(direct_options).application_name("ferrum-direct");
         // `extra_float_digits` is a startup parameter PgBouncer refuses too; PostgreSQL 12 and later print floats exactly
         // without it.
         let main = if direct_url.is_some() { main.extra_float_digits(None) } else { session(main) };
+        // Each pool names itself to PostgreSQL (`pg_stat_activity.application_name`), so that its connections can be counted.
         let side = PgPoolOptions::new()
             .max_connections(side_connections(config.max_connections))
             .min_connections(0)
             .acquire_timeout(config.acquire_timeout)
             .idle_timeout(Some(Duration::from_secs(60)))
             .max_lifetime(Some(Duration::from_secs(1800)))
-            .connect_lazy_with(main.clone());
+            .connect_lazy_with(main.clone().application_name("ferrum-side"));
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -326,21 +347,21 @@ impl Db {
             .connect_with(main)
             .await
             .map_err(pooler_refused)?;
-        let direct = match &direct_url {
-            None => pool.clone(),
-            Some(d) => PgPoolOptions::new()
-                .max_connections(config.direct_connections.max(LISTENERS + DIRECT_LOCKS))
-                .min_connections(0)
-                .acquire_timeout(config.acquire_timeout)
-                .idle_timeout(Some(Duration::from_secs(60)))
-                .max_lifetime(Some(Duration::from_secs(1800)))
-                .test_before_acquire(true)
-                // Connected now, so a start with a direct address that does not answer fails at once, saying which.
-                .connect_with(session(url(d, "direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST)")?))
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST) does not answer: {e}"))
-                })?,
+        let direct = PgPoolOptions::new()
+            .max_connections(config.direct_connections.max(LISTENERS + DIRECT_LOCKS))
+            .min_connections(0)
+            .acquire_timeout(config.acquire_timeout)
+            .idle_timeout(Some(Duration::from_secs(60)))
+            .max_lifetime(Some(Duration::from_secs(1800)))
+            .test_before_acquire(true);
+        let direct = if direct_url.is_some() {
+            // Connected now, so a start with a direct address that does not answer fails at once, saying which.
+            direct.connect_with(direct_options).await.map_err(|e| {
+                Error::Internal(format!("the direct database address (FERRUM_DATABASE_DIRECT_URL or FERRUM_DATABASE_DIRECT_HOST) does not answer: {e}"))
+            })?
+        } else {
+            // The main address: the main pool has just answered, and no start is slowed by connections not yet needed.
+            direct.connect_lazy_with(direct_options)
         };
         // Connected when first used: a read address that does not answer sends reads to the primary, it stops nothing.
         let read = match config.read_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
@@ -354,7 +375,11 @@ impl Db {
                     .max_lifetime(Some(Duration::from_secs(1800)))
                     .test_before_acquire(true)
                     // Like the main pool through a pooler: each transaction sets what it needs.
-                    .connect_lazy_with(url(r, "read database address (FERRUM_DATABASE_READ_URL or FERRUM_DATABASE_READ_HOST)")?.extra_float_digits(None)),
+                    .connect_lazy_with(
+                        url(r, "read database address (FERRUM_DATABASE_READ_URL or FERRUM_DATABASE_READ_HOST)")?
+                            .extra_float_digits(None)
+                            .application_name("ferrum-read"),
+                    ),
                 config.read_max_lag,
             ))),
         };
@@ -373,7 +398,7 @@ impl Db {
         })
     }
 
-    /// Whether `direct` is a pool of its own: the main pool then goes through a pooler.
+    /// Whether `direct` is at another address than the main pool: the main pool then goes through a pooler.
     pub fn pooled(&self) -> bool {
         self.pooled
     }

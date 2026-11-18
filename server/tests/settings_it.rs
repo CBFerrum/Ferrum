@@ -174,7 +174,7 @@ async fn the_binary() {
     ] {
         row(&st, "installation", "", key, Some(&value)).await;
     }
-    // Its pool's own budget: a small one, above the floor the replica's own loops need (POOL_FLOOR).
+    // Its pool's own budget: a small one, a small one (the doctor says what the replica's own loops need: `pool_floor`).
     row(&st, "pool", "default", "db_max_connections", Some("12")).await;
     st.kernel.db.close().await;
     let secrets = vec![("DATABASE_URL", url()), ("JWT_SECRET", "c2V0dGluZ3MtaXQtand0LXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==".to_string())];

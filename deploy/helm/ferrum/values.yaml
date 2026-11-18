@@ -309,7 +309,7 @@ database:
     instances: 2
     poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
-    maxPreparedStatements: 200    # max_prepared_statements; 0 turns prepared statements off
+    maxPreparedStatements: 200    # max_prepared_statements; must be at least 1: the server uses prepared statements
     parameters: {}                # other PgBouncer settings CloudNativePG allows
     # Each replica's direct connections: its 5 listeners, 1 session lock at a time, and apps' upkeep at once
     # (FERRUM_UPKEEP_CONCURRENCY, default 2). Raise it with that setting.
