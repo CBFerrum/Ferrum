@@ -726,7 +726,9 @@ the operators' install from one has not run on a cluster without internet.
 
 ## Upgrades
 
-* Before a release is tagged, two checks must pass. `scripts/release_evidence.py qualified` says whether each
+* Before a release is tagged, three checks must pass. `scripts/local_ci.sh release` builds the server with
+  `cargo build --release --locked` and checks it with no apps and with two: a debug build does not prove the release
+  one compiles (`v0.3.9` did not), so a tag is made only after that job passes. `scripts/release_evidence.py qualified` says whether each
   qualification (docs/logic/evidence/qualification.yaml) ran at this very build; when Ferrum's code or any pin has
   changed since, it names what changed and fails until the qualification's scripts are run again and
   `--stamp <id>` records the build they ran at. `scripts/licenses.py check` fails on any image a deploy file names

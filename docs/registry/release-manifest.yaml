@@ -5,7 +5,7 @@ components:
   - {repository: CBFerrum/ferrum-app-assets, pinned: a28ed40f2c243f0e9e27e258b56eb997294e527c}
   - {repository: CBFerrum/ferrum-app-bookings, pinned: 773004c489f6fee81005f65de3b52651a018a99e}
   - {repository: CBFerrum/ferrum-app-campaigns, pinned: 44b43047099d64186ad176189fc5223771feef4f}
-  - {repository: CBFerrum/ferrum-app-commerce, pinned: 7c5a6cb4163c1d3e380a6657c5e881757615564d}
+  - {repository: CBFerrum/ferrum-app-commerce, pinned: cd348eb64b317f1a4c2d577f0d01122550950952}
   - {repository: CBFerrum/ferrum-app-comms, pinned: e62026cf67317246a162127aeda0b685de1b7cd8}
   - {repository: CBFerrum/ferrum-app-construction, pinned: d092a41a40152d538ef0602fcb7b603f0ed24d33}
   - {repository: CBFerrum/ferrum-app-contracts, pinned: 9a39b8d30b6677f9b8ee01d40a3277585ff4e750}

@@ -23,6 +23,11 @@
 #   replica not in the workflow, and only when named: a private primary and standby (scripts/replica_pair.sh, PostgreSQL
 #           17's programs) and the kernel's replica_pair_it on them: real lag, a stopped standby, a cancelled query, a
 #           promotion.
+#   release not in the workflow, and only when named, and the check before a tag (docs/operations.md, "Upgrades"): the
+#           server built with `cargo build --release --locked` (about 30 minutes; a debug build does not catch
+#           everything the release build does, e.g. a query type overflowing the depth limit), then
+#           `cargo check --locked` of the server with no apps and with two (crm, helpdesk): installing only what is
+#           needed must keep compiling.
 #   managed not in the workflow, and only when named: a private PostgreSQL that behaves like a managed service
 #           (scripts/managed_pg.sh: an ordinary role owning only its databases, no grant on session_replication_role,
 #           the extensions made by an administrator, PgBouncer in transaction mode with PostgreSQL beside it, TLS with
@@ -272,6 +277,12 @@ job_replica() {
   [ "$code" = 0 ] || failed=1
 }
 
+job_release() {
+  run "release build" cargo build --release --locked -p ferrum-server --bin ferrum || return
+  run "release: the server without apps" cargo check --locked -p ferrum-server --no-default-features
+  run "release: the server with crm and helpdesk" cargo check --locked -p ferrum-server --no-default-features --features crm,helpdesk
+}
+
 job_managed() {
   local dir
   pg17 initdb pg_ctl psql || { skip managed "PostgreSQL 17's own programs, initdb and pg_ctl (brew install postgresql@17, or set PG_BIN)"; return; }
@@ -368,8 +379,8 @@ jobs=("$@")
 for j in "${jobs[@]}"; do
   case "$j" in
     # Each job in a shell of its own, so what one sets (saml's xmlsec1 and OpenSSL) never reaches the next.
-    rust | saml | audit | move | editors | replica | window | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
-    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
+    rust | saml | audit | move | editors | replica | window | release | managed | objects | oneinput | oidc | companions) echo "== $j"; (failed=0; "job_$j"; exit $failed) || failed=1 ;;
+    *) echo "no job $j (rust, saml, audit, move, editors; and, only when named, replica, window, release, managed, objects, oneinput, oidc, companions)"; exit 2 ;;
   esac
 done
 skipped=$(sort -u "$LOGS/skipped" | paste -sd, - | sed 's/,/, /g')
