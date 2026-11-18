@@ -1,6 +1,6 @@
 #!/bin/bash
 # An app's CI on this machine, as its .github/workflows/ci.yml runs it on GitHub:
-#   cargo fmt --check, cargo clippy --all-targets -D warnings, and cargo test against a Postgres
+#   cargo fmt --check, scripts/window.py --app (what in its package SQL holds writes), cargo clippy --all-targets -D warnings, and cargo test against a Postgres
 #   test database owned by the non-superuser `ferrum` role (superusers bypass row-level security);
 #   then its interface's checks: the dist/ it commits built from its sources, typecheck and tests.
 #
@@ -76,6 +76,11 @@ git check-ignore -q .cargo/config.toml || { echo ".cargo/config.toml is not igno
 
 step fmt
 cargo fmt --all -- --check || fail=1
+
+# Package SQL runs in a transaction: a plain `create index` or a validated `add constraint` on a table that has rows
+# holds its writes while it runs.
+step sql
+python3 "$PLATFORM/scripts/window.py" --app "$APP_DIR" || fail=1
 
 clippy() {
   step clippy

@@ -5,6 +5,7 @@ change; this check fails one that does not.
 
     scripts/window.py                   # what this checkout adds since its merge base with origin/main (CI)
     scripts/window.py --range A..B      # what B adds since A
+    scripts/window.py --app DIR         # an app's package SQL after each package's first file: what holds writes (app_ci.sh)
 
 What it looks at:
 * new SQL files (the kernel's migrations, packages' SQL): a statement that drops a table, view, type, column or
@@ -53,9 +54,11 @@ def read(repo: Path, rev: str | None, path: str) -> str:
 
 
 def statements(sql: str):
-    """Each statement, lowercased, with function bodies and block comments taken out; line comments kept for markers."""
+    """Each statement, lowercased, with function bodies and comments taken out; the `window: safe` marker kept."""
     sql = re.sub(r"\$([a-z_]*)\$.*?\$\1\$", "''", sql, flags=re.S | re.I)
     sql = re.sub(r"/\*.*?\*/", " ", sql, flags=re.S)
+    # A line comment is text, not SQL: a `;` in it ends nothing. Only the marker is kept.
+    sql = re.sub(r"--[^\n]*", lambda m: "-- window: safe" if "window: safe" in m.group(0) else "", sql)
     for s in sql.split(";"):
         if s.strip():
             yield s.lower()
@@ -169,7 +172,24 @@ def check(repo: Path, base: str, head: str | None) -> tuple[list[str], bool]:
     return found, moved
 
 
+def app_hazards(app: Path) -> list[str]:
+    """What holds writes in an app's package SQL, in every file after a package's first: the first runs against the entity
+    tables the schema sync has just made, which are empty, and later ones are what will one day meet rows. The rule within
+    a file is the table not made in it. (The two-version window is not checked for apps.)"""
+    found = []
+    for pkg in sorted(app.glob("packages/*/sql")):
+        for f in sorted(pkg.glob("*.sql"))[1:]:
+            found += [f"{f.relative_to(app)}: {h}" for h in sql_hazards(f.read_text()) if HOLDS in h]
+    return found
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 2 and argv[0] == "--app":
+        found = app_hazards(Path(argv[1]))
+        for f in found:
+            print(f"  {f}")
+        print(f"window: {len(found)} statements hold writes on a table that is not new" if found else "window: nothing here holds writes")
+        return 1 if found else 0
     if len(argv) == 2 and argv[0] == "--range" and ".." in argv[1]:
         base, head = argv[1].split("..", 1)
     elif not argv:

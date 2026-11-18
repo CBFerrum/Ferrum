@@ -105,4 +105,14 @@ with tempfile.TemporaryDirectory() as d:
     window.ROOT = repo
     assert window.main(["--range", f"{head}..HEAD"]) == 1, "COMPATIBLE_FROM moved with it, and the index still holds writes"
 
+# An app's package SQL: the files after a package's first.
+with tempfile.TemporaryDirectory() as d:
+    sql = Path(d) / "packages/x/sql"
+    sql.mkdir(parents=True)
+    (sql / "001.sql").write_text("create table a (x int); create index a_x on a (x);\ncreate index e_other_y on e_other (y);\n")
+    assert window.app_hazards(Path(d)) == [], "a package's first file meets empty tables"
+    (sql / "002.sql").write_text("create table b (y int); create index b_y on b (y);\ncreate index a_z on a (z);\nalter table a drop column x;\n")
+    found = window.app_hazards(Path(d))
+    assert len(found) == 1 and found[0].startswith("packages/x/sql/002.sql: builds an index that holds writes") and "a_z" in found[0], found
+
 print("window.py: ok")

@@ -407,7 +407,7 @@ The rules:
   create no tables at all ([docs/plan/apps.md](../plan/apps.md) §5).
 
 `scripts/window.py` checks the two-version window for the platform's own migrations and packages; it does not read
-an app's repository, so an app's SQL is held to *only add* by review.
+an app's repository (`--app` reads its package SQL after each package's first file, for what holds writes only), so an app's SQL is held to *only add* by review.
 
 **Data a release moves** goes in `backfills` in `package.yaml` (`BackfillDef`: `{name, table or entity, needs, set,
 batch}`): run per workspace in batches of its own transactions (1000 rows by default), resumed where they stopped,
