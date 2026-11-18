@@ -3,19 +3,20 @@
 //! lands once, and only what actually landed counts in the rollups.
 //!
 //! Retention drops a day's partition, for every workspace at once. A day cannot be kept for one
-//! workspace and dropped for another; rollups outlive the samples for that reason.
+//! workspace and dropped for another; rollups outlive the samples for that reason, and are dropped
+//! a month at a time. A sample whose clock is outside the rollups' days (older than they are kept,
+//! or more than a day ahead) is stored and not rolled up: it has no month to go in.
 //
 // ponytail: PostgreSQL carries this up to what one database can take. The strategy's figure of
 // 20,000 samples a second is 345 GB a day, which belongs on an analytical store fed by sites; nothing
 // here has been measured against that, and a site should aggregate at the edge first.
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use ferrum_kernel::{Ctx, Error, Kernel, Result, Tx};
 use ferrum_ops_contract::telemetry::Measurement;
 use ferrum_ops_contract::telemetry::Quality;
 use serde_json::{Value, json};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicI32, Ordering};
 use uuid::Uuid;
 
 /// Days of samples, from `FERRUM_OPS_TELEMETRY_DAYS` (default 30).
@@ -37,14 +38,12 @@ fn file_day(source: DateTime<Utc>, now: DateTime<Utc>, retention: i64) -> NaiveD
     source.date_naive().clamp(oldest, newest)
 }
 
-/// The day partitions were last made for: every sync with measurements asks, and the answer changes
-/// once a day.
-static READY: AtomicI32 = AtomicI32::new(0);
-
-/// Makes sure every day from `retention` ago to tomorrow has its partition.
+/// Makes sure every day from `retention` ago to tomorrow has its partition, and the minute rollups their months
+/// (`ROLLUP_DAYS` back, three ahead). Every sync with measurements asks: one look at the catalog while tomorrow's
+/// partition is there, which only a run of this makes.
 pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
-    let today = now.date_naive().num_days_from_ce();
-    if READY.load(Ordering::Relaxed) == today {
+    let tomorrow = partition((now + Duration::days(1)).date_naive());
+    if sqlx::query_scalar::<_, bool>("select to_regclass($1) is not null").bind(&tomorrow).fetch_one(&k.db.pool).await? {
         return Ok(());
     }
     let retention = retention_days();
@@ -74,12 +73,16 @@ pub async fn ensure_partitions(k: &Kernel, now: DateTime<Utc>) -> Result<()> {
         }
         day = day.succ_opt().ok_or_else(|| Error::internal("no day follows"))?;
     }
+    sqlx::query("select ferrum_ensure_month_partitions('op_rollup_minute', $1, $2::timestamptz + interval '3 months')")
+        .bind(now - Duration::days(ROLLUP_DAYS))
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-    READY.store(today, Ordering::Relaxed);
     Ok(())
 }
 
-/// Drops days past retention and rollups past theirs.
+/// Drops days past retention and rollup months wholly past theirs.
 pub async fn purge(k: &Kernel, now: DateTime<Utc>) -> Result<u64> {
     let oldest = (now - Duration::days(retention_days())).date_naive();
     let mut tx = k.db.system_tx().await?;
@@ -95,7 +98,18 @@ pub async fn purge(k: &Kernel, now: DateTime<Utc>) -> Result<u64> {
             dropped += 1;
         }
     }
-    sqlx::query("delete from op_rollup_minute where minute < $1").bind(now - Duration::days(ROLLUP_DAYS)).execute(&mut *tx).await?;
+    // A month's name sorts as its month does: those before the month of the oldest minute kept.
+    let months: Vec<String> = sqlx::query_scalar(
+        "select c.relname::text from pg_inherits i join pg_class c on c.oid = i.inhrelid where i.inhparent = 'op_rollup_minute'::regclass \
+         and c.relname < 'op_rollup_minute' || to_char($1 at time zone 'UTC', '\"_y\"YYYY\"m\"MM')",
+    )
+    .bind(now - Duration::days(ROLLUP_DAYS))
+    .fetch_all(&mut *tx)
+    .await?;
+    for name in months {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("drop table {name}"))).execute(&mut *tx).await?;
+        dropped += 1;
+    }
     tx.commit().await?;
     Ok(dropped)
 }
@@ -188,7 +202,7 @@ pub async fn ingest(tx: &mut Tx, tenant: Uuid, site: Uuid, batch: Vec<Measuremen
            select $1, device_id, metric, date_trunc('minute', source_time), count(*) filter (where quality < 2), count(*) filter (where quality = 2), \
                   min(value) filter (where quality < 2), max(value) filter (where quality < 2), coalesce(sum(value) filter (where quality < 2), 0), \
                   (array_agg(value order by source_time desc) filter (where quality < 2))[1], max(source_time) filter (where quality < 2) \
-           from landed group by device_id, metric, date_trunc('minute', source_time) \
+           from landed where source_time >= $12 and source_time < $13 group by device_id, metric, date_trunc('minute', source_time) \
            on conflict (tenant_id, device_id, metric, minute) do update set \
              samples = op_rollup_minute.samples + excluded.samples, bad = op_rollup_minute.bad + excluded.bad, \
              min_value = least(op_rollup_minute.min_value, excluded.min_value), max_value = greatest(op_rollup_minute.max_value, excluded.max_value), \
@@ -209,6 +223,8 @@ pub async fn ingest(tx: &mut Tx, tenant: Uuid, site: Uuid, batch: Vec<Measuremen
     .bind(&units)
     .bind(&qualities)
     .bind(&classes)
+    .bind(now - Duration::days(ROLLUP_DAYS))
+    .bind(now + Duration::days(1))
     .fetch_one(&mut **tx)
     .await?;
     Ok((stored, refused))

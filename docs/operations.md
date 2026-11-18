@@ -4837,7 +4837,8 @@ fails, so a server makes this month and three ahead at every start, before it se
 them again (its first step); a move or a sandbox makes the months of the rows it brings; and the doctor's `audit.months`
 is a blocker when fewer than two months ahead are there. Each month carries the trail's own policy, forced, so read by
 its own name it shows what `audit_event` would: a workspace's own rows, every row to the system (as `deploy/dump.sh`
-reads it).
+reads it). Measurements' minute rollups (`op_rollup_minute`) are kept the same way, and retention
+drops their months older than 400 days.
 
 ```bash
 ferrum task sync_schema              # force the metadata → DDL sync (normally automatic at boot)
