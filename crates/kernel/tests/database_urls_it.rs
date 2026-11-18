@@ -11,6 +11,7 @@
 //! FERRUM_TEST_POOLER_URL=postgres://ferrum:ferrum@127.0.0.1:6439/ferrum_test cargo test -p ferrum-kernel --test database_urls_it
 //! ```
 
+use ferrum_kernel::db::Heard;
 use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Db, DbConfig, HookRegistry, Kernel, KernelSettings};
 use ferrum_meta::Catalog;
@@ -50,9 +51,13 @@ async fn shown(tx: &mut ferrum_kernel::Tx, name: &str) -> String {
 }
 
 /// Ends the server sessions LISTENing on `channel` in this database.
+/// Ends the sessions listening on `channel`: the last statement of the replica's listening connection is the LISTEN
+/// that took it, or that took it with others.
 async fn cut(db: &Db, channel: &str) -> i64 {
-    sqlx::query_scalar("select count(*) from (select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and query = $1) t")
-        .bind(format!("LISTEN \"{channel}\""))
+    sqlx::query_scalar(
+        "select count(*) from (select pg_terminate_backend(pid) from pg_stat_activity where datname = current_database() and query like 'LISTEN %' and query like '%' || $1 || '%') t",
+    )
+        .bind(format!("\"{channel}\""))
         .fetch_one(&db.direct)
         .await
         .unwrap()
@@ -83,10 +88,12 @@ async fn scenario(main: String) {
     }
 
     // A listener whose connection is lost says so, rather than reconnecting as if nothing had been missed.
-    let mut l = db.listen("ferrum_test_cut").await.unwrap();
+    let mut l = db.subscribe(&["ferrum_test_cut"]).await;
+    assert_eq!(l.recv().await, Some(Heard::Missed { dropped: 0 }), "subscribed");
     assert_eq!(cut(&db, "ferrum_test_cut").await, 1, "the listener is on the direct address");
-    let lost = tokio::time::timeout(Duration::from_secs(10), ferrum_kernel::db::notification(&mut l)).await.expect("noticed within 10 s");
-    assert!(lost.is_err(), "{lost:?}");
+    let lost = tokio::time::timeout(Duration::from_secs(10), l.recv()).await.expect("noticed within 10 s");
+    assert_eq!(lost, Some(Heard::Missed { dropped: 0 }));
+    drop(l);
 
     // Two replicas: boot (migrations and the schema sync, under the start's session locks) and cache invalidation.
     let catalog = || Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
@@ -94,6 +101,8 @@ async fn scenario(main: String) {
     let b = Kernel::boot(connect(&main).await, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("second boot");
     assert!(b.booted.migrations.is_empty() && b.booted.schema.skipped);
     let (stop, stopped) = tokio::sync::watch::channel(false);
+    // Each listener reads what it keeps once it is subscribed: the metadata listener's start shows in the epoch.
+    let (started, _) = b.registry.revision(uuid::Uuid::nil());
     let listening = b.spawn_listeners(stopped);
     let t = a
         .create_tenant(NewTenant {
@@ -117,16 +126,7 @@ async fn scenario(main: String) {
         panic!("{what}: not within 10 s");
     };
     // Both listeners are up before anything is announced.
-    for _ in 0..50 {
-        let n: i64 = sqlx::query_scalar("select count(*) from pg_stat_activity where datname = current_database() and query like 'LISTEN %'")
-            .fetch_one(&a.db.direct)
-            .await
-            .unwrap();
-        if n >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    wait("the metadata listener started", b.clone(), Box::new(move |b| b.registry.revision(uuid::Uuid::nil()).0 > started)).await;
     let before = b.registry.schema(t).await.unwrap().version;
     let (_, changes) = b.registry.revision(t);
     let mut tx = a.db.system_tx().await.unwrap();
@@ -137,10 +137,10 @@ async fn scenario(main: String) {
 
     // Its listener's connection is cut: it drops its whole cache (what it may have missed), listens again, and drops
     // it once more then (what was announced in between).
-    // (The metadata listener also hears the settings' channel on the same connection, and that LISTEN is the last
-    // statement it ran, which is how `cut` finds a session.)
+    // (Every channel is heard on the one connection, whose last statement LISTENs on the metadata's and the settings'
+    // channels, or on the users' and the vault's: `cut` finds it by either.)
     let (epoch, _) = b.registry.revision(t);
-    assert!(cut(&a.db, ferrum_kernel::registry::SETTINGS_CHANNEL).await >= 1);
+    assert!(cut(&a.db, ferrum_kernel::registry::SETTINGS_CHANNEL).await + cut(&a.db, ferrum_kernel::auth::USERS_CHANNEL).await >= 1);
     wait("the cut was noticed, and it listens again", b.clone(), Box::new(move |b| b.registry.revision(t).0 >= epoch + 2)).await;
     let (_, changes) = b.registry.revision(t);
     let mut tx = a.db.system_tx().await.unwrap();

@@ -7,8 +7,9 @@ use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 pub type Tx = Transaction<'static, Postgres>;
@@ -29,9 +30,14 @@ pub fn background_connections(main: u32) -> u32 {
     (main / 4).max(1)
 }
 
-/// The server's LISTEN loops, each holding one connection of [`Db::direct`] for as long as it runs: metadata and users
-/// (kernel), plugin sockets, live updates and co-editing (server).
-pub const LISTENERS: u32 = 5;
+/// The connections of [`Db::direct`] that LISTEN: one per replica, whatever listens and on how many channels
+/// ([`Db::subscribe`]: metadata and settings, users and the vault (kernel), plugin sockets, live updates and co-editing
+/// (server)), held while anything is subscribed.
+pub const LISTENERS: u32 = 1;
+
+/// How many notifications wait for one subscriber ([`Subscription`]) before the next are dropped and it is told it
+/// missed some ([`Heard::Missed`]).
+pub const HEARD_QUEUE: usize = 1024;
 
 /// What [`Db::direct`] holds besides the listeners: one session lock at a time (app stores' revocations; at start the
 /// migrations, the schema sync and the copy set-up, one after the other). Its pool opens at most `LISTENERS +
@@ -274,6 +280,8 @@ pub struct Db {
     pooled: bool,
     /// This database's vault as this process holds it (crate::vault): closed until [`crate::vault::open`] opens it.
     pub(crate) vault: Arc<crate::vault::Root>,
+    /// The task that LISTENs for every subscriber ([`Db::subscribe`]), while one runs.
+    hub: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<Cmd>>>>,
 }
 
 impl Db {
@@ -410,6 +418,7 @@ impl Db {
             frozen: Arc::default(),
             starting: Arc::default(),
             vault: Arc::default(),
+            hub: Arc::default(),
         })
     }
 
@@ -418,13 +427,33 @@ impl Db {
         self.pooled
     }
 
-    /// LISTENs on `channel` over a connection of [`Db::direct`], held until the listener is dropped.
-    pub async fn listen(&self, channel: &str) -> Result<PgListener> {
-        let mut l = PgListener::connect_with(&self.direct).await?;
-        // A lost connection is reported (see `notification`), never quietly replaced.
-        l.eager_reconnect(false);
-        l.listen(channel).await?;
-        Ok(l)
+    /// What is announced on `channels` from now on, over the replica's one listening connection ([`LISTENERS`], on
+    /// [`Db::direct`]): it LISTENs on a channel new to it before this returns, unless it is reconnecting. The first
+    /// thing heard is [`Heard::Missed`], so the subscriber reads what it keeps once, as when that connection is lost and
+    /// back or its queue overflows; it ends (`None`) when the direct pool is closed. The listening task ends with its
+    /// last subscriber.
+    pub async fn subscribe(&self, channels: &[&'static str]) -> Subscription {
+        let (tx, rx) = mpsc::channel(HEARD_QUEUE);
+        let flags = Arc::new(Flags { dropped: AtomicU64::new(0), lost: AtomicBool::new(true) });
+        let (ready, joined) = oneshot::channel();
+        let join = Cmd::Join(Sub { channels: channels.to_vec(), tx, flags: flags.clone() }, ready);
+        let hub = {
+            let mut slot = self.hub.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A hub that has ended (no subscriber was left, or its runtime stopped) gives the join back.
+            let unsent = match slot.as_ref() {
+                Some(h) => h.send(join).err().map(|e| e.0),
+                None => Some(join),
+            };
+            if let Some(join) = unsent {
+                let (h, joins) = mpsc::unbounded_channel();
+                let _ = h.send(join);
+                tokio::spawn(listen(self.direct.clone(), self.hub.clone(), joins));
+                *slot = Some(h);
+            }
+            slot.clone()
+        };
+        let _ = joined.await;
+        Subscription { rx, flags, hub }
     }
 
     /// Applies the kernel's own SQL migrations (idempotent; safe with several replicas: sqlx holds a session lock while
@@ -745,10 +774,173 @@ async fn on_replica(r: &crate::replica::Reads, tenant: Uuid, timeout_ms: u64, at
     }
 }
 
-/// The next notification on `l`; an error when its connection was lost, so that the caller recovers what it may have
-/// missed. (sqlx's own `recv` would open a new connection and go on as if nothing had been missed.)
-pub async fn notification(l: &mut PgListener) -> std::result::Result<PgNotification, sqlx::Error> {
-    l.try_recv().await?.ok_or_else(|| sqlx::Error::Io(std::io::ErrorKind::ConnectionAborted.into()))
+/// What a [`Subscription`] hears.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Heard {
+    /// A notification on one of its channels.
+    Said { channel: &'static str, payload: String },
+    /// Notifications may have been missed, so whatever the subscriber keeps from them is to be read again: it has just
+    /// subscribed, the listening connection was lost or is back, or `dropped` were dropped because its queue was full.
+    Missed { dropped: u64 },
+}
+
+/// What [`Db::subscribe`] hears, in order.
+pub struct Subscription {
+    rx: mpsc::Receiver<Heard>,
+    flags: Arc<Flags>,
+    hub: Option<mpsc::UnboundedSender<Cmd>>,
+}
+
+impl Subscription {
+    /// The next thing heard; `None` once the listening task has ended (the direct pool was closed).
+    pub async fn recv(&mut self) -> Option<Heard> {
+        // What a full queue could not take, before what waits in it.
+        let dropped = self.flags.dropped.swap(0, Ordering::SeqCst);
+        if self.flags.lost.swap(false, Ordering::SeqCst) || dropped > 0 {
+            return Some(Heard::Missed { dropped });
+        }
+        self.rx.recv().await
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        // Closed first, so the hub sees it gone when it wakes.
+        self.rx.close();
+        if let Some(h) = &self.hub {
+            let _ = h.send(Cmd::Gone);
+        }
+    }
+}
+
+/// What the hub could not put in a subscriber's queue.
+struct Flags {
+    dropped: AtomicU64,
+    lost: AtomicBool,
+}
+
+struct Sub {
+    channels: Vec<&'static str>,
+    tx: mpsc::Sender<Heard>,
+    flags: Arc<Flags>,
+}
+
+impl Sub {
+    fn heard(&self, channel: &'static str, payload: &str) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(Heard::Said { channel, payload: payload.to_string() }) {
+            self.flags.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn missed(&self) {
+        // A word not read yet stands for this one too (a subscriber waiting to be told it listens has one).
+        if !self.flags.lost.load(Ordering::SeqCst) && self.tx.try_send(Heard::Missed { dropped: 0 }).is_err() {
+            self.flags.lost.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// What the hub is told: a subscriber, and who waits for it to listen; or that one has gone.
+enum Cmd {
+    Join(Sub, oneshot::Sender<()>),
+    Gone,
+}
+
+/// The replica's listening task ([`Db::subscribe`]): one connection of `direct` LISTENs on every subscriber's channels,
+/// and each notification is put in the queue of each subscriber to its channel without waiting, so a slow one holds up
+/// nothing. A lost connection is opened again (with backoff), and every subscriber is told as it is lost and once it
+/// listens again. It ends when no subscriber is left, or when `direct` is closed.
+async fn listen(direct: sqlx::PgPool, slot: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<Cmd>>>>, mut cmds: mpsc::UnboundedReceiver<Cmd>) {
+    const FIRST: Duration = Duration::from_millis(250);
+    let mut subs: Vec<Sub> = Vec::new();
+    let mut listener: Option<PgListener> = None;
+    let mut backoff = FIRST;
+    // Subscribers waiting for the connection to be tried before `subscribe` returns.
+    let mut waiting: Vec<oneshot::Sender<()>> = Vec::new();
+    loop {
+        subs.retain(|s| !s.tx.is_closed());
+        if subs.is_empty() {
+            // Under the lock `subscribe` sends with: a subscriber either is in `cmds` now or starts another hub.
+            let mut held = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cmds.is_empty() {
+                *held = None;
+                return;
+            }
+        } else if listener.is_none() {
+            let mut channels: Vec<&str> = subs.iter().flat_map(|s| s.channels.iter().copied()).collect();
+            channels.sort_unstable();
+            channels.dedup();
+            match listening(&direct, &channels).await {
+                Ok(l) => {
+                    listener = Some(l);
+                    backoff = FIRST;
+                    subs.iter().for_each(Sub::missed);
+                }
+                Err(sqlx::Error::PoolClosed) => return,
+                Err(e) => tracing::warn!("listening for other replicas' changes failed (trying again in {backoff:?}): {e}"),
+            }
+            // Each is told once it listens (its first word, `Missed`, not read yet, stands for this connection).
+            for w in waiting.drain(..) {
+                let _ = w.send(());
+            }
+        }
+        tokio::select! {
+            cmd = cmds.recv() => match cmd {
+                Some(Cmd::Join(sub, ready)) => {
+                    let new: Vec<&str> = sub.channels.iter().copied().filter(|c| !subs.iter().any(|s| s.channels.contains(c))).collect();
+                    subs.push(sub);
+                    match listener.as_mut() {
+                        // Connected next time round, then told.
+                        None => waiting.push(ready),
+                        Some(l) => {
+                            if !new.is_empty()
+                                && let Err(e) = l.listen_all(new).await
+                            {
+                                tracing::warn!("listening on a new channel failed: {e}");
+                                listener = None;
+                                subs.iter().for_each(Sub::missed);
+                            }
+                            let _ = ready.send(());
+                        }
+                    }
+                }
+                Some(Cmd::Gone) | None => {}
+            },
+            n = next(&mut listener) => match n {
+                Ok(Some(n)) => {
+                    for s in &subs {
+                        if let Some(c) = s.channels.iter().find(|c| **c == n.channel()) {
+                            s.heard(c, n.payload());
+                        }
+                    }
+                }
+                Err(sqlx::Error::PoolClosed) => return,
+                // `Ok(None)`: the connection was lost (sqlx would open another and go on as if nothing was missed).
+                lost => {
+                    tracing::warn!("the connection listening for other replicas' changes was lost: {:?}", lost.err());
+                    listener = None;
+                    subs.iter().for_each(Sub::missed);
+                }
+            },
+            _ = tokio::time::sleep(backoff), if listener.is_none() && !subs.is_empty() => backoff = (backoff * 2).min(Duration::from_secs(10)),
+        }
+    }
+}
+
+/// A connection of `direct` that LISTENs on `channels`, and says when it is lost rather than opening another.
+async fn listening(direct: &sqlx::PgPool, channels: &[&str]) -> std::result::Result<PgListener, sqlx::Error> {
+    let mut l = PgListener::connect_with(direct).await?;
+    l.eager_reconnect(false);
+    l.listen_all(channels.iter().copied()).await?;
+    Ok(l)
+}
+
+/// The next notification on `l`, if it is connected (`Ok(None)`: it was lost); never ready while it is not.
+async fn next(l: &mut Option<PgListener>) -> std::result::Result<Option<PgNotification>, sqlx::Error> {
+    match l {
+        Some(l) => l.try_recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Runs `f` again (with jittered exponential backoff) when Postgres reports a serialization

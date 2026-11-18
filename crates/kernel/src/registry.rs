@@ -392,58 +392,45 @@ impl Registry {
         Ok(())
     }
 
-    /// Listens for metadata changes from any replica. On connection loss the whole cache is
-    /// dropped (notifications may have been missed) and the listener reconnects with backoff.
+    /// Listens for metadata and settings changes from any replica. Whenever some may have been missed (at the start, a
+    /// lost listening connection, a full queue) the settings are read again, the app catalog reloaded and the whole
+    /// cache dropped.
     pub fn spawn_listener(self: &Arc<Self>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        use crate::db::Heard;
         let me = self.clone();
         tokio::spawn(async move {
-            let mut backoff = Duration::from_millis(250);
+            if *shutdown.borrow() {
+                return;
+            }
+            let mut heard = tokio::select! {
+                _ = shutdown.changed() => return,
+                h = me.db.subscribe(&[META_CHANNEL, SETTINGS_CHANNEL]) => h,
+            };
             loop {
-                if *shutdown.borrow() {
-                    return;
-                }
-                let listening = match me.db.listen(META_CHANNEL).await {
-                    Ok(mut listener) => listener.listen(SETTINGS_CHANNEL).await.map(|()| listener).map_err(Error::from),
-                    Err(e) => Err(e),
+                let h = tokio::select! {
+                    _ = shutdown.changed() => return,
+                    h = heard.recv() => h,
                 };
-                match listening {
-                    Ok(mut listener) => {
-                        backoff = Duration::from_millis(250);
+                match h {
+                    None => return,
+                    Some(Heard::Missed { .. }) => {
                         me.settings_changed();
                         if let Err(e) = me.reload_catalog().await {
                             tracing::error!("reloading the app catalog failed: {e}");
                         }
                         me.invalidate_all();
-                        loop {
-                            tokio::select! {
-                                _ = shutdown.changed() => return,
-                                msg = crate::db::notification(&mut listener) => match msg {
-                                    Ok(n) if n.channel() == SETTINGS_CHANNEL => me.settings_changed(),
-                                    Ok(n) if n.payload() == CATALOG_CHANGED => {
-                                        if let Err(e) = me.reload_catalog().await {
-                                            tracing::error!("reloading the app catalog failed: {e}");
-                                        }
-                                    }
-                                    Ok(n) => match n.payload().parse::<Uuid>() {
-                                        Ok(t) => me.invalidate(t),
-                                        Err(_) => me.invalidate_all(),
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!("metadata listener lost connection: {e}");
-                                        me.invalidate_all();
-                                        break;
-                                    }
-                                }
-                            }
+                    }
+                    Some(Heard::Said { channel, .. }) if channel == SETTINGS_CHANNEL => me.settings_changed(),
+                    Some(Heard::Said { payload, .. }) if payload == CATALOG_CHANGED => {
+                        if let Err(e) = me.reload_catalog().await {
+                            tracing::error!("reloading the app catalog failed: {e}");
                         }
                     }
-                    Err(e) => tracing::warn!("metadata listener cannot connect: {e}"),
+                    Some(Heard::Said { payload, .. }) => match payload.parse::<Uuid>() {
+                        Ok(t) => me.invalidate(t),
+                        Err(_) => me.invalidate_all(),
+                    },
                 }
-                tokio::select! {
-                    _ = shutdown.changed() => return,
-                    _ = tokio::time::sleep(backoff) => {}
-                }
-                backoff = (backoff * 2).min(Duration::from_secs(10));
             }
         })
     }

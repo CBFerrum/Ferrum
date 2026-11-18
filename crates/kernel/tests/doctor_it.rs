@@ -246,12 +246,13 @@ async fn scenario() {
     assert_eq!(own, 21, "4 job workers + 7 for events and webhooks + 6 + 4 workspaces' app upkeep at once");
     assert!(pool.detail.contains(&format!("can hold {own} at once")) && own as usize >= share + 4, "{pool:?}");
     // The budget the doctor states is the sum of every pool's maximum, main, side and direct (and read, none here), and
-    // the locks on connections detached from the direct pool (2).
+    // the locks a starting replica holds on connections detached from the direct pool (2).
     let most = |p: &sqlx::PgPool| p.options().get_max_connections();
-    let beside = most(&r.db.side) + most(&r.db.direct) + ferrum_kernel::db::DETACHED_LOCKS;
-    assert_eq!(most(&r.db.direct), 6, "5 listeners and 1 session lock: apps' upkeep holds none");
+    let beside = most(&r.db.side) + most(&r.db.direct);
+    assert_eq!(most(&r.db.direct), 2, "1 listening connection and 1 session lock: apps' upkeep holds none");
     let budget = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.connections").unwrap();
     assert!(budget.detail.contains(&format!("30 per replica and {beside} beside its pool")), "{budget:?}");
+    assert!(budget.detail.contains(&format!("up to {} more while a replica starts", ferrum_kernel::db::DETACHED_LOCKS)), "{budget:?}");
     let _ = stop.send(true);
     futures::future::join_all(listeners).await;
 

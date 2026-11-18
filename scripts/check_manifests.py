@@ -6,18 +6,51 @@ number on every apply, which is how a deployment during a peak cuts capacity. An
 fits the database's connections on the day it was chosen stops fitting when either side changes.
 """
 import pathlib
+import re
 import sys
 
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-# What each replica opens besides its pool: its side pool for short side writes and the vault's verbs (an eighth of the
-# pool, at least 4) and 2 of Loco's own (beside_pool in crates/kernel/src/doctor.rs; docs/operations.md, "Database role").
+
+
+def constant(name):
+    """A connection count the kernel states (crates/kernel/src/db.rs), read from the code, so the budget follows it."""
+    found = re.search(rf"pub const {name}: u32 = (\d+);", (ROOT / "crates/kernel/src/db.rs").read_text())
+    return int(found.group(1))
+
+
+# The direct pool's most: the one connection that LISTENs on every channel and a session lock at a time.
+DIRECT = constant("LISTENERS") + constant("DIRECT_LOCKS")
+# What a pod holds on connections outside every pool while it starts.
+DETACHED = constant("DETACHED_LOCKS")
+
+
+# What each replica opens besides its pool (side_connections and DbConfig's direct_connections in
+# crates/kernel/src/db.rs; docs/operations.md, "Database role"): its side pool for short side writes and the vault's
+# verbs (an eighth of the pool, at least SIDE_CONNECTIONS) and the direct pool.
 def beside(size):
-    return max(-(-size // 8), 4) + 2
+    return max(-(-size // 8), constant("SIDE_CONNECTIONS")) + DIRECT
 
 
-BESIDE = beside(30)
+def chart_drift():
+    """Where the chart counts other connections than the code opens: its ferrum.beside and the pooler's
+    directConnectionsPerReplica."""
+    chart = ROOT / "deploy/helm/ferrum"
+    wrong = []
+    line = f"{{{{ add (max {constant('SIDE_CONNECTIONS')} (div (add (int .) 7) 8)) {DIRECT} }}}}"
+    pools = (chart / "templates/_pools.tpl").read_text()
+    if line not in pools:
+        wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.beside must be {line}, what crates/kernel/src/db.rs opens")
+    detached = f'{{{{- define "ferrum.detached" -}}}}{DETACHED}{{{{- end -}}}}'
+    if detached not in pools:
+        wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.detached must be {detached}, what crates/kernel/src/db.rs holds")
+    per = yaml.safe_load((chart / "values.yaml").read_text())["database"]["pooler"]["directConnectionsPerReplica"]
+    if per != DIRECT:
+        wrong.append(f"deploy/helm/ferrum/values.yaml: database.pooler.directConnectionsPerReplica is {per}, and a replica opens {DIRECT} direct")
+    return wrong
+
+
 # What else uses this role: Cloud's controller at two replicas of ten, when it is deployed.
 OTHERS = 20
 # What PostgreSQL must keep for an administrator and replication (RESERVED_CONNECTIONS in doctor.rs).
@@ -54,7 +87,7 @@ def per_replica(spec, pooler):
     if size is None:
         return None
     if pooler and through_pooler(spec):
-        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", 6))
+        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", DIRECT))
     return size + beside(size)
 
 
@@ -70,6 +103,13 @@ def surge(workload, most):
     if isinstance(value, str) and value.endswith("%"):
         return -(-most * int(value[:-1]) // 100)
     return int(value)
+
+
+def at_most(n, extra, each):
+    """What `n` pods of `each` connections and the `extra` a rollout adds hold at most, with the locks a starting pod
+    holds outside its pools: in a rollout the `extra` start beside the others; at a first install or a full restart all
+    `n` start at once, with none extra. The larger of the two."""
+    return max((n + extra) * each + extra * DETACHED, n * (each + DETACHED))
 
 
 def pooler_connections(pooler):
@@ -118,7 +158,7 @@ def problems(docs):
             continue
         through = pooler is not None and through_pooler(entry[1]["spec"])
         most = hpa["spec"]["maxReplicas"]
-        needed = (most + surge(entry[1], most)) * each + OTHERS + (pooler_connections(pooler) if through else 0)
+        needed = at_most(most, surge(entry[1], most), each) + OTHERS + (pooler_connections(pooler) if through else 0)
         spec = clusters[0]["spec"]
         allowed = int(spec["postgresql"]["parameters"]["max_connections"])
         roles = spec.get("managed", {}).get("roles", [])
@@ -144,7 +184,7 @@ def problems(docs):
             if each is not None:
                 key = (d["kind"], d["metadata"]["name"])
                 n = most.get(key, d["spec"].get("parallelism" if d["kind"] == "Job" else "replicas", 1))
-                parts.append((key, (n + surge(d, n)) * each))
+                parts.append((key, at_most(n, surge(d, n), each)))
     if pooler:
         parts.append((("Pooler", pooler["metadata"]["name"]), pooler_connections(pooler)))
     needed = sum(n for _, n in parts) + OTHERS
@@ -165,7 +205,7 @@ if __name__ == "__main__":
         docs = documents(pathlib.Path(source))
     else:
         docs = rendered(pathlib.Path(source).name, pathlib.Path(source).read_text())
-    wrong = problems(docs)
+    wrong = chart_drift() + problems(docs)
     for line in wrong:
         print(line)
     sys.exit(1 if wrong else 0)

@@ -63,8 +63,8 @@ side by side. So one workspace's backlog, or its slow provider, does not delay a
 side means as many events at once as a quarter of the replica's database pool (7 of the default 30), shared
 with the webhook sender's reads, so that a backlog never takes the connections requests need; slow providers
 holding all of those at once delay the rest by up to their handlers' 120 seconds. A replica's whole budget
-is its main pool, the side pool, the direct pool (listeners and session locks, which never take a request's connection),
-and the read pool when a read address is set (docs/operations.md, "Database role").
+is its main pool, the side pool, the direct pool (the listening connection and session locks, which never take a request's
+connection), and the read pool when a read address is set (docs/operations.md, "Database role").
 Within a workspace, mail and push go first and bulk work last: bulk operations, imports, jobs at
 bulk priority and sends to a whole list. A mail sent under bulk priority stays there, so 50,000
 campaign messages do not stand in front of someone's password reset. Run anything of the kind under

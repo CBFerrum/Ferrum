@@ -47,24 +47,29 @@ async fn sessions_carry_tcp_keepalives() {
     }
 }
 
-/// The LISTEN loops and the session locks hold their connections for as long as they run. Without a pooler the direct
+/// What listens and the session locks hold their connections for as long as they run. Without a pooler the direct
 /// address is the main one, and they used to sit in the request pool (5 of its 30 for ever, and the apps' upkeep locks
-/// beside). They now have a pool of their own, whatever the address, and each pool says its name to PostgreSQL: the
-/// figure is the request pool's connections in use on an idle replica with its five listeners running.
+/// beside). They now have a pool of their own, whatever the address, and each pool says its name to PostgreSQL. The
+/// server's five listeners (metadata and settings, users and the vault, plugin sockets, live updates, co-editing) each
+/// held a connection of it; they now share one: the figures are the request pool's and the direct pool's connections in
+/// use on an idle replica with its five subscribers on their seven channels.
 #[tokio::test]
 async fn direct_is_own_pool() {
     let _one = ONE_AT_A_TIME.lock().await;
     let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.unwrap();
     assert!(!db.pooled(), "the same address: no pooler");
+    let channels: [&[&'static str]; 5] =
+        [&["db_it_meta", "db_it_settings"], &["db_it_users", "db_it_vault"], &["db_it_sockets"], &["db_it_live"], &["db_it_coedit"]];
     let mut listeners = Vec::new();
-    for n in 0..LISTENERS {
-        listeners.push(db.listen(&format!("db_it_listener_{n}")).await.unwrap());
+    for c in channels {
+        listeners.push(db.subscribe(c).await);
     }
     let in_use = |p: &sqlx::PgPool| p.size() as usize - p.num_idle();
     let (request, direct) = (in_use(&db.pool), in_use(&db.direct));
-    eprintln!("request pool connections in use with {LISTENERS} listeners running: {request}; direct pool: {direct}");
-    assert_eq!(request, 0, "the listeners hold none of the request pool's connections");
-    assert_eq!(direct, LISTENERS as usize, "they are all in the direct pool");
+    eprintln!("request pool connections in use with 5 subscribers on 7 channels: {request}; direct pool: {direct}");
+    assert_eq!(request, 0, "the listener holds none of the request pool's connections");
+    assert_eq!(direct, 1, "one connection of the direct pool listens for all of them");
+    assert_eq!(LISTENERS, 1);
     // What PostgreSQL sees, by name (a connection of its own: no pool of the server's is touched).
     let mut conn = sqlx::PgConnection::connect(&url()).await.unwrap();
     let seen: Vec<(String, i64)> = sqlx::query_as(
@@ -75,7 +80,7 @@ async fn direct_is_own_pool() {
     .await
     .unwrap();
     let count = |name: &str| seen.iter().find(|(n, _)| n == name).map_or(0, |(_, c)| *c);
-    assert_eq!(count("ferrum-direct"), LISTENERS as i64, "{seen:?}");
+    assert_eq!(count("ferrum-direct"), 1, "{seen:?}");
     assert!(count("ferrum") <= 2, "at most two request connections on an idle replica: {seen:?}");
     drop(listeners);
     db.close().await;

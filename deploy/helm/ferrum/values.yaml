@@ -28,8 +28,9 @@ names:
   domainProof: ""     # FERRUM_DOMAIN_PROOF: points, or record (a domain's DNS record as well); empty: record with a base domain
   dnsResolvers: ""    # FERRUM_DNS_RESOLVERS: DNS servers asked for that record, comma-separated; empty: the system's
 logLevel: info
-# Connections each replica may open (plus 6 beside them: 4 on the side, 2 of Loco's own). Autoscaling's
-# maxReplicas x (this + 6) must fit the database's connectionLimit.
+# Connections each replica may open (plus 6 beside them: 4 on the side, an eighth of this past 32, and 2 direct: the
+# connection that LISTENs and a session lock). Autoscaling's maxReplicas x (this + 6) must fit the database's
+# connectionLimit.
 dbMaxConnections: 30
 
 # Attachments must be shared by all replicas: object storage. The credentials are
@@ -106,8 +107,8 @@ replicas: 3     # used only when autoscaling.enabled is false
 autoscaling:
   enabled: true
   minReplicas: 3
-  # Each replica may open dbMaxConnections + 6 connections; (9 + 1 in a rollout) x 36 and 20 for others fit
-  # connectionLimit 380.
+  # Each replica may open dbMaxConnections + 6 connections, and 2 more while it starts: (9 + 1 in a rollout) x 36,
+  # 1 starting x 2 and 20 for others = 382 fit connectionLimit 390 (a full restart's 9 x 38 = 342 is less).
   # Add a PgBouncer pooler before raising this.
   maxReplicas: 9
   cpuUtilization: 70
@@ -273,9 +274,9 @@ database:
   walStorageSize: 20Gi
   # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
   # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart.
-  connectionLimit: 380
+  connectionLimit: 390
   parameters:
-    max_connections: "400"
+    max_connections: "410"
     shared_buffers: 2GB
     effective_cache_size: 6GB
     work_mem: 16MB
@@ -311,9 +312,9 @@ database:
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
     maxPreparedStatements: 200    # max_prepared_statements; must be at least 1: the server uses prepared statements
     parameters: {}                # other PgBouncer settings CloudNativePG allows
-    # Each replica's direct connections: its 5 listeners and 1 session lock at a time (apps' upkeep holds none: it
-    # works in the pool).
-    directConnectionsPerReplica: 6
+    # Each replica's direct connections: the one that LISTENs on every channel and 1 session lock at a time (apps'
+    # upkeep holds none: it works in the pool). scripts/check_manifests.py fails when the code opens another number.
+    directConnectionsPerReplica: 2
     resources:
       requests: {cpu: 100m, memory: 64Mi}
       limits: {memory: 256Mi}
