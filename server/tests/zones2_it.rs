@@ -69,6 +69,9 @@ async fn call(s: &Server, method: Method, host: &str, path: &str, cred: Cred<'_>
         }
         Cred::Basic(u, p) => req = req.header(header::AUTHORIZATION, format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}")))),
     }
+    if path == "/mcp" {
+        req = req.header("mcp-protocol-version", "2025-11-25");
+    }
     let req = match body {
         Some(b) => req.header(header::CONTENT_TYPE, "application/json").body(Body::from(b.to_string())),
         None => req.body(Body::empty()),
@@ -365,7 +368,11 @@ async fn scenario() {
         assert!(!work.contains("look") && !work.contains(&ticket.to_string()), "{name}: my work: {work}");
         for (method, params) in [("resources/list", json!({})), ("resources/read", json!({"uri": "ferrum://overview"}))] {
             let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-            let (_, here) = call(&sales, Method::POST, SALES_HOST, "/mcp", cred, Some(body.clone())).await;
+            let (status, here) = call(&sales, Method::POST, SALES_HOST, "/mcp", cred, Some(body.clone())).await;
+            if name == "cookie" {
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "an agent's credential is a bearer one: {here}");
+                continue;
+            }
             let (_, there) = call(&open, Method::POST, SALES_HOST, "/mcp", cred, Some(body)).await;
             assert!(!here.contains("Ticket") && here.contains("Lead") && there.contains("Ticket"), "{name}: MCP {method}: {here}");
         }

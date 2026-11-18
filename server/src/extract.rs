@@ -374,6 +374,21 @@ impl FromRequestParts<AppContext> for Auth {
     }
 }
 
+/// [`Auth`] for a caller that is a program, never a browser page (`/mcp`): `Authorization: Bearer` only, so a page
+/// cannot send a request there on the strength of the browser's cookie.
+pub struct BearerAuth(pub Ctx);
+
+impl FromRequestParts<AppContext> for BearerAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
+        if bearer(&parts.headers).is_none() {
+            return Err(ApiError(Error::Unauthorized("sign in with Authorization: Bearer; the browser's cookie is not taken here".into())));
+        }
+        Auth::from_request_parts(parts, state).await.map(|Auth(ctx)| BearerAuth(ctx))
+    }
+}
+
 /// A call made from an app's screen (docs/plugins.md, "Pages an app brings"): only to records, metadata
 /// and the app's own endpoints; with the user's rights narrowed to what the app declared; never
 /// as an administrator.
