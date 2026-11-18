@@ -5,6 +5,8 @@ pool, today's, named as before. The first pool keeps today's names and selector;
 Call with the root context: include "ferrum.pools" . | fromJson
 */}}
 {{- define "ferrum.pools" -}}
+{{- /* The placeholders and the database's values are checked before anything counts on them, whichever template renders first. */ -}}
+{{- $_ := include "ferrum.placeholders" . -}}
 {{- $v := .Values -}}
 {{- $n := include "ferrum.fullname" . -}}
 {{- $out := list -}}
@@ -19,7 +21,7 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- end -}}
 {{- if hasKey $seen $name -}}{{- fail (printf "two pools are named %s: each pool needs a name of its own" $name) -}}{{- end -}}
 {{- $_ := set $seen $name true -}}
-{{- if has $name (list "pdf" "db" "db-pooler" "office" "editors" "metrics-engine" "migrate" "background" "private") -}}
+{{- if has $name (list "pdf" "office" "editors" "metrics-engine" "migrate" "settings" "background" "private" "vault-key") -}}
 {{- fail (printf "pool %s: %s-%s is the name of another part of the chart; choose another name" $name $n $name) -}}
 {{- end -}}
 {{- $bg := $p.background | default "both" -}}
@@ -74,20 +76,14 @@ Call with the root context: include "ferrum.pools" . | fromJson
 ) -}}
 {{- end -}}
 {{- end -}}
-{{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
-(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). Each replica opens its pool and what
-ferrum.beside says beside it (6 with a pool of 30 or fewer), and a starting one ferrum.detached more. With the pooler, each replica
-counts only its direct connections and the pooler its own. Each pool counts its most replicas plus the pods a rollout
-adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
-{{- $pl := $v.database.pooler -}}
-{{- if and $v.database.enabled (or $v.pools $pl.enabled) -}}
+{{- /* The connection budget: every pool at its most replicas, the migrate and settings Jobs, and what else uses the role
+(scripts/check_manifests.py: OTHERS), within database.connectionLimit: the connections the role may hold on PostgreSQL for
+this installation. Each replica opens its pool and what ferrum.beside says beside it (6 with a pool of 30 or fewer), and a
+starting one ferrum.detached more. With database.directHost (a pooler in front), each replica counts only its direct
+connections (ferrum.direct): the pooler's own connections to PostgreSQL are the provider's to fit. Each pool counts its most
+replicas plus the pods a rollout adds (ferrum.maxSurge). */ -}}
 {{- $need := 20 -}}
 {{- $parts := list -}}
-{{- if $pl.enabled -}}
-{{- $per := add (int $pl.poolSize) (int (get ($pl.parameters | default dict) "reserve_pool_size" | default 0)) -}}
-{{- $need = add $need (mul (int $pl.instances) $per) -}}
-{{- $parts = append $parts (printf "the pooler %d x %d" (int $pl.instances) (int $per)) -}}
-{{- end -}}
 {{- range $out -}}
 {{- $m := ternary .autoscaling.maxReplicas .replicas .autoscaling.enabled | int -}}
 {{- if and .keda .keda.enabled }}{{ $m = int .keda.maxReplicas }}{{ end -}}
@@ -96,8 +92,8 @@ adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- $r := add $m $s -}}
 {{- $each := 0 -}}
 {{- $part := "" -}}
-{{- if and $pl.enabled $pl.used -}}
-{{- $each = int $pl.directConnectionsPerReplica -}}
+{{- if $v.database.directHost -}}
+{{- $each = int (include "ferrum.direct" $) -}}
 {{- $part = printf "%s (%d + %d in a rollout) x %d direct" (.name | default "ferrum") $m $s $each -}}
 {{- else -}}
 {{- $b := int (include "ferrum.beside" .dbMaxConnections) -}}
@@ -121,17 +117,18 @@ larger of the two counts. */ -}}
 {{- /* A task (the migrate and settings Jobs) opens the same pools, listens on nothing, and starts as a replica does. */ -}}
 {{- $b := int (include "ferrum.beside" $v.dbMaxConnections) -}}
 {{- $d := int (include "ferrum.detached" .) -}}
+{{- $task := add (int $v.dbMaxConnections) $b $d -}}
+{{- if $v.database.directHost }}{{ $task = add (int (include "ferrum.direct" .)) $d }}{{ end -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
-{{- $need = add $need (add (int $v.dbMaxConnections) $b $d) -}}
-{{- $parts = append $parts (printf "the migrate Job %d + %d + %d" (int $v.dbMaxConnections) $b $d) -}}
+{{- $need = add $need $task -}}
+{{- $parts = append $parts (printf "the migrate Job %d" (int $task)) -}}
 {{- end -}}
 {{- if eq (include "ferrum.settingsJob" .) "true" -}}
-{{- $need = add $need (add (int $v.dbMaxConnections) $b $d) -}}
-{{- $parts = append $parts (printf "the settings Job %d + %d + %d" (int $v.dbMaxConnections) $b $d) -}}
+{{- $need = add $need $task -}}
+{{- $parts = append $parts (printf "the settings Job %d" (int $task)) -}}
 {{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
-{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}
-{{- end -}}
+{{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections, or raise the role's limit%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or set database.directHost when a pooler is in front" "" (empty $v.database.directHost))) -}}
 {{- end -}}
 {{- toJson (dict "pools" $out) -}}
 {{- end -}}
@@ -143,9 +140,14 @@ longer says what the code opens. */}}
 {{- define "ferrum.beside" -}}{{ add (max 4 (div (add (int .) 7) 8)) 2 }}{{- end -}}
 
 {{/* The locks a pod takes on connections outside every pool while it starts (DETACHED_LOCKS in
-crates/kernel/src/db.rs: the version check's, then the bucket's set-up and the old files directory's rescue).
-scripts/check_manifests.py fails when this line no longer says what the code holds. */}}
+crates/kernel/src/db.rs: the two-version window's check, then its start hold). scripts/check_manifests.py fails when this
+line no longer says what the code holds. */}}
 {{- define "ferrum.detached" -}}2{{- end -}}
+
+{{/* What a replica opens on PostgreSQL itself when a pooler is in front (database.directHost): the direct pool's, the one
+connection that LISTENs on every channel and a session lock (LISTENERS + DIRECT_LOCKS in crates/kernel/src/db.rs).
+scripts/check_manifests.py fails when this line no longer says what the code opens. */}}
+{{- define "ferrum.direct" -}}2{{- end -}}
 
 {{/* A selector for every server pod, whatever its pool. Call with the root context. */}}
 {{- define "ferrum.serverPods" -}}
@@ -178,13 +180,12 @@ Call with (list . pool). */}}
 {{- toYaml $env -}}
 {{- end -}}
 
-{{/* "true" when the migrate Job is rendered. Not on the first install with the chart's own database: the
-hook would run before the database exists, so the pods migrate themselves that once. */}}
 {{/* Extra pods a server Deployment runs during a rollout (its strategy's maxSurge); the budget counts them. */}}
 {{- define "ferrum.maxSurge" -}}1{{- end -}}
 
+{{/* "true" when the migrate Job is rendered: the database exists before the release, so the hook can always run. */}}
 {{- define "ferrum.migrateJob" -}}
-{{- if and .Values.migrate.enabled (or (not .Values.database.enabled) .Release.IsUpgrade) }}true{{ end -}}
+{{- if .Values.migrate.enabled }}true{{ end -}}
 {{- end -}}
 
 {{/*

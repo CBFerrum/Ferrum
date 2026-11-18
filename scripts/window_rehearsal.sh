@@ -18,9 +18,9 @@
 # 2. the older build starts again, with FERRUM_MIGRATE_AT_START=false and then true: each time it must start as a guest,
 #    read and write the records it knows, leave the schema, the vault and the stored settings exactly as they were, and
 #    leave this build's waiting work alone (this build then takes it);
-# 3. with SeaweedFS on the PATH (deploy/store/start.sh, as Compose runs it): this build moves the files to object
-#    storage (`files_move`) and the directory goes; the older build starts on that database and reads and writes files
-#    there, and this build reads what it wrote. Every start after this one is given the store's settings.
+# 3. every start is given an object store (SeaweedFS on the PATH, reference/store/start.sh as the reference stacks run it, its
+#    bucket made over S3 with curl): the older build's file is read by this build, the older build writes one on the
+#    database this build migrated, and this build reads what it wrote.
 #
 # The database is created and dropped here, so its name must start with ferrum_windowrehearsal_. Settings: FERRUM_BIN
 # (this build; default target/debug/ferrum, built with `cargo build -p ferrum-server --no-default-features --bin ferrum`),
@@ -91,12 +91,28 @@ trap 'exit 130' INT TERM HUP
 
 export JWT_SECRET
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-# Production settings, the only ones that read FERRUM_MIGRATE_AT_START; a files directory in place of a bucket.
-export LOCO_ENV=production LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_REQUIRE_OBJECT_STORAGE=false
+# Production settings, the only ones that read FERRUM_MIGRATE_AT_START (and that need an object store, started below).
+export LOCO_ENV=production LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token
 PASSWORD='Rehearsal-Passw0rd'
 mkdir -p "$work/files" "$work/run"
-# The files of /run/ferrum, where a debug build reads them (the chart's key file, the store's handoff).
+# The files of /run/ferrum, where a debug build reads them (the chart's key file).
 export FERRUM_TEST_RUN_DIR="$work/run"
+
+# The object store every start is given: production keeps files nowhere else. Its keys are the ones it is given, which the
+# older build, with no vault, takes from the environment; its bucket is made over S3 (the older build makes none).
+command -v weed >/dev/null 2>&1 || { echo "refused: no weed (SeaweedFS) on the PATH: a production start needs an object store (brew install seaweedfs)" >&2; exit 2; }
+SPORT=${WINDOW_STORE_PORT:-39400}
+for p in "$SPORT" $((SPORT + 10)) $((SPORT + 11)) $((SPORT + 12)) $((SPORT + 10010)) $((SPORT + 10011)) $((SPORT + 10012)); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then echo "refused: something listens on 127.0.0.1:$p (set WINDOW_STORE_PORT)" >&2; exit 2; fi
+done
+KEY=FERRUMWINDOW SECRET=window-secret-key-0123456789
+STORE_DATA="$work/store" STORE_ACCESS_KEY="$KEY" STORE_SECRET_KEY="$SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$SPORT \
+  STORE_ARGS="-master.port=$((SPORT + 10)) -volume.port=$((SPORT + 11)) -filer.port=$((SPORT + 12)) -master.volumeSizeLimitMB=64" \
+  sh "$ROOT/reference/store/start.sh" >"$work/store.log" 2>&1 &
+STORE_PID=$!
+for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$SPORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user "$KEY:$SECRET" "http://127.0.0.1:$SPORT/ferrum" >/dev/null || fail "making the store's bucket"
+STORE_ENV=(FERRUM_S3_BUCKET=ferrum "FERRUM_S3_ENDPOINT=http://127.0.0.1:$SPORT" FERRUM_S3_REGION=us-east-1 "AWS_ACCESS_KEY_ID=$KEY" "AWS_SECRET_ACCESS_KEY=$SECRET")
 
 # Starts a build (old or new) and waits until it answers, or until it ends (a refusal): 0 when it answers.
 start() {
@@ -167,14 +183,12 @@ curl -fsS "$URL/api/tenants" -H 'x-ferrum-bootstrap-token: rehearsal-token' -H '
   -d "{\"slug\":\"window\",\"name\":\"Window\",\"admin_email\":\"admin@window.test\",\"admin_password\":\"$PASSWORD\",\"packages\":[\"contacts\"]}" >/dev/null
 T=$(token)
 [ "$(contact "$T" Old-1)" = 201 ] || fail "a record with the older build"
-# An installation keeping its files in a local directory, as one from before object storage only (D6) does.
 FIRST=$(curl -fsS "$URL/api/files" -H "authorization: Bearer $T" -F "file=@$ROOT/README.md" | json 'd["id"] + " " + d["sha256"]') ||
   fail "a file with the older build"
 stop
 
 step "this build migrates; with its background work off it leaves an event and a job waiting"
 start new new-first || fail "this build did not start"
-grep -q "files are kept in a local directory" "$work/new-first.log" || fail "this build did not warn about the files' directory"
 T=$(token)
 [ "$(contact "$T" New-1)" = 201 ] || fail "a record with this build"
 stop
@@ -216,43 +230,21 @@ for _ in $(seq 1 30); do [ "$(waiting)" = "0 0" ] && break; sleep 1; done
 [ "$(waiting)" = "0 0" ] || fail "this build did not take its own waiting work: $(waiting)"
 # The SHA-256 of file $1 downloaded through the server that runs now.
 fetched() { curl -fsSL "$URL/files/$1" -H "authorization: Bearer $(token)" | shasum -a 256 | cut -d' ' -f1; }
-if command -v weed >/dev/null 2>&1; then
-  step "this build moves the files to object storage; the older build reads and writes them there"
-  stop
-  SPORT=${WINDOW_STORE_PORT:-39400}
-  for p in "$SPORT" $((SPORT + 10)) $((SPORT + 11)) $((SPORT + 12)) $((SPORT + 10010)) $((SPORT + 10011)) $((SPORT + 10012)); do
-    if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then fail "something listens on 127.0.0.1:$p (set WINDOW_STORE_PORT)"; fi
-  done
-  STORE_DATA="$work/store" STORE_HANDOFF="$work/run/object-store" STORE_BIND=127.0.0.1 STORE_PORT=$SPORT \
-    STORE_ARGS="-master.port=$((SPORT + 10)) -volume.port=$((SPORT + 11)) -filer.port=$((SPORT + 12)) -master.volumeSizeLimitMB=64" \
-    sh "$ROOT/deploy/store/start.sh" >"$work/store.log" 2>&1 &
-  STORE_PID=$!
-  for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$SPORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
-  read -r KEY SECRET < <(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["identities"][0]["credentials"][0]; print(c["accessKey"], c["secretKey"])' "$work/store/ferrum/s3.json")
-  # The older build takes the store's keys from the environment (it has no vault).
-  STORE_ENV=(FERRUM_S3_BUCKET=ferrum "FERRUM_S3_ENDPOINT=http://127.0.0.1:$SPORT" FERRUM_S3_REGION=us-east-1 "FERRUM_TEST_RUN_DIR=$work/run"
-    "AWS_ACCESS_KEY_ID=$KEY" "AWS_SECRET_ACCESS_KEY=$SECRET")
-  start new new-store || fail "this build did not start with the store"
-  grep -q "files are moving from the local directory" "$work/new-store.log" || fail "this build did not say files are moving"
-  stop
-  (cd "$ROOT/server" && exec env DATABASE_URL="$APP/$DB" FERRUM_FILES_DIR="$work/files" "${STORE_ENV[@]}" "$BIN" task files_move) >"$work/move.log" 2>&1 ||
-    fail "files_move: $(tail -3 "$work/move.log")"
-  grep -q "is no longer read" "$work/move.log" || fail "the move was not confirmed: $(tail -3 "$work/move.log")"
-  mv "$work/files" "$work/files.moved" && mkdir -p "$work/files"
-  start old old-store || fail "the older build did not start on the database this build moved files in"
-  read -r first_id first_sha <<<"$FIRST"
-  [ "$(fetched "$first_id")" = "$first_sha" ] || fail "the older build does not read its file from object storage"
-  OLDER=$(curl -fsS "$URL/api/files" -H "authorization: Bearer $(token)" -F "file=@$ROOT/LICENSE" | json 'd["id"] + " " + d["sha256"]') ||
-    fail "the older build does not write a file to object storage"
-  read -r older_id older_sha <<<"$OLDER"
-  [ "$(fetched "$older_id")" = "$older_sha" ] || fail "the older build does not read back the file it wrote"
-  stop
-  start new new-after-store || fail "this build did not start again"
-  [ "$(fetched "$older_id")" = "$older_sha" ] || fail "this build does not read the file the older build wrote"
-  echo "    moved ($(head -1 "$work/move.log")); the older build read its file there, wrote one, and this build reads it"
-else
-  echo "    skipped moving files to object storage: no SeaweedFS (weed) on the PATH"
-fi
+step "this build reads the older build's file; the older build, on the database this build migrated, writes one this build reads"
+stop
+start new new-files || fail "this build did not start"
+read -r first_id first_sha <<<"$FIRST"
+[ "$(fetched "$first_id")" = "$first_sha" ] || fail "this build does not read the older build's file from object storage"
+stop
+start old old-files || fail "the older build did not start on the database this build migrated"
+OLDER=$(curl -fsS "$URL/api/files" -H "authorization: Bearer $(token)" -F "file=@$ROOT/LICENSE" | json 'd["id"] + " " + d["sha256"]') ||
+  fail "the older build does not write a file to object storage"
+read -r older_id older_sha <<<"$OLDER"
+[ "$(fetched "$older_id")" = "$older_sha" ] || fail "the older build does not read back the file it wrote"
+stop
+start new new-after-store || fail "this build did not start again"
+[ "$(fetched "$older_id")" = "$older_sha" ] || fail "this build does not read the file the older build wrote"
+echo "    this build read the older build's file, and the file the older build wrote on the database this build migrated"
 # A program an installed app declared beside the workspace (docs/api.md, "Signing in to programs beside Ferrum"), by the
 # stand-in for the Cloud app (server/examples/oidc_rehearsal.rs, WINDOW_COMPANION_BIN), and someone signed in through it.
 # The older build is asked for a sandbox of the workspace and refuses, as it does for any workspace on a database this

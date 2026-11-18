@@ -1,0 +1,84 @@
+# The example object store for the Kubernetes reference stack: SeaweedFS in one process (the same one the single-host stack
+# runs: reference/store/start.sh, mounted from the ConfigMap ferrum-store-start that install.sh makes), its S3 port on the
+# Service ferrum-store, its data on a volume. It is given the key in the Secret ferrum-store-keys (access-key, secret-key),
+# which install.sh makes once and which the server and the database's backups sign with. It makes no bucket: `ferrum task
+# bucket_set_up` does (install.sh runs it). An example, not the product: a store of your own replaces it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferrum-store
+spec:
+  selector: {app.kubernetes.io/name: ferrum-store}
+  ports:
+    - {name: s3, port: 8333, targetPort: s3}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ferrum-store
+spec:
+  serviceName: ferrum-store
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: ferrum-store}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ferrum-store}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.53
+          command: ["/bin/sh", "/etc/ferrum-store/start.sh"]
+          env:
+            - {name: STORE_DATA, value: /data}
+            - name: STORE_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: ferrum-store-keys, key: access-key}}
+            - name: STORE_SECRET_KEY
+              valueFrom: {secretKeyRef: {name: ferrum-store-keys, key: secret-key}}
+          ports:
+            - {name: s3, containerPort: 8333}
+          readinessProbe:
+            httpGet: {path: /healthz, port: s3}
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: start, mountPath: /etc/ferrum-store, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: start
+          configMap: {name: ferrum-store-start}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 20Gi}}
+---
+# Only pods of this namespace (the server, and the database's backups) reach the S3 port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferrum-store
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: ferrum-store}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - {port: 8333}

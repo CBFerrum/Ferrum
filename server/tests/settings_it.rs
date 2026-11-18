@@ -111,12 +111,13 @@ fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
-/// `ferrum start` in production, given only `env` (the database's address and the secrets), from the server's
-/// directory (Loco reads `config/` there); its output to `log`.
+/// `ferrum start` given only `env` (the database's address and the secrets), from the server's directory (Loco reads
+/// `config/` there); its output to `log`. In development: a production start needs an object store, which this test
+/// does not run, and the table's values reach the settings the same way in either.
 fn start(env: &[(&str, String)], log: &std::path::Path) -> std::process::Child {
     let out = std::fs::File::create(log).unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_ferrum"))
-        .args(["-e", "production", "start", "--no-banner"])
+        .args(["-e", "development", "start", "--no-banner"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env_clear()
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
@@ -153,9 +154,8 @@ fn stop(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// The binary, as an operator runs it: it starts in production with only the database's address and the secrets, and
-/// takes everything else from the table (its port, where its files and packages are, that one server needs no object
-/// store, its pool's connection budget); the environment still wins where it sets a variable; and two started
+/// The binary, as an operator runs it: it starts with only the database's address and the secrets, and
+/// takes everything else from the table (its port, where its files and packages are, its pool's connection budget); the environment still wins where it sets a variable; and two started
 /// together copy what their environment sets into the table once.
 async fn the_binary() {
     let dir = std::env::temp_dir().join(format!("ferrum-settings-it-{}", std::process::id()));
@@ -166,9 +166,7 @@ async fn the_binary() {
         ("port", port.to_string()),
         ("binding", "127.0.0.1".to_string()),
         ("public_url", format!("http://127.0.0.1:{port}")),
-        ("require_object_storage", "false".to_string()),
-        // Where the set-up above keeps its files: outside development and tests, a server without a bucket starts only
-        // where its database's files are (docs/operations.md, "Object storage").
+        // Where the set-up above keeps its files (development and tests keep them in a directory).
         ("files_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&st.settings.files_dir).to_string_lossy().into_owned()),
         ("packages_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").to_string_lossy().into_owned()),
         ("log_level", "warn".to_string()),

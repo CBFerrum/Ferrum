@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # The chart's pools, zones and gateways (deploy/helm/ferrum/presets, docs/operations.md "Deployment shapes"):
-# every preset renders and keeps its promises, and every refusal refuses. Needs helm and python3 with
-# pyyaml; no cluster, no network. Run from the repo root: bash deploy/helm/test_pools.sh
+# every preset renders and keeps its promises, and every refusal refuses, the connection budget's among them. Needs helm
+# and python3 with pyyaml; no cluster, no network. Run from the repo root: bash deploy/helm/test_pools.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 chart=deploy/helm/ferrum
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 # What ships as a placeholder is a site's own to set (the chart refuses it otherwise): one site's, last, for every render.
-printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {backup: {destinationPath: "s3://acme-backups/ferrum"}}\n' > "$tmp/site.yaml"
+printf 'publicUrl: https://erp.acme.test\nstorage: {bucket: acme-files}\ngateway: {hostname: erp.acme.test}\nprivateGateway: {hostnames: [erp.internal.acme.test]}\noffice: {host: office.acme.test}\neditors: {host: editors.acme.test}\ndatabase: {urlSecret: {name: db}, connectionLimit: 600, backupReachDays: 30}\n' > "$tmp/site.yaml"
 tpl() { helm template ferrum "$chart" --namespace ferrum --set image.tag=abc "$@" -f "$tmp/site.yaml"; }
 
 for preset in single split pools zones; do
@@ -119,141 +119,48 @@ refuses "its zone pub admits no staff" "${small[@]}" --set-json 'zones={"pub":{"
 refuses 'zone "nope" is not in zones' "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","zone":"nope"}]'
 refuses 'names the gateway "private", which is not enabled' "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"gateway":"private","apps":["x"]}]}]'
 refuses 'defaultPool "nope" is not a pool' "${small[@]}" --set gateway.defaultPool=nope --set-json 'pools=[{"name":"web"}]'
-refuses "more than database.connectionLimit 390" --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+refuses "more than database.connectionLimit 390" --set database.connectionLimit=390 --set-json 'pools=[{"name":"web"},{"name":"b"}]'
 # Past 32 connections the side pool is an eighth of the pool (crates/kernel/src/db.rs): 8 + 2 beside 64.
-refuses "web (9 + 1 in a rollout) x (64 + 10)" --set dbMaxConnections=64 --set-json 'pools=[{"name":"web"}]'
+refuses "web (9 + 1 in a rollout) x (64 + 10)" --set database.connectionLimit=390 --set dbMaxConnections=64 --set-json 'pools=[{"name":"web"}]'
 # A pod holds 2 more while it starts: (9 + 1) x 36 + 1 starting x 2 + 20 = 382 fits 382 and not 381.
-tpl --set database.connectionLimit=382 --set-json 'pools=[{"name":"web"}]' > /dev/null
-refuses "web (9 + 1 in a rollout) x (30 + 6), 1 starting x 2" --set database.connectionLimit=381 --set-json 'pools=[{"name":"web"}]'
+tpl --set migrate.enabled=false --set database.connectionLimit=382 --set-json 'pools=[{"name":"web"}]' > /dev/null
+refuses "web (9 + 1 in a rollout) x (30 + 6), 1 starting x 2" --set migrate.enabled=false --set database.connectionLimit=381 --set-json 'pools=[{"name":"web"}]'
 # ((2 + 1) x 36 + 1 starting x 2) twice + 20 = 240 fits (one more pod each in a rollout, which holds 2 more while it
-# starts); the migrate Job's 38 more, with a limit of 240, does not.
-tpl "${small[@]}" --set database.connectionLimit=240 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
-refuses "the migrate Job 30 + 6 + 2" "${small[@]}" --set database.connectionLimit=240 --set migrate.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]' --is-upgrade
+# starts); the migrate Job's 38 more, with a limit of 240, does not (the Job is on by default).
+tpl "${small[@]}" --set migrate.enabled=false --set database.connectionLimit=240 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
+refuses "the migrate Job 38" "${small[@]}" --set database.connectionLimit=240 --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+tpl "${small[@]}" --set database.connectionLimit=278 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
+refuses "the migrate Job 38" "${small[@]}" --set database.connectionLimit=277 --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+# With a pooler in front (database.directHost) only each replica's direct connections count, 2 each (the connection that
+# listens and a lock) and 2 more while a pod starts: 9 starting at once x (2 + 2) = 36, more than (9 + 1) x 2 + 1 x 2 = 22
+# in a rollout; the migrate Job's 2 + 2 and 20 for others: 60 fits 60, and 59 does not. The pooler's own connections to
+# PostgreSQL are the provider's to fit, so none of them is counted.
+tpl --set database.directHost=db.internal:5432 --set database.connectionLimit=60 > /dev/null
+refuses "ferrum (9 + 1 in a rollout) x 2 direct (9 starting at once x 2 more: larger), the migrate Job 4" --set database.directHost=db.internal:5432 --set database.connectionLimit=59
+refuses "or set database.directHost when a pooler is in front" --set database.connectionLimit=100
+tpl --set database.directHost=db.internal:5432 --set database.connectionLimit=60 | grep -A1 'FERRUM_DATABASE_DIRECT_HOST' | grep -q 'db.internal:5432'
 refuses "privateGateway.defaultPool: with pools, name the pool" "${small[@]}" --set privateGateway.enabled=true --set-json 'pools=[{"name":"web"},{"name":"b"}]'
 tpl --set privateGateway.enabled=true > /dev/null  # without pools, the one pool answers it
 refuses "cannot be background: only" --set-json 'pools=[{"name":"web","background":"only"}]'
 refuses "has no routes" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","background":"only","routes":[{"apps":["x"]}]}]'
 refuses "both take all of host h.example.com" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"hostnames":["h.example.com"]}]},{"name":"c","routes":[{"hostnames":["h.example.com"]}]}]'
 
-echo "the database starts empty by default, or from another server or a backup, and refuses what a mode lacks"
-src=(--set database.bootstrap.source.host=old.example.com --set database.bootstrap.source.passwordSecret.name=old-db)
-for mode in import copy recovery; do
-  extra=()
-  case $mode in
-    import) extra=("${src[@]}" --set database.bootstrap.source.user=postgres) ;;
-    copy) extra=("${src[@]}" --set database.bootstrap.source.user=streaming_replica) ;;
-    recovery) extra=(--set database.backup.serverName=ferrum-db-2 --set database.bootstrap.recovery.targetTime="2026-11-14 10:00:00+00") ;;
-  esac
-  tpl --set database.bootstrap.mode=$mode "${extra[@]}" > "$tmp/db-$mode.yaml"
-done
-tpl > "$tmp/db-empty.yaml"
-python3 - "$tmp" <<'PY2'
-import sys, yaml
-def cluster(mode):
-    docs = [d for d in yaml.safe_load_all(open(f"{sys.argv[1]}/db-{mode}.yaml")) if d]
-    return next(d for d in docs if d["kind"] == "Cluster")["spec"]
-assert cluster("empty")["bootstrap"] == {"initdb": {"database": "ferrum", "owner": "ferrum"}}
-assert "externalClusters" not in cluster("empty")
-c = cluster("import")
-assert c["bootstrap"]["initdb"]["import"] == {"type": "microservice", "databases": ["ferrum"], "source": {"externalCluster": "origin"},
-                                              "pgDumpExtraOptions": ["--enable-row-security"]}, c
-assert c["externalClusters"][0]["connectionParameters"]["host"] == "old.example.com"
-# The source's own role reads every workspace's rows: through the policies, as the system's own session.
-assert c["externalClusters"][0]["connectionParameters"]["options"] == "-c ferrum.system=on -c ferrum.vault=on", c
-assert "options" not in cluster("copy")["externalClusters"][0]["connectionParameters"]
-assert c["externalClusters"][0]["password"] == {"name": "old-db", "key": "password"}
-c = cluster("copy")
-assert c["bootstrap"] == {"pg_basebackup": {"source": "origin", "database": "ferrum", "owner": "ferrum"}}, c
-assert c["externalClusters"][0]["connectionParameters"]["user"] == "streaming_replica"
-c = cluster("recovery")
-assert c["bootstrap"]["recovery"]["recoveryTarget"] == {"targetTime": "2026-11-14 10:00:00+00"}, c
-assert c["externalClusters"][0]["plugin"]["parameters"] == {"barmanObjectName": "ferrum-backups", "serverName": "ferrum-db"}
-# The recovered cluster writes its own backups under its new name, never over the ones it reads.
-assert c["plugins"][0]["parameters"] == {"barmanObjectName": "ferrum-backups", "serverName": "ferrum-db-2"}, c["plugins"]
-assert "serverName" not in cluster("empty")["plugins"][0]["parameters"]
-PY2
-refuses "set database.bootstrap.source.host" --set database.bootstrap.mode=import
-refuses "the role the server runs as there" --set database.bootstrap.mode=import --set database.bootstrap.source.host=h
-refuses "REPLICATION and LOGIN" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h
-refuses "source.passwordSecret.name" --set database.bootstrap.mode=copy --set database.bootstrap.source.host=h --set database.bootstrap.source.user=r
-refuses "set database.backup.serverName to a new name" --set database.bootstrap.mode=recovery
-refuses 'not "restore"' --set database.bootstrap.mode=restore
-# Reading another cluster's backups needs no new name.
-tpl --set database.bootstrap.mode=recovery --set database.bootstrap.recovery.serverName=old-db > /dev/null
-
-echo "with the pooler, the server reaches the database through it and the migrate Job directly, within the budget"
-tpl --set database.pooler.enabled=true --set migrate.enabled=true --is-upgrade -f "$chart/presets/split.yaml" > "$tmp/pooler.yaml"
-python3 scripts/check_manifests.py "$tmp/pooler.yaml"
-python3 - "$tmp/pooler.yaml" <<'PY2'
-import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-def env(d):
-    return {e["name"]: e for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
-for name in ("ferrum", "ferrum-worker"):
-    dep = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
-    e = env(dep)
-    assert "@ferrum-db-pooler.ferrum:5432/" in e["DATABASE_URL"]["value"], e["DATABASE_URL"]
-    assert e["FERRUM_DATABASE_DIRECT_URL"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}
-    names = list(e)
-    assert names.index("FERRUM_DB_PASSWORD") < names.index("DATABASE_URL"), "a variable is used before it is set"
-job = next(d for d in docs if d["kind"] == "Job")
-e = env(job)
-assert e["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {"name": "ferrum-db-app", "key": "uri"}, e["DATABASE_URL"]
-assert "FERRUM_DATABASE_DIRECT_URL" not in e
-p = next(d for d in docs if d["kind"] == "Pooler")
-assert p["spec"]["cluster"] == {"name": "ferrum-db"} and p["spec"]["type"] == "rw"
-assert p["spec"]["pgbouncer"]["poolMode"] == "transaction"
-assert int(p["spec"]["pgbouncer"]["parameters"]["max_prepared_statements"]) > 0
-pol = next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "ferrum-db-pooler")
-servers = pol["spec"]["ingress"][0]["from"][0]["podSelector"]["matchExpressions"][0]["values"]
-assert servers == ["ferrum", "ferrum-worker"], servers
-assert any(d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "ferrum-db-pooler" for d in docs)
-PY2
-refuses "maxPreparedStatements must be at least 1" --set database.pooler.enabled=true --set database.pooler.maxPreparedStatements=0 -f "$chart/presets/split.yaml"
-# 2 direct each (the connection that listens and a lock), and 2 more while a pod starts. web: 6 starting at once x
-# (2 + 2) = 24 is more than (6 + 1) x 2 + 2 = 16 in a rollout; worker: (2 + 1) x 2 + 2 = 8. 24 + 8 + 2 x 40 + the
-# migrate Job's 38 + 20 = 170 fits 170; one more instance does not.
-tpl --set database.pooler.enabled=true --set database.connectionLimit=170 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
-refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=170 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
-refuses "web (6 + 1 in a rollout) x 2 direct (6 starting at once x 2 more: larger)" --set database.pooler.enabled=true --set database.connectionLimit=169 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
-refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
-# Kept but not used: the server connects directly, and both count in the budget ((9 + 1) x 36 + 2 x 40 + 20 = 460).
-refuses "the pooler 2 x 40, ferrum (9 + 1 in a rollout) x (30 + 6)" --set database.pooler.enabled=true --set database.pooler.used=false
-tpl --set database.pooler.enabled=true --set database.pooler.used=false --set autoscaling.maxReplicas=6 > "$tmp/unused.yaml"
-grep -q 'kind: Pooler' "$tmp/unused.yaml" && ! grep -q FERRUM_DATABASE_DIRECT_URL "$tmp/unused.yaml"
-python3 scripts/check_manifests.py "$tmp/unused.yaml"
-echo "every pool gets the database addresses through the shared env helper"
-tpl -f "$chart/presets/zones.yaml" --set database.readReplicas.enabled=true --set database.pooler.enabled=true > "$tmp/zones-db.yaml"
+echo "a pooler's direct host and a read host reach every pool, and the Jobs get the direct one"
+tpl -f "$chart/presets/zones.yaml" --set database.directHost=db-direct.internal:5432 --set database.readHost=db-ro.internal > "$tmp/zones-db.yaml"
 python3 - "$tmp/zones-db.yaml" <<'PY2'
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
 servers = [d for d in docs if d["kind"] == "Deployment" and any(e["name"] == "DATABASE_URL" for e in d["spec"]["template"]["spec"]["containers"][0].get("env", []))]
 assert len(servers) == 4, [d["metadata"]["name"] for d in servers]
 for d in servers:
-    names = [e["name"] for e in d["spec"]["template"]["spec"]["containers"][0]["env"]]
-    for want in ("FERRUM_DATABASE_DIRECT_URL", "FERRUM_DATABASE_READ_URL", "FERRUM_DATABASE_READ_MAX_LAG_SECS"):
-        assert want in names, (d["metadata"]["name"], want)
+    env = {e["name"]: e for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["FERRUM_DATABASE_DIRECT_HOST"]["value"] == "db-direct.internal:5432" and env["FERRUM_DATABASE_READ_HOST"]["value"] == "db-ro.internal", d["metadata"]["name"]
     assert d["spec"]["strategy"]["rollingUpdate"]["maxSurge"] == 1, "the budget counts 1"
+job = next(d for d in docs if d["kind"] == "Job" and d["metadata"]["name"] == "ferrum-migrate")
+env = {e["name"]: e for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+assert env["FERRUM_DATABASE_DIRECT_HOST"]["value"] == "db-direct.internal:5432" and "FERRUM_DATABASE_READ_HOST" not in env, "the Job reads from no replica"
 PY2
-echo "the read address points the server at the standbys, never the migrate Job, and needs a standby"
-tpl --set database.readReplicas.enabled=true --set migrate.enabled=true --set autoscaling.maxReplicas=8 --is-upgrade > "$tmp/ro.yaml"
-python3 scripts/check_manifests.py "$tmp/ro.yaml"
-python3 - "$tmp/ro.yaml" <<'PY2'
-import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-env = lambda d: {e["name"]: e for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
-e = env(next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == "ferrum"))
-assert "@ferrum-db-ro.ferrum:5432/" in e["FERRUM_DATABASE_READ_URL"]["value"], e["FERRUM_DATABASE_READ_URL"]
-assert e["FERRUM_DATABASE_READ_MAX_LAG_SECS"]["value"] == "10"
-names = list(e)
-assert names.index("FERRUM_DB_PASSWORD") < names.index("FERRUM_DATABASE_READ_URL"), "a variable is used before it is set"
-assert "FERRUM_DATABASE_READ_URL" not in env(next(d for d in docs if d["kind"] == "Job"))
-PY2
-tpl --set database.readReplicas.enabled=true --set database.pooler.enabled=true | grep -c "name: FERRUM_DB_PASSWORD" | grep -qx 1
-! tpl | grep -q FERRUM_DATABASE_READ_URL || exit 1
-refuses "database.readReplicas needs database.instances of 2 or more" --set database.readReplicas.enabled=true --set database.instances=1
-refuses "needs database.enabled" --set database.pooler.enabled=true --set database.enabled=false --set database.urlSecret.name=x
-refuses "is the name of another part of the chart" "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"db-pooler"}]'
+python3 scripts/check_manifests.py "$tmp/zones-db.yaml"
 
 echo "a background pool can scale on waiting work with KEDA, never beside an autoscaler"
 kedaon=(-f "$chart/presets/split.yaml" --set keda.prometheusAddress=http://prom:9090 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true,"maxReplicas":2},"dbMaxConnections":20}')
@@ -279,7 +186,7 @@ refuses "must never both scale one Deployment" -f "$chart/presets/split.yaml" --
 refuses "for a pool with background: only" -f "$chart/presets/split.yaml" --set keda.prometheusAddress=x --set-json 'pools[0]={"name":"web","background":"off","autoscaling":{"enabled":false},"keda":{"enabled":true}}'
 refuses "set keda.prometheusAddress" -f "$chart/presets/split.yaml" --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true,"maxReplicas":2}}'
 refuses "keda.minReplicas must be at least 1" "${kedaon[@]}" --set keda.minReplicas=0
-refuses "worker (9 + 1 in a rollout) x (20 + 6)" "${kedaon[@]}" --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
+refuses "worker (9 + 1 in a rollout) x (20 + 6)" "${kedaon[@]}" --set database.connectionLimit=390 --set keda.maxReplicas=9 --set-json 'pools[1]={"name":"worker","background":"only","autoscaling":{"enabled":false},"keda":{"enabled":true},"dbMaxConnections":20}'
 
 echo "each pool takes its own scheduling: node selector, tolerations, affinity, spread and priority"
 tpl -f "$chart/presets/zones.yaml" --set-json 'pools[0].nodeSelector={"ferrum.dev/nodes":"private"}' \

@@ -1633,28 +1633,6 @@ create table file_upload (
 create index file_upload_expiry on file_upload (expires_at);
 
 -- Object storage only (docs/plan/stateless.md, D6; docs/operations.md, "Object storage").
---
--- `file_store`: where the installation's files are, once a server of this release has seen them in object storage
--- (one row). 'moving': the store takes every write, and reads look there first and in the local directory second,
--- until `ferrum task files_move` has copied the directory and confirmed it. 'store': the directory is no longer read.
--- No row: an installation on a local directory, or one that has only ever used a store.
-create table file_store (
-  id boolean default true primary key check (id),
-  state text not null check (state in ('moving', 'store')),
-  -- When files began to move (a replica started before then may still write to the directory).
-  since timestamptz not null default now(),
-  confirmed_at timestamptz,
-  updated_at timestamptz not null default now()
-);
-
--- Each file of the directory `files_move` has copied to the store and read back the same (its length and SHA-256):
--- a run after a crash, or a second run, skips them.
-create table file_move (
-  key text primary key,
-  size_bytes bigint not null check (size_bytes >= 0),
-  sha256 text not null,
-  copied_at timestamptz not null default now()
-);
 
 -- Objects whose deletion waits (`files_delete_after_days`), so that a database restored to any moment within the
 -- backups' reach finds every file it names. A write of the same key takes it off.
@@ -3361,7 +3339,7 @@ begin
   foreach t in array array[
     'oauth_client', 'oauth_code', 'oauth_refresh', 'sso_flow', 'webauthn_challenge', 'email_code', 'host_code',
     'server_key', 'saml_sp_key', 'saml_enc_key', 'saml_logout', 'oauth_companion', 'oidc_code', 'oidc_subject',
-    'oidc_sign_in', 'file_store', 'file_move', 'object_release', 'setting', 'setting_change', 'replica'
+    'oidc_sign_in', 'object_release', 'setting', 'setting_change', 'replica'
   ] loop
     execute format('alter table %s enable row level security', t);
     execute format('alter table %s force row level security', t);

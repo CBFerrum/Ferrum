@@ -1,52 +1,27 @@
-# Single-host deployment: PostgreSQL + the Ferrum server (every page and the API) + the PDF renderer
-# + the online editor for Word, Excel and PowerPoint files (Collabora Online). For production use the
-# Kubernetes manifests (replicated database, several API replicas, backups): docs/operations.md.
+# Single-host deployment of the product: the Ferrum server (every page and the API), the PDF renderer and the online editor for
+# Word, Excel and PowerPoint files (Collabora Online). It takes the address of a PostgreSQL (DATABASE_URL) and a bucket of an
+# S3-compatible store (FERRUM_S3_BUCKET, FERRUM_S3_ENDPOINT, FERRUM_S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) and
+# operates neither: the server refuses to start without them, naming them. reference/single-host/ runs both beside it, as an
+# example, with one command. For production use the chart (replicated API, a database of your own): docs/operations.md.
 # The renderer and the editor are on by default; each is turned off by one line in deploy/.env
 # (FERRUM_PDF_URL=  and  FERRUM_OFFICE_URL=  , empty), see "Online editing" in docs/operations.md.
-#   cp deploy/.env.example deploy/.env   # then set the database's two passwords: nothing else is required
+#   cp deploy/.env.example deploy/.env   # then set the database's address, the store's and the image
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm ferrum task bucket_set_up   # the bucket, once
 #   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 #   docker compose -f deploy/docker-compose.yml exec ferrum ferrum task create_tenant \
 #     slug:acme name:"Acme Ltd" email:admin@acme.com password:'Change-Me-2026!'
 name: ferrum
 
 services:
-  db:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      # The superuser is only for administration; Ferrum connects as the ordinary role `ferrum`
-      # created by postgres-init (superusers bypass row-level security).
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
-      FERRUM_DB_PASSWORD: ${FERRUM_DB_PASSWORD:?set FERRUM_DB_PASSWORD in deploy/.env}
-    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB", "-c", "wal_level=replica"]
-    # Parallel queries share memory through /dev/shm, which Docker makes 64 MB: a three-hour soak
-    # ran out of it ("could not resize shared memory segment") once tables had grown.
-    shm_size: 512mb
-    volumes:
-      - db:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
-    security_opt: [no-new-privileges:true]
-    healthcheck:
-      # Over TCP: while a new volume's init scripts run, the server listens on its socket only.
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d ferrum"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   ferrum:
     image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     build:
       context: ..
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-      store:
-        condition: service_healthy
-        required: false
     environment:
-      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
+      # The database's address: the ordinary role's, not a superuser's (docs/operations.md, "Any PostgreSQL"). Empty: the
+      # server refuses to start, naming it.
+      DATABASE_URL: ${DATABASE_URL:-}
       # Not needed: the vault (in the database, its credential slot opened by FERRUM_DB_PASSWORD) signs sessions and keeps
       # the platform's secrets (docs/operations.md, "The vault"). An installation that has one keeps it while it may roll back.
       JWT_SECRET: ${JWT_SECRET:-}
@@ -79,23 +54,19 @@ services:
       FERRUM_ZONE_DEFAULT: ${FERRUM_ZONE_DEFAULT:-}
       FERRUM_ZONE_MODE: ${FERRUM_ZONE_MODE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Files go to the bundled object store (the `store` service below; docs/operations.md, "Object storage"). Its keys
-      # are made at its first start and kept in the server's vault, and the server sets its bucket up then (versioning,
-      # lifecycle rules, encryption); a store of your own is never changed unasked. Another store: set FERRUM_S3_BUCKET,
-      # FERRUM_S3_ENDPOINT, FERRUM_S3_REGION, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and STORE_REPLICAS=0.
-      # An installation from before keeps reading its files from the `files` volume until `ferrum task files_move`.
-      FERRUM_REQUIRE_OBJECT_STORAGE: ${FERRUM_REQUIRE_OBJECT_STORAGE:-false}
+      # Files go to the object store you name (docs/operations.md, "Object storage"), the bucket made once by
+      # `ferrum task bucket_set_up` (versioning, lifecycle rules, encryption; a bucket's own rules are never replaced).
       # Requests a user may make per minute on each replica (0: no limit).
       FERRUM_USER_REQUESTS_PER_MINUTE: ${FERRUM_USER_REQUESTS_PER_MINUTE:-3000}
       # Per client address. Behind your own proxy (TLS), set FERRUM_PROXY_HOPS to how many there are,
       # so the server takes the address from X-Forwarded-For.
       FERRUM_ADDRESS_REQUESTS_PER_MINUTE: ${FERRUM_ADDRESS_REQUESTS_PER_MINUTE:-6000}
       FERRUM_PROXY_HOPS: ${FERRUM_PROXY_HOPS:-0}
-      FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-ferrum}
-      FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-http://store:8333}
-      FERRUM_S3_REGION: ${FERRUM_S3_REGION:-us-east-1}
-      # Days a deleted file stays in the store, at least as far back as your database dumps reach (docs/operations.md,
-      # "Backups of files"); 30 each by default. 0 deletes at once: say so only without dumps to restore.
+      FERRUM_S3_BUCKET: ${FERRUM_S3_BUCKET:-}
+      FERRUM_S3_ENDPOINT: ${FERRUM_S3_ENDPOINT:-}
+      FERRUM_S3_REGION: ${FERRUM_S3_REGION:-}
+      # Days a deleted file stays in the store, at least as far back as your database's backups reach (docs/operations.md,
+      # "Backups of files"); 30 each by default. 0 deletes at once: say so only without backups to restore.
       FERRUM_FILES_DELETE_AFTER_DAYS: ${FERRUM_FILES_DELETE_AFTER_DAYS:-30}
       FERRUM_BACKUP_REACH_DAYS: ${FERRUM_BACKUP_REACH_DAYS:-30}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
@@ -135,38 +106,12 @@ services:
       FERRUM_DATABASE_READ_MAX_LAG_SECS: ${FERRUM_DATABASE_READ_MAX_LAG_SECS:-10}
     ports:
       - "${FERRUM_PORT:-8080}:5150"
-    volumes:
-      - files:/var/lib/ferrum/files
-      # The bundled store's keys, handed over once at its first start: kept in the vault, then deleted.
-      - store-key:/run/ferrum/object-store
-    # As in deploy/k8s: a read-only root filesystem, no capabilities, no privilege escalation.
+    # As in the chart: a read-only root filesystem, no capabilities, no privilege escalation.
     read_only: true
     tmpfs:
       - /tmp:size=512m
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-
-  # The object store for files: SeaweedFS (Apache-2.0), one process, chosen by trial (docs/references/object-stores.md).
-  # Only its S3 port is reachable, on this network alone; it keeps versions, applies lifecycle rules and encrypts what
-  # it keeps. Its first start makes its keys (deploy/store/start.sh). STORE_REPLICAS=0 with a store of your own.
-  store:
-    image: chrislusf/seaweedfs:${SEAWEEDFS_TAG:-4.53}
-    restart: unless-stopped
-    deploy:
-      replicas: ${STORE_REPLICAS:-1}
-    # As root inside the container, to hand the keys to the server's user (10001).
-    user: "0:0"
-    entrypoint: ["/bin/sh", "/etc/ferrum-store/start.sh"]
-    volumes:
-      - store:/data
-      - store-key:/handoff
-      - ./store:/etc/ferrum-store:ro
-    security_opt: [no-new-privileges:true]
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8333/healthz"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
 
   # Lays print formats out as PDFs. JavaScript is off and Chromium may load only the page itself
   # and inline images, so a template cannot make the renderer fetch anything.
@@ -219,9 +164,3 @@ services:
     # Memory: about 590 MiB for the editor at rest and about 50 to 60 MiB for each small open document
     # (docs/operations.md, "Online editing", Sizing); larger files cost more.
     mem_limit: ${OFFICE_MEMORY:-2g}
-
-volumes:
-  db:
-  files:
-  store:
-  store-key:

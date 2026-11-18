@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bundle.py and load.py against stand-ins for skopeo, docker and kubectl, and operators' manifests
+"""bundle.py and load.py against stand-ins for skopeo, docker and helm, and operators' manifests
 written here: what a bundle carries, that it checks out, what loading does, and that a bundle
 changed after it was made is refused. CI runs it (.github/workflows/ci.yml, audit).
 
@@ -22,7 +22,6 @@ import bundle  # noqa: E402
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 ENVOY = "docker.io/envoyproxy/envoy:distroless-v1.39.5@sha256:" + "9d" * 32
-SIDECAR = "ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.1"
 
 # Each stand-in logs its arguments as a JSON line to $STUB_LOG and does just enough of its job.
 STUB = r'''#!/usr/bin/env python3
@@ -42,14 +41,27 @@ elif tool == "docker" and args[0] == "save":
     open(args[args.index("-o") + 1], "w").write("image " + plain[-1] + "\n")
 elif tool == "docker" and args[:2] == ["image", "inspect"]:
     print(plain[-1].rsplit(":", 1)[0] + "@sha256:" + hashlib.sha256(plain[-1].encode()).hexdigest())
-elif tool == "kubectl" and args[0] == "kustomize":
-    print(open(os.environ["STUB_KUSTOMIZE"]).read())
+elif tool == "helm" and args[0] == "template":
+    print(open(os.environ["STUB_RENDERED"]).read())
+    # The chart is given the release as its image tag, and what it refuses to render without.
+    given = " ".join(args)
+    assert "image.tag=" in given and "database.urlSecret.name=" in given and "database.connectionLimit=" in given, given
 '''
 
 RENDERED = """apiVersion: apps/v1
 kind: Deployment
 metadata: {name: ferrum}
-spec: {template: {spec: {containers: [{name: ferrum, image: ghcr.io/cbferrum/ferrum:latest}]}}}
+spec: {template: {spec: {containers: [{name: ferrum, image: ghcr.io/cbferrum/ferrum:0123456789abcdef0123456789abcdef01234567}]}}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: ferrum-migrate}
+spec: {template: {spec: {containers: [{name: migrate, image: ghcr.io/cbferrum/ferrum:0123456789abcdef0123456789abcdef01234567}]}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ferrum-editors}
+spec: {template: {spec: {containers: [{name: editors, image: ghcr.io/cbferrum/ferrum-editors:0123456789abcdef0123456789abcdef01234567}]}}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -60,11 +72,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: {name: ferrum-office, namespace: ferrum-office}
 spec: {template: {spec: {containers: [{name: collabora, image: collabora/code:26.04.5.2.1}]}}}
----
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata: {name: ferrum-db}
-spec: {instances: 3, imageName: ghcr.io/cloudnative-pg/postgresql:17}
 """
 
 
@@ -79,16 +86,14 @@ spec: {{template: {{spec: {{containers: [{{name: x, image: {image}{env}}}]}}}}}}
 def manifests(where: Path) -> None:
     """The operators' manifests as their releases name images: in containers, in an operator's
     settings, in a Secret (base64, over several lines) and only in the controller's code."""
-    sidecar = base64.b64encode(SIDECAR.encode()).decode()
+    secret_image = base64.b64encode(b"quay.io/jetstack/cert-manager-startupapicheck:v1.21.3").decode()
     bodies = {
         "envoy-gateway.yaml": deployment("envoyproxy/gateway:v1.9.3")
         + "---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: eg}\ndata:\n  envoy-gateway.yaml: |\n    rateLimitDeployment:\n      container: {image: docker.io/envoyproxy/ratelimit:5ae0682e}\n",
-        "cert-manager.yaml": deployment("quay.io/jetstack/cert-manager-controller:v1.21.3")
+        "cert-manager.yaml": deployment("quay.io/jetstack/cert-manager-controller:v1.21.3", ", env: [{name: STARTUP_IMAGE, valueFrom: {secretKeyRef: {name: s, key: STARTUP_IMAGE}}}]")
         + "---\n"
-        + deployment("quay.io/jetstack/cert-manager-webhook:v1.21.3"),
-        "cloudnative-pg.yaml": deployment("ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1"),
-        "barman-cloud.yaml": deployment("ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.1", ", env: [{name: SIDECAR_IMAGE, valueFrom: {secretKeyRef: {name: s, key: SIDECAR_IMAGE}}}]")
-        + f"---\napiVersion: v1\nkind: Secret\nmetadata: {{name: s}}\ndata:\n  SIDECAR_IMAGE: |\n    {sidecar[:40]}\n    {sidecar[40:]}\n",
+        + deployment("quay.io/jetstack/cert-manager-webhook:v1.21.3")
+        + f"---\napiVersion: v1\nkind: Secret\nmetadata: {{name: s}}\ndata:\n  STARTUP_IMAGE: |\n    {secret_image[:40]}\n    {secret_image[40:]}\n",
         "metrics-server.yaml": deployment("registry.k8s.io/metrics-server/metrics-server:v0.9.0"),
         "servicemonitors.yaml": "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata: {name: servicemonitors.monitoring.coreos.com}\n",
         "podmonitors.yaml": "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata: {name: podmonitors.monitoring.coreos.com}\n",
@@ -117,7 +122,7 @@ class Env:
             **os.environ,
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "STUB_LOG": str(self.log),
-            "STUB_KUSTOMIZE": str(tmp / "rendered.yaml"),
+            "STUB_RENDERED": str(tmp / "rendered.yaml"),
             "FERRUM_OFFLINE_FETCH_FROM": str(self.fetch),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
@@ -134,7 +139,7 @@ class Env:
 
 
 def kubernetes(tmp: Path) -> None:
-    e = Env(tmp, ("skopeo", "kubectl"))
+    e = Env(tmp, ("skopeo", "helm"))
     out = tmp / "k8s-bundle"
     e.run(str(HERE / "bundle.py"), COMMIT, "--kubernetes", "--with", "editors", "--out", str(out))
     meta = json.loads((out / "bundle.json").read_text())
@@ -144,15 +149,12 @@ def kubernetes(tmp: Path) -> None:
         f"ghcr.io/cbferrum/ferrum-editors:{COMMIT}",
         "gotenberg/gotenberg:8",
         "collabora/code:26.04.5.2.1",
-        "ghcr.io/cloudnative-pg/postgresql:17",
         "envoyproxy/gateway:v1.9.3",
         "docker.io/envoyproxy/ratelimit:5ae0682e",
         ENVOY,
         "quay.io/jetstack/cert-manager-controller:v1.21.3",
         "quay.io/jetstack/cert-manager-webhook:v1.21.3",
-        "ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1",
-        "ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.1",
-        SIDECAR,
+        "quay.io/jetstack/cert-manager-startupapicheck:v1.21.3",
         "registry.k8s.io/metrics-server/metrics-server:v0.9.0",
     }
     assert refs == expected, f"carried {sorted(refs ^ expected)} differently"
@@ -166,8 +168,8 @@ def kubernetes(tmp: Path) -> None:
     assert "--all" in envoy_copy and "--preserve-digests" in envoy_copy, envoy_copy
     tagged = next(c for c in e.calls("skopeo") if c[0] == "copy" and "docker://gotenberg/gotenberg:8" in c)
     assert tagged[tagged.index("--override-arch") + 1] == "amd64", tagged
-    kustomization = (out / "deploy" / "k8s" / "kustomization.yaml").read_text()
-    assert kustomization.count(f"newTag: {COMMIT}") == 2 and "newTag: latest" not in kustomization
+    assert not any("cloudnative-pg" in r or "postgres" in r for r in refs), "the chart is given a database: none is carried"
+    assert not (out / "deploy" / "k8s").exists(), "one description of the deployment: the chart"
     assert (out / "deploy" / "offline" / "load.py").is_file(), "the tools travel with the bundle"
     for line in (out / "SHA256SUMS").read_text().splitlines():
         digest, name = line.split("  ", 1)
@@ -179,7 +181,6 @@ def kubernetes(tmp: Path) -> None:
     pushed = {c[-1] for c in e.calls("skopeo") if c[0] == "copy" and c[-1].startswith("docker://registry.site:5000/")}
     assert f"docker://registry.site:5000/docker.io/envoyproxy/envoy:distroless-v1.39.5" in pushed, pushed
     assert "docker://registry.site:5000/docker.io/library/postgres:17" not in pushed, "no postgres image on Kubernetes"
-    assert "docker://registry.site:5000/ghcr.io/cloudnative-pg/postgresql:17" in pushed
     assert len(pushed) == len(expected)
     assert all("--dest-tls-verify=false" in c for c in e.calls("skopeo") if c[0] == "copy" and c[-1].startswith("docker://registry.site"))
     certs = out / "containerd" / "certs.d"
@@ -205,8 +206,11 @@ def compose(tmp: Path) -> None:
     e.run(str(HERE / "bundle.py"), COMMIT[:12], "--tool", "docker", "--with", "mail,clamav", "--out", str(out), CLAMAV_TAG="1.4")
     meta = json.loads((out / "bundle.json").read_text())
     refs = {i["ref"] for i in meta["images"]}
-    # The object store Compose bundles (SeaweedFS) is carried with the rest.
+    # The product's Compose file names the server, the PDF renderer and the editor; the single-host reference stack beside it
+    # adds the database and the store (and a backup job on the database's image).
     assert refs == {f"ghcr.io/cbferrum/ferrum:{COMMIT[:12]}", "postgres:17", "chrislusf/seaweedfs:4.53", "gotenberg/gotenberg:8", "collabora/code:26.04.5.2.1", "stalwartlabs/stalwart:v1.0", "clamav/clamav:1.4"}, refs
+    assert (out / "reference" / "single-host" / "compose.yml").is_file() and (out / "reference" / "store" / "start.sh").is_file()
+    assert not (out / "reference" / "single-host" / ".env").exists(), "the operator's secrets stay behind"
     assert meta["profile"] == "compose" and not meta["manifests"] and not (out / "manifests").exists()
     assert all(i["format"] == "docker-archive" for i in meta["images"])
     assert not (out / "deploy" / ".env").exists(), "the operator's secrets stay behind"
@@ -219,7 +223,7 @@ def compose(tmp: Path) -> None:
 
 
 def refusals(tmp: Path) -> None:
-    e = Env(tmp, ("skopeo", "kubectl"))
+    e = Env(tmp, ("skopeo", "helm"))
     assert "a commit's hash" in e.run(str(HERE / "bundle.py"), "latest", "--out", str(tmp / "x"), ok=False).stderr
     assert "unknown: mail2" in e.run(str(HERE / "bundle.py"), COMMIT, "--with", "mail2", "--out", str(tmp / "y"), ok=False).stderr
     (tmp / "z").mkdir()

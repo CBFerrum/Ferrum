@@ -10,7 +10,7 @@
 #   decided_in:  where running it was decided
 engines:
   - image: ferrum
-    name: Ferrum (the image kustomize builds, deploy/k8s)
+    name: Ferrum (the image the chart is given, deploy/helm/ferrum)
     license: AGPL-3.0-or-later
     read: LICENSE
     terms: Ours
@@ -115,5 +115,5 @@ engines:
     name: SeaweedFS (the object store Compose bundles)
     license: Apache-2.0
     read: seaweedfs/seaweedfs LICENSE (Apache License 2.0, as shipped with release 4.53); docs/references/object-stores.md
-    terms: None beyond the licence; its filer and volume server answer without keys, so only its S3 port may listen beyond the container (deploy/store/start.sh)
+    terms: None beyond the licence; its filer and volume server answer without keys, so only its S3 port may listen beyond the container (reference/store/start.sh)
     decided_in: docs/references/object-stores.md (the trial against Garage); docs/plan/stateless.md (D6)

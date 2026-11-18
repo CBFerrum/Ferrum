@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 # Rehearses object storage only (docs/plan/stateless.md, D6; docs/operations.md, "Object storage") with PostgreSQL, the
-# server binary and real S3 servers on this machine, no Docker: SeaweedFS run by deploy/store/start.sh as Compose runs
-# it (the store checks every signature), and moto 5.0.28.
+# server binary and real S3 servers on this machine, no Docker: SeaweedFS run by reference/store/start.sh as the reference
+# stacks run it (the store checks every signature), and moto 5.0.28. Ferrum is given a bucket and its keys and operates
+# neither: the one thing it does to a bucket is `ferrum task bucket_set_up`, which the rehearsal runs.
 #
 #   scripts/object_store_rehearsal.sh ferrum_objrehearsal_<name>
 #
-# 1. Refused on a directory: production settings, a new database, no bucket: the server does not start, and says what
+# 1. Refused without a bucket: production settings, a new database, no bucket: the server does not start, and says what
 #    to set.
-# 2. Moving files: an installation keeping its files in a directory (made in development) starts in production, warned,
-#    and the doctor's line about it is error-level. The bundled store starts (its keys made and handed over); two servers
-#    set to it read and write, each reading what the other wrote and the directory's files; the server keeps the store's
-#    keys in the vault and deletes the file that handed them over. `ferrum task files_move` is killed partway and run
-#    again: it goes on, and records that the directory is no longer read; restarted, with the directory moved away, both
-#    servers serve every file, each as its row says.
+# 2. The store starts with its bucket not made. Two servers set to it are not ready, saying NoSuchBucket; `bucket_set_up`
+#    makes the bucket (the same steps run again do nothing), and both become ready without a restart, read and write,
+#    each reading what the other wrote.
 #    Readiness: with the store stopped after the first answer, a replica stays ready (asked as a browser asks), the
 #    metric and the doctor say so; a server started with the store down is not ready, saying why (the log says it once),
-#    and becomes ready without a restart when the store comes up, the bucket's set-up its handoff asks for then done
-#    (it fails while the store is down); one whose set-up keeps failing never becomes ready, saying so, nor does one with
-#    a wrong bucket, saying NoSuchBucket (the bundled store makes no bucket a write names).
+#    and becomes ready without a restart when the store comes up; one with a wrong bucket never becomes ready, saying
+#    NoSuchBucket (the store makes no bucket a write names); one with keys the store does not know never does, saying so.
 # 3. The doctor's lines on moto: versioning, a lifecycle rule for old versions and encryption at rest, bad, then good
-#    once each is switched on (first with the bundled store's handoff beside it, which leaves a bucket of the
-#    installation's own as it is); moto takes requests without keys, and the doctor says the bucket is public.
+#    once each is switched on; moto takes requests without keys, and the doctor says the bucket is public. `bucket_set_up`
+#    on a bucket moto lacks does four steps (the bucket, versioning, lifecycle rules, encryption), then none, and the
+#    doctor's lines are ok; on a bucket with its own rules it changes nothing.
 # 4. The drill: a dump at a moment T; after it, files deleted at once and files whose deletion waits; the dump restored
 #    to another database and checked (deploy/drill.sh): every file a row names opens as its row says but the one deleted
 #    at once; the live restore marker never goes back, and the live database is not held.
@@ -79,10 +77,12 @@ done
 
 export JWT_SECRET
 JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-export LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_REQUIRE_OBJECT_STORAGE=false
+export LOG_LEVEL=warn FERRUM_BOOTSTRAP_TOKEN=rehearsal-token FERRUM_METRICS_TOKEN=rehearsal-metrics
 PASSWORD='Rehearsal-Passw0rd'
-mkdir -p "$work/files" "$work/run"
-STORE=(FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" FERRUM_S3_REGION=us-east-1 FERRUM_TEST_RUN_DIR="$work/run")
+mkdir -p "$work/files"
+# The keys the store is given (STORE_ACCESS_KEY, STORE_SECRET_KEY) and the servers sign with.
+STORE_KEY=FERRUMREHEARSAL STORE_SECRET=rehearsal-secret-key-0123456789
+STORE=(FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" FERRUM_S3_REGION=us-east-1 AWS_ACCESS_KEY_ID="$STORE_KEY" AWS_SECRET_ACCESS_KEY="$STORE_SECRET")
 
 # Runs the binary on a database (production settings unless LOCO_ENV says otherwise), from the server's directory. Its
 # process is the subshell's own (exec), so that a background one's $! is the server, which `end` then stops.
@@ -113,18 +113,18 @@ launch() {
   done
   return 1
 }
-# The bundled store, as Compose runs it (deploy/store/start.sh); its first start makes and hands over its keys.
+# The reference store (reference/store/start.sh), given its keys.
 store_up() {
-  STORE_DATA="$work/store" STORE_HANDOFF="$work/run/object-store" STORE_BIND=127.0.0.1 STORE_PORT=$S3_PORT \
+  STORE_DATA="$work/store" STORE_ACCESS_KEY="$STORE_KEY" STORE_SECRET_KEY="$STORE_SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$S3_PORT \
     STORE_ARGS="-master.port=$((BASE + 10)) -volume.port=$((BASE + 11)) -filer.port=$((BASE + 12)) -master.volumeSizeLimitMB=64" \
-    sh "$ROOT/deploy/store/start.sh" >>"$work/store.log" 2>&1 &
+    sh "$ROOT/reference/store/start.sh" >>"$work/store.log" 2>&1 &
   STORE_PID=$!
   for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S3_PORT/healthz" >/dev/null 2>&1 && return 0; sleep 1; done
   fail "the store did not come up"
 }
 # Readiness as a browser asks for it: status and body.
 readiness() { curl -sS -H 'Accept-Encoding: gzip' --compressed -o "$work/ready.json" -w '%{http_code}' "$1/api/ready"; }
-up_metric() { curl -fsS "$1/metrics" | awk '$1 == "ferrum_object_storage_up" {print $2}'; }
+up_metric() { curl -fsS -H "authorization: Bearer $FERRUM_METRICS_TOKEN" "$1/metrics" | awk '$1 == "ferrum_object_storage_up" {print $2}'; }
 token() { curl -fsS "$1/api/auth/login" -H 'content-type: application/json' -d "{\"tenant\":\"files\",\"email\":\"admin@files.test\",\"password\":\"$PASSWORD\"}" | json 'd["token"]'; }
 # Uploads a file of N bytes named NAME; prints its id and SHA-256.
 upload() {
@@ -136,96 +136,43 @@ fetched() {
   local url=$1 tok=$2 id=$3; shift 3
   curl -fsSL "$url/files/$id" -H "authorization: Bearer $tok" "$@" | shasum -a 256 | cut -d' ' -f1
 }
-doctor_line() { on "$1" "${@:3}" "$BIN" task doctor format:json 2>/dev/null | json "next((f['level'] + ': ' + f['detail']) for f in d if f['check'] == '$2')" || true; }
+doctor_line() { on "$1" "${@:3}" "$BIN" task doctor format:json 2>/dev/null | sed -n '/^\[/,$p' | json "next((f['level'] + ': ' + f['detail']) for f in d if f['check'] == '$2')" || true; }
 
-step "1. a new installation on a local directory is refused"
-if serve "${NAME}_fresh" "$A_PORT" fresh; then fail "the server started on a new database with a local directory"; fi
-grep -q "a new installation does not keep files in a local directory" "$work/fresh.log" || fail "the refusal does not say why"
+step "1. a start without a bucket is refused"
+if serve "${NAME}_fresh" "$A_PORT" fresh; then fail "the server started on a new database with no bucket"; fi
+grep -q "only development and tests keep files in a local directory" "$work/fresh.log" || fail "the refusal does not say why"
 grep -q "FERRUM_S3_BUCKET" "$work/fresh.log" || fail "the refusal does not say what to set"
 
-step "2. an installation keeping its files in a directory: made in development, started in production"
-LOCO_ENV=development serve "${NAME}_live" "$A_PORT" made || fail "the development server did not start"
-A_PID=$SERVED
+step "2. the store with no bucket: not ready, saying NoSuchBucket; bucket_set_up makes it, and both servers become ready"
+store_up
 A="http://127.0.0.1:$A_PORT" B="http://127.0.0.1:$B_PORT"
+launch "${NAME}_live" "$A_PORT" a "${STORE[@]}" || fail "server A did not come up alive on a store with no bucket"
+A_PID=$SERVED
+launch "${NAME}_live" "$B_PORT" b "${STORE[@]}" || fail "server B did not come up alive on a store with no bucket"
+B_PID=$SERVED
+[ "$(readiness "$A")" = 503 ] || fail "a server whose bucket is not made is ready"
+grep -q NoSuchBucket "$work/ready.json" || fail "not ready, without saying the bucket is missing: $(cat "$work/ready.json")"
+on "${NAME}_live" "${STORE[@]}" "$BIN" task bucket_set_up >"$work/setup1.log" 2>&1 || fail "bucket_set_up: $(tail -3 "$work/setup1.log")"
+grep -q "4 steps done" "$work/setup1.log" || fail "the first bucket_set_up did not do its four steps: $(cat "$work/setup1.log")"
+on "${NAME}_live" "${STORE[@]}" "$BIN" task bucket_set_up >"$work/setup2.log" 2>&1 || fail "the second bucket_set_up: $(tail -3 "$work/setup2.log")"
+grep -q "0 steps done" "$work/setup2.log" || fail "the second bucket_set_up did something: $(cat "$work/setup2.log")"
+echo "    $(head -1 "$work/setup1.log"), then $(head -1 "$work/setup2.log")"
+for _ in $(seq 1 90); do [ "$(readiness "$A")" = 200 ] && [ "$(readiness "$B")" = 200 ] && break; sleep 1; done
+[ "$(readiness "$A")" = 200 ] && [ "$(readiness "$B")" = 200 ] || fail "the servers did not become ready once the bucket was made, without a restart"
 curl -fsS "$A/api/tenants" -H 'x-ferrum-bootstrap-token: rehearsal-token' -H 'content-type: application/json' \
   -d "{\"slug\":\"files\",\"name\":\"Files\",\"admin_email\":\"admin@files.test\",\"admin_password\":\"$PASSWORD\",\"packages\":[\"contacts\"]}" >/dev/null
-T=$(token "$A")
-# Enough files, half a megabyte each, for the move to be stopped partway.
-: >"$work/old.txt"
-for i in $(seq 1 120); do upload "$A" "$T" 524288 "old-$i.bin" >>"$work/old.txt"; done
-end "$A_PID"
-serve "${NAME}_live" "$A_PORT" kept || fail "an installation keeping its files in a directory did not start"
-A_PID=$SERVED
-grep -q "files are kept in a local directory" "$work/kept.log" || fail "no warning at start about the directory"
-read -r id sha < <(head -1 "$work/old.txt")
-[ "$(fetched "$A" "$(token "$A")" "$id")" = "$sha" ] || fail "a file of the directory, through the server that keeps it"
-line=$(doctor_line "${NAME}_live" storage.directory)
-[[ "$line" == blocker:* ]] || fail "the doctor's line about the directory is not error-level: $line"
-end "$A_PID"
-
-step "the bundled store's first start (deploy/store/start.sh, SeaweedFS), its keys handed over"
-store_up
-[ -f "$work/run/object-store/keys.json" ] || fail "the store's first start handed over no keys"
-grep -q '"set_up_bucket":true' "$work/run/object-store/keys.json" || fail "the bundled store does not ask for its bucket to be set up"
-
-step "two servers set to the store, files moving: each reads what the other wrote, and the directory's files"
-serve "${NAME}_live" "$A_PORT" a "${STORE[@]}" || fail "server A did not start on the store"
-A_PID=$SERVED
-grep -q "files are moving from the local directory" "$work/a.log" || fail "no warning that files are moving"
-for _ in $(seq 1 30); do [ -f "$work/run/object-store/keys.json" ] || break; sleep 1; done
-[ ! -f "$work/run/object-store/keys.json" ] || fail "the handed-over keys' file is still there"
-[ "$(sql "${NAME}_live" "set ferrum.vault = 'on'; select count(distinct name) from vault.secret where name in ('aws_access_key_id', 'aws_secret_access_key')" | tail -1)" = 2 ] ||
-  fail "the store's keys are not in the vault"
-serve "${NAME}_live" "$B_PORT" b "${STORE[@]}" || fail "server B did not start on the store"
-B_PID=$SERVED
 TA=$(token "$A") TB=$(token "$B")
 read -r ida shaa < <(upload "$A" "$TA" 70000 a.bin)
 read -r idb shab < <(upload "$B" "$TB" 80000 b.bin)
 [ "$(fetched "$B" "$TB" "$ida")" = "$shaa" ] || fail "B does not read what A wrote"
 [ "$(fetched "$A" "$TA" "$idb")" = "$shab" ] || fail "A does not read what B wrote"
-[ "$(fetched "$B" "$TB" "$id")" = "$sha" ] || fail "B does not read the directory's file while files move"
-[ -f "$work/files/tenants/$(sql "${NAME}_live" "set ferrum.system = 'on'; select tenant_id from file_object limit 1" | tail -1)/$ida" ] &&
-  fail "a file written while files move went to the directory"
-
-step "files_move, killed partway, then run again"
-(cd "$ROOT/server" && exec env LOCO_ENV=production DATABASE_URL="$APP/${NAME}_live" FERRUM_FILES_DIR="$work/files" "${STORE[@]}" \
-  "$BIN" task files_move) >"$work/move1.log" 2>&1 &
-MOVE=$!
-copied=0
-for _ in $(seq 1 400); do
-  copied=$(sql "${NAME}_live" "set ferrum.system = 'on'; select count(*) from file_move" | tail -1)
-  [ "$copied" -ge 8 ] && break
-  kill -0 "$MOVE" 2>/dev/null || break
-  sleep 0.05
-done
-kill -STOP "$MOVE" 2>/dev/null || fail "the move ended before it could be stopped ($copied copied): give it more files"
-kill -KILL "$MOVE"
-wait "$MOVE" 2>/dev/null || true
-copied=$(sql "${NAME}_live" "set ferrum.system = 'on'; select count(*) from file_move" | tail -1)
-[ "$(sql "${NAME}_live" "set ferrum.system = 'on'; select state from file_store" | tail -1)" = moving ] || fail "a killed move confirmed"
-echo "    killed after $copied files"
-on "${NAME}_live" "${STORE[@]}" "$BIN" task files_move >"$work/move2.log" 2>&1 || fail "the second run of files_move"
-grep -q "is no longer read" "$work/move2.log" || fail "the move did not confirm: $(tail -3 "$work/move2.log")"
-grep -q "copied before or already in the store" "$work/move2.log" || fail "the second run said nothing of what was copied"
-echo "    $(head -1 "$work/move2.log")"
-[ "$(sql "${NAME}_live" "set ferrum.system = 'on'; select state from file_store" | tail -1)" = store ] || fail "the move is not recorded"
-
-step "the directory moved away: both servers, restarted, serve every file as its row says"
-end "$A_PID"; end "$B_PID"
-mv "$work/files" "$work/files.moved"
-mkdir -p "$work/files"
-serve "${NAME}_live" "$A_PORT" a2 "${STORE[@]}" || fail "A did not start again"
-A_PID=$SERVED
-serve "${NAME}_live" "$B_PORT" b2 "${STORE[@]}" || fail "B did not start again"
-B_PID=$SERVED
-TA=$(token "$A") TB=$(token "$B")
-while read -r fid fsha; do
-  [ "$(fetched "$B" "$TB" "$fid")" = "$fsha" ] || fail "file $fid after the move"
-done <"$work/old.txt"
-on "${NAME}_live" "${STORE[@]}" "$BIN" task check_files digest:yes >"$work/check.log" 2>&1 || fail "check_files after the move: $(tail -3 "$work/check.log")"
+[ -n "$(find "$work/files" -type f 2>/dev/null | head -1)" ] && fail "a file went to the local directory"
+: >"$work/old.txt"
+for i in $(seq 1 4); do upload "$A" "$TA" 4096 "old-$i.bin" >>"$work/old.txt"; done
+on "${NAME}_live" "${STORE[@]}" "$BIN" task check_files digest:yes >"$work/check.log" 2>&1 || fail "check_files: $(tail -3 "$work/check.log")"
 echo "    $(tail -1 "$work/check.log")"
 
-step "readiness: a store gone after the first answer, one that comes up late, a wrong bucket"
+step "readiness: a store gone after the first answer, one that comes up late, a wrong bucket, keys it does not know"
 end "$STORE_PID"
 STORE_PID=''
 [ "$(readiness "$A")" = 200 ] || fail "a store gone after the first answer took a ready replica out of service: $(cat "$work/ready.json")"
@@ -235,24 +182,17 @@ line=$(doctor_line "${NAME}_live" storage "${STORE[@]}")
 [[ "$line" == blocker:* ]] || fail "the doctor does not say the store is gone: $line"
 echo "    store gone: still ready (as a browser asks), ferrum_object_storage_up 0, the doctor: ${line:0:90}"
 C="http://127.0.0.1:$((BASE + 5))"
-# Its bucket a new one, whose set-up the store's handoff asks for (as at a first start): it fails while the store is down.
-mkdir -p "$work/late/object-store"
-python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["identities"][0]["credentials"][0]; print(json.dumps({"aws_access_key_id": c["accessKey"], "aws_secret_access_key": c["secretKey"], "set_up_bucket": True}))' \
-  "$work/store/ferrum/s3.json" >"$work/late/object-store/keys.json"
-launch "${NAME}_live" $((BASE + 5)) late "${STORE[@]}" FERRUM_S3_BUCKET=late FERRUM_TEST_RUN_DIR="$work/late" ||
-  fail "a server with its store down did not come up alive"
+launch "${NAME}_live" $((BASE + 5)) late "${STORE[@]}" || fail "a server with its store down did not come up alive"
 C_PID=$SERVED
 [ "$(readiness "$C")" = 503 ] || fail "a server whose store never answered is ready"
 grep -q "object storage has not taken a write and a read" "$work/ready.json" || fail "not ready, without saying why: $(cat "$work/ready.json")"
-grep -q "setting up the bucket failed" "$work/ready.json" || fail "not ready, without saying the set-up fails: $(cat "$work/ready.json")"
 [ "$(grep -c 'did not take a write and a read' "$work/late.log")" = 1 ] || fail "the log does not say it once"
 store_up
-for _ in $(seq 1 30); do [ "$(readiness "$C")" = 200 ] && break; sleep 1; done
+# The store's volumes need a moment after a start before it takes a write; the server asks again every five seconds.
+for _ in $(seq 1 90); do [ "$(readiness "$C")" = 200 ] && break; sleep 1; done
 [ "$(readiness "$C")" = 200 ] || fail "the store came up and the server did not become ready without a restart"
 end "$C_PID"
-line=$(doctor_line "${NAME}_live" storage.versioning "${STORE[@]}" FERRUM_S3_BUCKET=late)
-[[ "$line" == ok:* ]] || fail "the bucket set up once the store came up: storage.versioning $line"
-echo "    a store that comes up late: not ready (the bucket's set-up fails), then ready with it set up, no restart"
+echo "    a store that comes up late: not ready, then ready, no restart"
 launch "${NAME}_live" $((BASE + 5)) wrong "${STORE[@]}" FERRUM_S3_BUCKET=nosuch || fail "a server with a wrong bucket did not come up alive"
 C_PID=$SERVED
 sleep 12
@@ -260,16 +200,11 @@ sleep 12
 grep -q NoSuchBucket "$work/ready.json" || fail "a wrong bucket, not ready without saying so: $(cat "$work/ready.json")"
 echo "    a wrong bucket: never ready: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"][:140])' "$work/ready.json")"
 end "$C_PID"
-# A set-up that keeps failing: keys the store does not know, handed over as the bundled store's.
-mkdir -p "$work/nokeys/object-store"
-printf '{"aws_access_key_id":"FERRUMUNKNOWN","aws_secret_access_key":"unknown","set_up_bucket":true}\n' >"$work/nokeys/object-store/keys.json"
-launch "${NAME}_live" $((BASE + 5)) nokeys "${STORE[@]}" FERRUM_S3_BUCKET=late2 FERRUM_TEST_RUN_DIR="$work/nokeys" \
-  AWS_ACCESS_KEY_ID=FERRUMUNKNOWN AWS_SECRET_ACCESS_KEY=unknown || fail "a server whose set-up fails did not come up alive"
+launch "${NAME}_live" $((BASE + 5)) nokeys "${STORE[@]}" AWS_ACCESS_KEY_ID=FERRUMUNKNOWN AWS_SECRET_ACCESS_KEY=unknown || fail "a server with keys the store does not know did not come up alive"
 C_PID=$SERVED
 sleep 12
-[ "$(readiness "$C")" = 503 ] || fail "a server whose bucket set-up keeps failing became ready"
-grep -q "setting up the bucket failed" "$work/ready.json" || fail "not ready, without saying the set-up fails: $(cat "$work/ready.json")"
-echo "    a set-up that keeps failing: never ready: $(python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["message"]; print(m[m.index("setting up"):][:130])' "$work/ready.json")"
+[ "$(readiness "$C")" = 503 ] || fail "a server with keys the store does not know became ready"
+echo "    keys the store does not know: never ready: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"][:140])' "$work/ready.json")"
 end "$C_PID"
 
 step "3. the doctor's lines on moto: bad, then good as versioning, lifecycle and encryption are switched on"
@@ -293,13 +228,9 @@ PY
 }
 MOTO=(FERRUM_S3_BUCKET=bare FERRUM_S3_ENDPOINT="http://127.0.0.1:$MOTO_PORT" FERRUM_S3_REGION=us-east-1 AWS_ACCESS_KEY_ID=moto AWS_SECRET_ACCESS_KEY=moto FERRUM_BACKUP_REACH_DAYS=30)
 s3 "http://127.0.0.1:$MOTO_PORT" make
-# A store of the installation's own with the bundled store's handoff beside it (Compose's store left running): the
-# server signs with its own keys, so its bucket is left as it is.
-mkdir -p "$work/own/object-store"
-printf '{"aws_access_key_id":"FERRUMBUNDLED","aws_secret_access_key":"bundled","set_up_bucket":true}\n' >"$work/own/object-store/keys.json"
 for check in versioning lifecycle encryption; do
-  line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}" FERRUM_TEST_RUN_DIR="$work/own")
-  [[ "$line" == warning:* ]] || fail "storage.$check before it is switched on (the bundled store's handoff beside a store of its own): $line"
+  line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}")
+  [[ "$line" == warning:* ]] || fail "storage.$check before it is switched on: $line"
   echo "    before: storage.$check $line"
   s3 "http://127.0.0.1:$MOTO_PORT" "$check"
   line=$(doctor_line "${NAME}_bare" "storage.$check" "${MOTO[@]}")
@@ -309,11 +240,25 @@ done
 line=$(doctor_line "${NAME}_bare" storage.public "${MOTO[@]}")
 [[ "$line" == blocker:* ]] || fail "moto takes requests without keys, and the doctor does not say so: $line"
 echo "    moto: storage.public $line"
+# A bucket with its own rules is never changed by bucket_set_up: the three rules switched on by hand above stay as they are.
+on "${NAME}_bare" "${MOTO[@]}" "$BIN" task bucket_set_up >"$work/own.log" 2>&1 || fail "bucket_set_up on a bucket with its own rules: $(tail -3 "$work/own.log")"
+grep -q "0 steps done" "$work/own.log" || fail "bucket_set_up changed a bucket that had its own rules: $(cat "$work/own.log")"
+# A bucket moto lacks: four steps (made, versioning, lifecycle rules, encryption), then none, and the doctor's lines are ok.
+MADE=(FERRUM_S3_BUCKET=made FERRUM_S3_ENDPOINT="http://127.0.0.1:$MOTO_PORT" FERRUM_S3_REGION=us-east-1 AWS_ACCESS_KEY_ID=moto AWS_SECRET_ACCESS_KEY=moto FERRUM_BACKUP_REACH_DAYS=30)
+on "${NAME}_bare" "${MADE[@]}" "$BIN" task bucket_set_up >"$work/made1.log" 2>&1 || fail "bucket_set_up on a missing bucket: $(tail -3 "$work/made1.log")"
+grep -q "4 steps done" "$work/made1.log" || fail "bucket_set_up did not do four steps on a missing bucket: $(cat "$work/made1.log")"
+on "${NAME}_bare" "${MADE[@]}" "$BIN" task bucket_set_up >"$work/made2.log" 2>&1 || fail "the second bucket_set_up: $(tail -3 "$work/made2.log")"
+grep -q "0 steps done" "$work/made2.log" || fail "the second bucket_set_up did something: $(cat "$work/made2.log")"
+for check in versioning lifecycle encryption clock; do
+  line=$(doctor_line "${NAME}_bare" "storage.$check" "${MADE[@]}")
+  [[ "$line" == ok:* ]] || fail "a bucket set up by bucket_set_up: storage.$check $line"
+done
+echo "    bucket_set_up on moto: 4 steps, then 0; versioning, lifecycle, encryption, the clock: ok"
 for check in versioning lifecycle encryption public clock; do
   line=$(doctor_line "${NAME}_live" "storage.$check" "${STORE[@]}")
-  [[ "$line" == ok:* ]] || fail "the bundled store, set up at the first start: storage.$check $line"
+  [[ "$line" == ok:* ]] || fail "the reference store, set up by bucket_set_up: storage.$check $line"
 done
-echo "    the bundled store: versioning, lifecycle, encryption, not public, the clock: ok"
+echo "    the reference store: versioning, lifecycle, encryption, not public, the clock: ok"
 
 step "4. the drill: a database restored to a moment T, every file its rows name opened"
 on "${NAME}_live" "${STORE[@]}" "$BIN" task set key:files_delete_after_days value:30 >/dev/null
@@ -363,7 +308,7 @@ sleep 3
 step "6. no keys: a machine's identity, from a container credentials address served here"
 end "$A_PID"; end "$B_PID"
 A_PID='' B_PID=''
-keys=$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["identities"][0]["credentials"][0]; print(c["accessKey"], c["secretKey"])' "$work/store/ferrum/s3.json")
+keys="$STORE_KEY $STORE_SECRET"
 python3 - "$CRED_PORT" "$keys" "$work/creds.jsonl" >"$work/creds.log" 2>&1 <<'PY' &
 import http.server, json, sys
 port, (key, secret), out = int(sys.argv[1]), sys.argv[2].split(), sys.argv[3]
@@ -378,7 +323,7 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
 PY
 CRED_PID=$!
 sleep 1
-NOKEYS=(FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" FERRUM_S3_REGION=us-east-1 FERRUM_TEST_RUN_DIR="$work/none"
+NOKEYS=(FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S3_PORT" FERRUM_S3_REGION=us-east-1
   AWS_SHARED_CREDENTIALS_FILE=/nonexistent AWS_CONFIG_FILE=/nonexistent AWS_EC2_METADATA_DISABLED=true)
 if serve "${NAME}_fresh" "$A_PORT" nokeys "${NOKEYS[@]}"; then fail "a server with no keys and no identity started"; fi
 grep -q "has no keys" "$work/nokeys.log" || fail "the refusal without keys does not say why"

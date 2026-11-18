@@ -42,7 +42,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 ARG BUILD_DATE=
-# Read by deploy/smoke.sh: an image with it can start again on a database a newer one migrated.
+# Read by reference/single-host/smoke.sh: an image with it can start again on a database a newer one migrated.
 LABEL io.ferrum.build-date=${BUILD_DATE}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini libxml2 libxmlsec1 libxmlsec1-openssl libssl3 \

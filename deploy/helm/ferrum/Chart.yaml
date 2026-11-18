@@ -1,6 +1,6 @@
 apiVersion: v2
 name: ferrum
-description: "Ferrum, the multi-tenant business platform: the stateless server, its database and the pieces around it."
+description: "Ferrum, the multi-tenant business platform: the stateless server and the pieces around it. It takes the address of a PostgreSQL and a bucket and runs neither."
 type: application
 version: 0.1.0
 # The workspace version in the root Cargo.toml. Images are chosen by image.digest or image.tag, not by this.

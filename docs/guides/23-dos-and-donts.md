@@ -107,7 +107,7 @@ contract (`docs/app-contract.md`) is the rule where they say the same.
 
 | Do / don't | Why | Caught by |
 |---|---|---|
-| Do declare a program you run beside the server with `h.add_companion`, its files rendered from the database and the vault | one input; no secret in the environment | the server refuses two owners; `scripts/companions_rehearsal.sh` for the platform |
+| Do declare a program you run beside the server with `h.add_companion`, its files rendered from the database and the vault | one input; no secret in the environment | the server refuses two owners; the kernel's `companions_it` |
 | Do sign people in to it through `h.openid_companion` | the workspace's people and rights | the server refuses a claim the platform sets |
 | Do end the companion's session on `ferrum.companion.signed_out` | Ferrum stops answering, the companion's own session is yours to end | reviewed |
 

@@ -1,29 +1,25 @@
 #!/usr/bin/env bash
-# Deploys deploy/k8s (through deploy/kind/kustomization.yaml) to the current cluster, prepared by
-# install.sh with the images ferrum:ci and ferrum-editors:ci loaded, and checks it the way an
-# operator would:
-#   * the database comes up as three instances, the server, the PDF renderer and the browser
-#     editors' server as two or three replicas each, the gateway as two proxies with certificates
-#     from cert-manager;
+# Deploys the product chart (deploy/helm/ferrum) to the current cluster, prepared by install.sh with the images ferrum:ci and
+# ferrum-editors:ci loaded, on the Kubernetes reference stack (reference/kubernetes/install.sh: an example database and
+# bucket the chart is given the addresses of), and checks it the way an operator would:
+#   * the server, the PDF renderer and the browser editors' server as two or three replicas each, the gateway as two proxies
+#     with certificates from cert-manager;
 #   * through the gateway: HTTPS only, the server's pages and API, no metrics, the
 #     editor server on its own host with its policies; nothing else reaches the API or the editor
 #     server (network policy); metrics only with their token; the autoscaler sees the API's CPU use;
 #   * a workspace is created and seeded; someone signs in, submits a Sales Invoice, prints it as
 #     HTML and PDF and attaches a file, which every replica then serves from object storage;
-#   * the database primary is killed: writes resume on the new primary, nothing is lost;
-#   * with a standby fenced off, growing or shrinking the database is refused, saying why; back, it
-#     goes to two instances and three again under writes, and what is never safe is refused at once;
 #   * the API is restarted replica by replica under traffic without a failed request;
-#   * a backup is taken and restored into a new database cluster holding the latest writes;
 #   * with a base domain (shapes B and C): one person signs in once, at the accounts host, and
 #     enters two workspaces on their subdomains and one workspace's custom domain, each with a
 #     session of its own; signing out everywhere ends all of them.
+# What tests the example database (a primary lost, growing it, a backup restored) is reference/kubernetes/smoke.sh.
 # CI runs it for every image published from main (.github/workflows/cluster.yml).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 NS=ferrum
-HOST=erp.example.com
+HOST=erp.kind.test
 PASSWORD='Cluster-Test-Passw0rd'
 work=$(mktemp -d)
 
@@ -46,7 +42,6 @@ finish() {
       k logs "$p" --tail=60 || true
     done
     kubectl -n cnpg-system logs deploy/cnpg-controller-manager --tail=60 || true
-    kubectl -n cnpg-system logs deploy/barman-cloud --tail=40 || true
     kubectl -n envoy-gateway-system logs deploy/envoy-gateway --tail=40 || true
   fi
   jobs -p | xargs -r kill 2>/dev/null || true
@@ -55,26 +50,14 @@ finish() {
 }
 trap finish EXIT
 
-step "deploying"
-kubectl apply -f ../k8s/namespace.yaml
-secret() { k create secret generic "$@" --dry-run=client -o yaml | k apply -f -; }
-secret ferrum-secrets \
-  --from-literal=JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
-  --from-literal=FERRUM_BOOTSTRAP_TOKEN="" \
-  --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" \
-  --from-literal=AWS_ACCESS_KEY_ID=test --from-literal=AWS_SECRET_ACCESS_KEY=test
-secret ferrum-backup-s3 --from-literal=ACCESS_KEY_ID=test --from-literal=ACCESS_SECRET_KEY=test
-# The online editor is a second kustomization, in a namespace of its own (deploy/k8s/office).
-{ kubectl kustomize .; echo ---; kubectl kustomize ../k8s/office; } > "$work/manifests.yaml"
-for attempt in $(seq 1 20); do
-  kubectl apply -f "$work/manifests.yaml" && break
-  [ "$attempt" -lt 20 ] || fail "the manifests were not accepted"
-  sleep 5
-done
-
-step "waiting for the database (three instances)"
-k wait cluster/ferrum-db --for=condition=Ready --timeout=15m
-[ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" = 3 ] || fail "not three database instances"
+step "deploying: the reference stack's database and store, and the product on them"
+# The Secret the chart reads (install.sh adds the store's key and a metrics token to it, where they are not there).
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+k create secret generic ferrum-secrets --from-literal=JWT_SECRET="$(openssl rand -base64 48 | tr -d '\n')" \
+  --from-literal=FERRUM_METRICS_TOKEN="$(openssl rand -hex 32)" --dry-run=client -o yaml | k apply -f - >/dev/null
+../../reference/kubernetes/install.sh -f values.yaml -d database.yaml
+# kind has no load balancers: the proxies get a cluster address (this script port-forwards to it).
+k patch envoyproxy ferrum --type merge -p '{"spec":{"provider":{"kubernetes":{"envoyService":{"type":"ClusterIP","externalTrafficPolicy":null}}}}}' >/dev/null
 step "waiting for the server, the PDF renderer and the editor server"
 for d in ferrum ferrum-pdf ferrum-editors; do k rollout status "deploy/$d" --timeout=10m; done
 kubectl -n ferrum-office rollout status deploy/ferrum-office --timeout=10m
@@ -118,7 +101,7 @@ grep -q 'addEventListener("push"' <<<"$(c -f "$API/sw.js")" || fail "the core wo
 if grep -q "ferrum_up" <<<"$(c "$API/metrics")"; then fail "metrics are reachable from outside"; fi
 
 step "the editor server"
-EDITORS=editors.example.com
+EDITORS=editors.kind.test
 # Like c(): the Host header names no port, as from outside.
 e() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$EDITORS:8443:127.0.0.1" --resolve "$EDITORS:8080:127.0.0.1" -H "Host: $EDITORS" "$@"; }
 redirect=$(e -o /dev/null -w '%{http_code} %{redirect_url}' "http://$EDITORS:8080/relay.html")
@@ -132,7 +115,7 @@ grep -qi "^content-type: application/wasm" <<<"$(e -fsI "https://$EDITORS:8443/g
   fail "the server does not know the editor server"
 
 step "the online editor (Collabora, its own namespace and host)"
-OFFICE=office.example.com
+OFFICE=office.kind.test
 o() { curl -sS --max-time 60 --cacert "$work/ca.crt" --resolve "$OFFICE:8443:127.0.0.1" --resolve "$OFFICE:8080:127.0.0.1" -H "Host: $OFFICE" "$@"; }
 [ "$(o -o /dev/null -w '%{http_code} %{redirect_url}' "http://$OFFICE:8080/browser/x")" = "301 https://$OFFICE/browser/x" ] || fail "plain HTTP to the editor is not redirected"
 # What is not for the public is sent back to Ferrum: discovery, the administration console, conversion.
@@ -145,13 +128,14 @@ disc=$(k exec deploy/ferrum -- ferrum task doctor format:json 2>/dev/null || tru
 grep -q '"check": "office"' <<<"$disc" || fail "the server's own report says nothing about the editor: $disc"
 
 step "the network policy, metrics and the autoscaler"
-# A pod outside the gateway and monitoring reaches the S3 emulator (which no policy guards) but
-# gets no answer from the API.
-kubectl -n ci-s3 run policy-probe --image=curlimages/curl:8.21.0 --restart=Never --command -- sleep 600 >/dev/null
-kubectl -n ci-s3 wait pod/policy-probe --for=condition=Ready --timeout=3m >/dev/null
-probe() { kubectl -n ci-s3 exec policy-probe -- curl -s -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
+# A pod in a namespace outside the gateway and monitoring reaches the cluster's API server (a control: it answers to anything
+# that can connect), but gets no answer from the server, the editor server or the online editor.
+kubectl create namespace policy-probe --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+kubectl -n policy-probe run policy-probe --image=curlimages/curl:8.21.0 --restart=Never --command -- sleep 600 >/dev/null
+kubectl -n policy-probe wait pod/policy-probe --for=condition=Ready --timeout=3m >/dev/null
+probe() { kubectl -n policy-probe exec policy-probe -- curl -sk -o /dev/null -m 5 -w '%{http_code}' "$1" 2>/dev/null || true; }
 for attempt in $(seq 1 15); do
-  [[ "$(probe "http://s3.ci-s3.svc.cluster.local:5000/")" =~ ^[1-5][0-9][0-9]$ ]] && break
+  [[ "$(probe "https://kubernetes.default.svc.cluster.local/")" =~ ^[1-5][0-9][0-9]$ ]] && break
   [ "$attempt" -lt 15 ] || fail "the probe pod reaches nothing, so it proves nothing about the policy"
   sleep 2
 done
@@ -164,7 +148,7 @@ done
 for _ in 1 2 3; do
   [ "$(probe "http://ferrum-office.ferrum-office.svc.cluster.local:9980/hosting/discovery")" != 200 ] || fail "a pod outside the gateway reached the online editor"
 done
-kubectl -n ci-s3 delete pod policy-probe --wait=false >/dev/null
+kubectl delete namespace policy-probe --wait=false >/dev/null
 first=$(k get pods -l app.kubernetes.io/name=ferrum -o name | head -1)
 k port-forward "$first" 15150:5150 >/dev/null 2>&1 &
 metrics_forward=$!
@@ -179,7 +163,7 @@ for attempt in $(seq 1 60); do
   [ "$attempt" -lt 60 ] || fail "the autoscaler has no CPU figures"
   sleep 5
 done
-echo "    the API uses $cpu % of its CPU request; the autoscaler keeps 3 to 9 replicas"
+echo "    the API uses $cpu % of its CPU request; the autoscaler keeps 3 to 8 replicas"
 
 step "creating and seeding a workspace"
 k exec deploy/ferrum -- ferrum task create_tenant slug:cluster name:"Cluster Co" email:ops@cluster.test password:"$PASSWORD" \
@@ -229,53 +213,6 @@ for p in $(k get pods -l app.kubernetes.io/name=ferrum -o name); do
   [ "$got" = "$want" ] || fail "$p does not serve the attachment"
 done
 
-step "losing the database primary"
-old=$(primary)
-k delete pod "$old" --wait=false
-start=$(date +%s)
-# The old primary stops accepting work while it shuts down; a standby that has every committed
-# transaction (synchronous replication) is promoted, and the API reconnects to it.
-until now=$(primary) && [ -n "$now" ] && [ "$now" != "$old" ]; do
-  [ $(($(date +%s) - start)) -lt 300 ] || fail "no standby promoted 300 s after $old was lost"
-  sleep 1
-done
-promoted=$(($(date +%s) - start))
-until invoice "" --max-time 10 -o /dev/null 2>/dev/null; do
-  [ $(($(date +%s) - start)) -lt 300 ] || fail "no writes 300 s after the primary was lost"
-  sleep 1
-done
-outage=$(($(date +%s) - start))
-echo "    $now promoted after $promoted s; writes resumed $outage s after $old was lost"
-[ "$outage" -le 90 ] || fail "writes were held up for $outage s"
-for _ in $(seq 1 20); do invoice "" -o /dev/null || fail "a write after the failover"; done
-[ "$(c -f "${auth[@]}" "$API/api/v1/SalesInvoice/$id" | json 'd["docstatus"]')" = 1 ] || fail "the invoice after the failover"
-
-step "growing or shrinking the database waits for its standbys (deploy/scale-database.sh)"
-# A standby fenced off: replication is impaired, so a change is refused, saying why, and nothing changes.
-standby=$(k get cluster ferrum-db -o json | json '[n for n in d["status"]["instanceNames"] if n != d["status"]["currentPrimary"]][0]')
-k annotate cluster ferrum-db cnpg.io/fencedInstances="[\"$standby\"]" --overwrite >/dev/null
-for _ in $(seq 1 120); do [ "$(k get cluster ferrum-db -o jsonpath='{.status.readyInstances}')" -lt 3 ] && break; sleep 1; done
-if out=$(../scale-database.sh --instances 2 2>&1); then fail "the database was changed while a standby was fenced: $out"; fi
-grep -q "not changed: replication is not healthy" <<<"$out" || fail "the refusal does not say why: $out"
-[ "$(k get cluster ferrum-db -o jsonpath='{.spec.instances}')" = 3 ] || fail "a refused change changed the database"
-# Back, it goes ahead: two instances (one synchronous standby), then three again, with writes throughout.
-k annotate cluster ferrum-db cnpg.io/fencedInstances- >/dev/null
-../scale-database.sh --instances 2 --wait 600 || fail "two instances once the standby was back"
-invoice "" -o /dev/null || fail "a write with two instances"
-../scale-database.sh --instances 3 --wait 600 || fail "three instances again"
-invoice "" -o /dev/null || fail "a write with three instances again"
-# What is never safe is refused at once.
-if out=$(../scale-database.sh --instances 1 2>&1); then fail "writes were left without a synchronous standby: $out"; fi
-grep -q "synchronous standby" <<<"$out" || fail "$out"
-if out=$(../scale-database.sh --storage 1Gi 2>&1); then fail "a volume shrank: $out"; fi
-grep -q "volumes only grow" <<<"$out" || fail "$out"
-class=$(kubectl get storageclass -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}')
-if [ "$(kubectl get storageclass "$class" -o jsonpath='{.allowVolumeExpansion}')" != true ]; then
-  if out=$(../scale-database.sh --storage 200Gi 2>&1); then fail "a volume grew on a class that cannot grow one: $out"; fi
-  grep -q "cannot grow a volume" <<<"$out" || fail "$out"
-fi
-k wait cluster/ferrum-db --for=condition=Ready --timeout=10m
-
 step "restarting the API under traffic"
 # Four clients at about five requests a second each: busy, and within one user's budget even on a
 # single replica (FERRUM_USER_REQUESTS_PER_MINUTE), so every refusal is a real failure.
@@ -307,46 +244,19 @@ read -r total failed < <(cat "$work"/traffic.* | awk '{t += $1; f += $2} END {pr
 echo "    $total requests while the replicas were replaced, $failed failed"
 [ "$failed" = 0 ] || fail "requests failed during the restart: $(sort "$work/failures" | uniq -c | tr '\n' ' ')"
 
-step "backing up"
-k apply -f - <<'EOF'
-apiVersion: postgresql.cnpg.io/v1
-kind: Backup
-metadata:
-  name: ferrum-db-ci
-spec:
-  cluster:
-    name: ferrum-db
-  method: plugin
-  pluginConfiguration:
-    name: barman-cloud.cloudnative-pg.io
-EOF
-for attempt in $(seq 1 120); do
-  phase=$(k get backup ferrum-db-ci -o jsonpath='{.status.phase}')
-  [ "$phase" = completed ] && break
-  [ "$phase" != failed ] || fail "the backup failed: $(k get backup ferrum-db-ci -o jsonpath='{.status.error}')"
-  [ "$attempt" -lt 120 ] || fail "the backup did not complete"
-  sleep 5
-done
-# A write after the base backup, to be recovered from the archived WAL.
-later=$(upload later.bin)
-segment=$(sql "$(primary)" "select pg_walfile_name(pg_switch_wal())")
-for attempt in $(seq 1 60); do
-  archived=$(sql "$(primary)" "select coalesce(last_archived_wal, '') from pg_stat_archiver")
-  [[ "$archived" < "$segment" ]] || break
-  [ "$attempt" -lt 60 ] || fail "WAL $segment was not archived (last: $archived)"
-  sleep 2
-done
-
-step "restoring into a new database cluster"
-k apply -f restore.yaml
-k wait cluster/ferrum-db-restored --for=condition=Ready --timeout=15m
-found=$(sql "$(primary ferrum-db-restored)" "select count(*) from file_object where id in ('$file', '$later')")
-[ "$found" = 2 ] || fail "the restored database lacks writes ($found of 2 attachments)"
-k delete cluster ferrum-db-restored --wait=false
-
 step "one person, many workspaces: subdomains, the accounts host, a custom domain"
 BASE=ferrum.example
 CUSTOM=shop.example.org
+# Workspaces and the accounts host at *.ferrum.example and one custom domain, each listener with a certificate cert-manager
+# has the CI root sign (added to the chart's Gateway and route here: the chart's listeners are for the hosts its values name).
+k patch gateway ferrum --type=json -p '[
+  {"op": "add", "path": "/spec/listeners/-", "value": {"name": "https-workspaces", "protocol": "HTTPS", "port": 443, "hostname": "*.ferrum.example", "tls": {"mode": "Terminate", "certificateRefs": [{"name": "ferrum-workspaces-tls"}]}, "allowedRoutes": {"namespaces": {"from": "Same"}}}},
+  {"op": "add", "path": "/spec/listeners/-", "value": {"name": "https-custom", "protocol": "HTTPS", "port": 443, "hostname": "shop.example.org", "tls": {"mode": "Terminate", "certificateRefs": [{"name": "ferrum-custom-tls"}]}, "allowedRoutes": {"namespaces": {"from": "Same"}}}}]' >/dev/null
+k patch httproute ferrum --type=json -p '[
+  {"op": "add", "path": "/spec/parentRefs/-", "value": {"name": "ferrum", "sectionName": "https-workspaces"}},
+  {"op": "add", "path": "/spec/parentRefs/-", "value": {"name": "ferrum", "sectionName": "https-custom"}},
+  {"op": "add", "path": "/spec/hostnames/-", "value": "*.ferrum.example"},
+  {"op": "add", "path": "/spec/hostnames/-", "value": "shop.example.org"}]' >/dev/null
 k wait certificate/ferrum-workspaces-tls certificate/ferrum-custom-tls --for=condition=Ready --timeout=5m
 k set env deploy/ferrum FERRUM_BASE_DOMAIN="$BASE" FERRUM_REGION=ci
 k rollout status deploy/ferrum --timeout=10m

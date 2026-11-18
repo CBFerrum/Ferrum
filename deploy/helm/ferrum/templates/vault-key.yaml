@@ -4,12 +4,16 @@
 # The key file of the vault's `file` slot (docs/operations.md, "The vault"), mounted at /run/ferrum/root.key: made once
 # with a random key, kept when the release is removed, and never changed by an upgrade, which looks it up and keeps what
 # it holds. With it every cluster has a slot beside the credential one, so a changed database password closes nothing.
+# A hook before the migrate Job, so that the first install's Job has the key file; never deleted by Helm (resource-policy
+# keep), and made again from what the lookup finds at each upgrade.
 apiVersion: v1
 kind: Secret
 metadata:
   name: {{ $name }}
   labels: {{- include "ferrum.labels" (list . $name) | nindent 4 }}
   annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
     helm.sh/resource-policy: keep
 type: Opaque
 data:

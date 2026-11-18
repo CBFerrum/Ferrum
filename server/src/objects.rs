@@ -5,9 +5,8 @@
 //! after a dropped connection the upload goes on from what has arrived (FERRUM-OPS-006).
 //! Completing an upload checks the object and records it like any other file.
 //!
-//! Loco's storage is these objects too ([`Files`]), so that everything the server stores goes one way: while files move
-//! from the local directory to the store, a read looks in the store first and the directory second, a write goes to the
-//! store, and a deletion takes both; and a deletion waits when `files_delete_after_days` says so (crate::store).
+//! Loco's storage is these objects too ([`Files`]), so that everything the server stores goes one way: reads, writes and
+//! deletions through the one store, a deletion waiting when `files_delete_after_days` says so (crate::store).
 
 use crate::state::Settings;
 use crate::store::Releases;
@@ -69,9 +68,6 @@ pub const PARTS_TTL: Duration = Duration::from_secs(24 * 3600);
 pub struct Objects {
     pub(crate) op: Operator,
     presigns: bool,
-    /// While files move from the local directory to the store (crate::store): read where the store lacks a key, and
-    /// deleted from as well. Never written.
-    pub(crate) directory: Option<Operator>,
     /// Deletions that wait (`files_delete_after_days`).
     pub(crate) releases: Arc<Releases>,
     /// Whether the store has answered since this replica started (readiness, the metric).
@@ -92,8 +88,7 @@ fn not_found(e: &opendal::Error) -> bool {
 const IDENTITY: [&str; 3] = ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"];
 
 /// The object store `settings` name, as OpenDAL reaches it (`None` without a bucket). Its keys: the environment's, else
-/// the vault's or those the bundled store handed over (crate::secrets); none, and the S3 library's own chain finds them
-/// where the machine has an identity: AWS's own environment and profile, a web identity (IRSA), a container's or an
+/// the vault's (crate::secrets); none, and the S3 library's own chain finds them where the machine has an identity: AWS's own environment and profile, a web identity (IRSA), a container's or an
 /// instance's role. An S3-compatible store (an endpoint) without keys is refused unless the machine names an identity.
 pub fn s3(settings: &Settings) -> std::result::Result<Option<Operator>, String> {
     if settings.s3_bucket.is_empty() {
@@ -132,10 +127,10 @@ pub fn directory(dir: &str) -> std::result::Result<Operator, String> {
 
 impl Objects {
     /// The store the settings name: S3 when a bucket is set, else the local directory (crate::store decides whether the
-    /// directory may be used, and whether it is read while files move).
+    /// directory may be used).
     pub fn new(settings: &Settings) -> std::result::Result<Objects, String> {
         match s3(settings)? {
-            Some(op) => Ok(Objects { op, presigns: true, directory: None, releases: Arc::default(), health: Default::default() }),
+            Some(op) => Ok(Objects { op, presigns: true, releases: Arc::default(), health: Default::default() }),
             None => Objects::local(&settings.files_dir),
         }
     }
@@ -147,17 +142,11 @@ impl Objects {
         opendal::install_default();
         let s3 = S3::default().bucket("object-storage-is-not-set").region("auto").endpoint("http://object-storage-is-not-set.invalid");
         let op = Operator::new(s3).map_err(|e| e.to_string())?;
-        Ok(Objects { op, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
+        Ok(Objects { op, presigns: false, releases: Arc::default(), health: Default::default() })
     }
 
     pub fn local(dir: &str) -> std::result::Result<Objects, String> {
-        Ok(Objects { op: directory(dir)?, presigns: false, directory: None, releases: Arc::default(), health: Default::default() })
-    }
-
-    /// This store, with the local directory `dir` read where it lacks a key and deleted from too, while files move.
-    pub fn reading_directory(mut self, dir: &str) -> std::result::Result<Objects, String> {
-        self.directory = Some(directory(dir)?);
-        Ok(self)
+        Ok(Objects { op: directory(dir)?, presigns: false, releases: Arc::default(), health: Default::default() })
     }
 
     /// This store, its deletions waiting as `releases` says.
@@ -166,32 +155,21 @@ impl Objects {
         self
     }
 
-    /// Whether the local directory is read where the store lacks a key (files are moving to the store).
-    pub fn reads_directory(&self) -> bool {
-        self.directory.is_some()
-    }
-
-    /// Where `key` is, and its size: the store, else (while files move) the directory.
+    /// The store, and the size `key` has there.
     async fn find(&self, key: &str) -> std::result::Result<(&Operator, u64), opendal::Error> {
-        match (self.op.stat(key).await, &self.directory) {
-            (Ok(m), _) => Ok((&self.op, m.content_length())),
-            (Err(e), Some(dir)) if not_found(&e) => dir.stat(key).await.map(|m| (dir, m.content_length())),
-            (Err(e), _) => Err(e),
-        }
+        self.op.stat(key).await.map(|m| (&self.op, m.content_length()))
     }
 
-    /// The keys under `prefix` (for journals; not for anything a request waits on): the store's, and the directory's
-    /// while files move.
+    /// The keys under `prefix` (for journals; not for anything a request waits on).
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut keys = std::collections::BTreeSet::new();
-        for op in std::iter::once(&self.op).chain(&self.directory) {
-            match op.list_with(prefix).recursive(true).await {
-                Ok(entries) => keys.extend(entries.into_iter().map(|e| e.path().to_string()).filter(|p| !p.ends_with('/'))),
-                Err(e) if not_found(&e) => {}
-                Err(e) => return Err(storage_err(e)),
+        match self.op.list_with(prefix).recursive(true).await {
+            Ok(entries) => {
+                let keys: std::collections::BTreeSet<String> = entries.into_iter().map(|e| e.path().to_string()).filter(|p| !p.ends_with('/')).collect();
+                Ok(keys.into_iter().collect())
             }
+            Err(e) if not_found(&e) => Ok(Vec::new()),
+            Err(e) => Err(storage_err(e)),
         }
-        Ok(keys.into_iter().collect())
     }
 
     /// Whether the browser can upload straight to the store (S3 and compatibles; not a local disk).
@@ -251,8 +229,7 @@ impl Objects {
         Ok(())
     }
 
-    /// Deletes an object, or records its deletion to happen once `files_delete_after_days` have passed. While files
-    /// move, from the directory first, then from the store: a copy `files_move` makes meanwhile goes too.
+    /// Deletes an object, or records its deletion to happen once `files_delete_after_days` have passed.
     pub(crate) async fn remove(&self, key: &str) -> Result<()> {
         if self.releases.defer(key).await? {
             return Ok(());
@@ -260,11 +237,8 @@ impl Objects {
         self.remove_now(key).await
     }
 
-    /// Deletes an object now, from the directory first while files move, then from the store.
+    /// Deletes an object now.
     pub(crate) async fn remove_now(&self, key: &str) -> Result<()> {
-        if let Some(dir) = &self.directory {
-            dir.delete(key).await.map_err(storage_err)?;
-        }
         self.op.delete(key).await.map_err(storage_err)
     }
 
@@ -282,8 +256,8 @@ impl Objects {
         if back.to_bytes().as_ref() == b"ok" { Ok(()) } else { Err(Error::Unavailable("storage: a probe came back different".into())) }
     }
 
-    /// Whether an object is there: in the store, or (while files move) in the directory. One whose deletion waits and
-    /// that may be written again is not, so that whoever asks writes it again ([`Objects::write`]).
+    /// Whether an object is there. One whose deletion waits and that may be written again is not, so that whoever asks
+    /// writes it again ([`Objects::write`]).
     pub(crate) async fn exists(&self, key: &str) -> Result<bool> {
         Ok(self.size(key).await?.is_some() && !self.releases.pending(key).await?)
     }
@@ -306,10 +280,8 @@ impl Objects {
     /// Deletes the parts of an upload sent in parts, once it is recorded or forgotten.
     async fn drop_parts(&self, tenant: Uuid, id: Uuid) {
         let dir = format!("{}/", parts_dir(tenant, id));
-        for op in self.directory.iter().chain(std::iter::once(&self.op)) {
-            if let Err(e) = op.delete_with(&dir).recursive(true).await {
-                tracing::warn!(%dir, "could not delete an upload's parts: {e}");
-            }
+        if let Err(e) = self.op.delete_with(&dir).recursive(true).await {
+            tracing::warn!(%dir, "could not delete an upload's parts: {e}");
         }
     }
 }
@@ -531,7 +503,6 @@ async fn join_parts(objects: &Objects, tenant: Uuid, id: Uuid, size: u64, key: &
 async fn write_parts(objects: &Objects, w: &mut Writer, tenant: Uuid, id: Uuid, size: u64) -> Result<()> {
     let mut offset = 0u64;
     while offset < size {
-        // From the directory too, for an upload begun before files moved to the store.
         let part = objects.read(&part_key(tenant, id, offset)).await.map_err(storage_err)?;
         if part.is_empty() {
             return Err(Error::Unavailable(format!("storage: the part of this upload at byte {offset} is empty")));

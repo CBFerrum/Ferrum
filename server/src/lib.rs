@@ -6,7 +6,6 @@ pub mod assistant;
 pub mod assistant_eval;
 pub mod assistant_openai;
 pub mod coedit;
-pub mod companions;
 pub mod controllers;
 pub mod demo;
 pub mod doctor;

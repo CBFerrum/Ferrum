@@ -21,7 +21,7 @@
 # Settings: FERRUM_BIN (default ${CARGO_TARGET_DIR:-target}/debug/examples/oidc_rehearsal, built with `cargo build -p
 # ferrum-server --no-default-features --example oidc_rehearsal`, as `scripts/local_ci.sh oidc` does), FORGEJO (default
 # /opt/homebrew/bin/forgejo), OIDC_APP_URL (the server's role, which may create databases; default
-# postgres://ferrum:ferrum@localhost:5432), OIDC_PORT (the server's port, the forge's the next one; default 39300). Every
+# postgres://ferrum:ferrum@localhost:5432), OIDC_PORT (the server's port, the forge's the next one, the object store's S3 port the one after, its inner ones from it + 10 and + 10010; default 39300). Every
 # process it starts is stopped on the way out, and its database dropped.
 set -euo pipefail
 PREFIX=ferrum_oidcrehearsal
@@ -38,12 +38,12 @@ FERRUM="http://127.0.0.1:$PORT"
 FORGE="http://localhost:$F_PORT"
 [ -x "$BIN" ] || { echo "refused: no $BIN (build it as the header says)" >&2; exit 2; }
 [ -x "$FORGEJO" ] || { echo "refused: no Forgejo at $FORGEJO (set FORGEJO)" >&2; exit 2; }
-for tool in sqlite3 openssl python3 curl psql; do command -v "$tool" >/dev/null || { echo "refused: no $tool on the PATH" >&2; exit 2; }; done
+for tool in sqlite3 openssl python3 curl psql weed; do command -v "$tool" >/dev/null || { echo "refused: no $tool on the PATH" >&2; exit 2; }; done
 for p in "$PORT" "$F_PORT"; do
   if (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then echo "refused: something listens on 127.0.0.1:$p (set OIDC_PORT)" >&2; exit 2; fi
 done
 work=$(mktemp -d)
-SERVER_PID='' FORGE_PID=''
+SERVER_PID='' FORGE_PID='' STORE_PID=''
 
 step() { echo "==> $*"; }
 fail() { echo "FAILED: $*" >&2; exit 1; }
@@ -56,6 +56,7 @@ cleanup() {
   status=$?
   end "$SERVER_PID"
   end "$FORGE_PID"
+  end "$STORE_PID"
   if [ "$status" -ne 0 ]; then
     for log in "$work"/*.log "$work"/forge/log/*.log; do [ -f "$log" ] && { echo "--- $log"; tail -25 "$log"; }; done
   fi
@@ -67,11 +68,21 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 psql "$APP/postgres" -v ON_ERROR_STOP=1 -qc "drop database if exists $NAME with (force)" -c "create database $NAME owner ferrum" >/dev/null
 mkdir -p "$work/files"
+# A production start keeps files in an object store only: SeaweedFS on this machine (reference/store/start.sh as the
+# reference stacks run it), its bucket made over S3.
+S_PORT=$((PORT + 2)) S_KEY=FERRUMOIDC S_SECRET=oidc-secret-key-0123456789
+STORE_DATA="$work/store" STORE_ACCESS_KEY="$S_KEY" STORE_SECRET_KEY="$S_SECRET" STORE_BIND=127.0.0.1 STORE_PORT=$S_PORT \
+  STORE_ARGS="-master.port=$((S_PORT + 10)) -volume.port=$((S_PORT + 11)) -filer.port=$((S_PORT + 12)) -master.volumeSizeLimitMB=64" \
+  sh "$ROOT/reference/store/start.sh" >"$work/store.log" 2>&1 &
+STORE_PID=$!
+for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$S_PORT/healthz" >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS -X PUT --aws-sigv4 "aws:amz:us-east-1:s3" --user "$S_KEY:$S_SECRET" "http://127.0.0.1:$S_PORT/ferrum" >/dev/null || fail "making the store's bucket"
 
 # The binary on the database, from the server's directory, as an installation runs it: the vault opens with the
 # database's password; nothing else secret is set. The workspace `acme` is the server's one, at 127.0.0.1. Its process
 # is the subshell's own (exec), so that a background one's $! is the server, which `end` then stops.
-ENVIRONMENT=(LOCO_ENV=production DATABASE_URL="$APP/$NAME" FERRUM_FILES_DIR="$work/files" FERRUM_REQUIRE_OBJECT_STORAGE=false LOG_LEVEL=warn
+ENVIRONMENT=(LOCO_ENV=production DATABASE_URL="$APP/$NAME" FERRUM_FILES_DIR="$work/files" LOG_LEVEL=warn
+  FERRUM_S3_BUCKET=ferrum FERRUM_S3_ENDPOINT="http://127.0.0.1:$S_PORT" FERRUM_S3_REGION=us-east-1 AWS_ACCESS_KEY_ID="$S_KEY" AWS_SECRET_ACCESS_KEY="$S_SECRET"
   FERRUM_DEFAULT_WORKSPACE=acme BINDING=127.0.0.1 PORT="$PORT" PUBLIC_URL="$FERRUM")
 on() { (cd "$ROOT/server" && exec env "${ENVIRONMENT[@]}" "$@"); }
 # A browser: a cookie jar of its own, redirects followed, gzip accepted. `browse <jar> <curl arguments>`.

@@ -1,0 +1,31 @@
+# The product chart's values for the Kubernetes reference stack (reference/kubernetes/install.sh gives them to Helm, then
+# yours over them): the two addresses Ferrum is given, and nothing else. An example: a database and a bucket of your own
+# replace what is named here (README.md).
+
+database:
+  # The Secret CloudNativePG makes for the example database (reference/kubernetes/database), key `uri`.
+  urlSecret: {name: ferrum-db-app, key: uri}
+  # The role's limit the example database sets (database.connectionLimit there): 390.
+  connectionLimit: 390
+  # The example database's backups reach 30 days (database.backup.retention there).
+  backupReachDays: 30
+  # The example database's pods, and the pooler's, carry the cluster's label.
+  egress:
+    to:
+      - podSelector: {matchLabels: {cnpg.io/cluster: ferrum-db}}
+    ports: [5432]
+
+storage:
+  # The bucket `ferrum` that `ferrum task bucket_set_up` makes in the example store (store.yaml; install.sh runs it).
+  bucket: ferrum
+  region: us-east-1
+  endpoint: http://ferrum-store:8333
+  egress:
+    to:
+      - podSelector: {matchLabels: {app.kubernetes.io/name: ferrum-store}}
+    ports: [8333]
+
+# Nine replicas of a pool of thirty, a rollout and the migrate Job do not fit the 390 above (the budget is deploy/helm/
+# ferrum/templates/_pools.tpl's: 420 with the Job): eight do.
+autoscaling:
+  maxReplicas: 8

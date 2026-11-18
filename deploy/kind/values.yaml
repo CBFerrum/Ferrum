@@ -1,0 +1,13 @@
+# The product chart as CI deploys it to kind (smoke.sh, pools.sh), over reference/kubernetes/ferrum-values.yaml: the images
+# loaded into the cluster, hosts of its own for what the chart ships as placeholders, and a smaller database.
+image: {repository: ferrum, tag: ci}
+publicUrl: https://erp.kind.test
+gateway: {hostname: erp.kind.test}
+office: {host: office.kind.test}
+# The browser editors' server too (smoke.sh resolves its host).
+editors:
+  enabled: true
+  host: editors.kind.test
+  image: {repository: ferrum-editors, tag: ci}
+# The role's limit the example database is given here (database.yaml): the pools' presets and the migrate Job fit 450.
+database: {connectionLimit: 450}

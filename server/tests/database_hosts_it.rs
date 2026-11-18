@@ -61,7 +61,7 @@ fn free_port() -> u16 {
 fn ferrum(args: &[&str], env: &[(&str, String)], log: &std::path::Path) -> std::process::Child {
     let out = std::fs::File::create(log).unwrap();
     std::process::Command::new(env!("CARGO_BIN_EXE_ferrum"))
-        .args(["-e", "production"])
+        .args(["-e", "development"])
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env_clear()
@@ -148,9 +148,7 @@ async fn scenario() {
         ("port", port.to_string()),
         ("binding", "127.0.0.1".to_string()),
         ("public_url", format!("http://127.0.0.1:{port}")),
-        ("require_object_storage", "false".to_string()),
-        // Where the set-up above keeps its files: outside development and tests, a server without a bucket starts only
-        // where its database's files are (docs/operations.md, "Object storage").
+        // Where the set-up above keeps its files (development and tests keep them in a directory).
         ("files_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&st.settings.files_dir).to_string_lossy().into_owned()),
         ("packages_dir", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").to_string_lossy().into_owned()),
         ("log_level", "warn".to_string()),

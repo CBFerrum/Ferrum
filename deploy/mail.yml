@@ -14,12 +14,9 @@ services:
   mail-files:
     image: ${FERRUM_IMAGE:?set FERRUM_IMAGE to a commit tag, docs/operations.md "Images"}
     restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
-    # Its one input: the database's address. What it writes comes from the database and the vault.
+    # Its one input: the database's address (deploy/.env, as for the server). What it writes comes from the database and the vault.
     environment:
-      DATABASE_URL: postgres://ferrum:${FERRUM_DB_PASSWORD}@db:5432/ferrum
+      DATABASE_URL: ${DATABASE_URL:-}
     command: ["task", "render", "service:mail", "to:/var/lib/ferrum/companion"]
     volumes:
       # Owned by the server's user, as the image's directory is.

@@ -12,9 +12,9 @@ missing or was added. Then:
   files to them (`docker compose --env-file deploy/.env --env-file release.env ...`);
 * a registry: each image goes to <registry>/<its registry>/<its path> with its digest kept, and
   containerd/certs.d/ holds a hosts.toml for each registry they came from, which sends the nodes'
-  pulls there (copy it to /etc/containerd/certs.d/ on every node); the bundle's
-  deploy/k8s/kustomization.yaml already names the release, and its operators' manifests are ready
-  for deploy/offline/install.sh.
+  pulls there (copy it to /etc/containerd/certs.d/ on every node); the chart takes the release as
+  image.tag (the bundle's bundle.json names it), and the operators' manifests are ready for
+  deploy/offline/install.sh.
 
 Needs python3; skopeo for a registry (docker for one host without skopeo).
 """

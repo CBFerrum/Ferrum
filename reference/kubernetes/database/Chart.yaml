@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ferrum-database
+description: "An example PostgreSQL for Ferrum on CloudNativePG: a Cluster with continuous backups and an optional pooler. Not part of the product."
+type: application
+version: 0.1.0

@@ -216,9 +216,16 @@ jobs:
       # (crates/kernel/src/window.rs, docs/operations.md).
       - name: Two-version window
         run: python3 scripts/test_window.py && python3 scripts/window.py --range "${{ github.event.pull_request.base.sha || github.event.before }}..${{ github.sha }}"
-      # The Helm chart renders what deploy/k8s renders (same resources, same environment variables).
-      - name: Helm chart against deploy/k8s
+      # The product chart: the values with no default, what a gone value says, what it renders for a database it is given.
+      - name: Helm chart
         run: bash deploy/helm/test.sh
+      # The example database (reference/kubernetes/database): its bootstrap modes and its pooler.
+      - name: Reference database chart
+        run: bash reference/kubernetes/database/test.sh
+      # The reference stacks: their READMEs name paths that exist, their scripts parse, the single-host stack merges with the
+      # product's Compose file.
+      - name: Reference stacks
+        run: bash reference/test.sh
       # Pools, zones and gateways: each preset keeps its promises, each refusal refuses.
       - name: Helm chart's deployment shapes
         run: bash deploy/helm/test_pools.sh
@@ -336,7 +343,7 @@ jobs:
           docker buildx build --load -q -t ferrum-editors:ci deploy/editors
           # The meeting server too (LiveKit), as deploy/meet.yml runs it.
           FERRUM_IMAGE=ferrum:ci FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest \
-            FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
+            FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 reference/single-host/smoke.sh
       - if: github.event_name == 'push'
         id: candidate
         run: |

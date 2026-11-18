@@ -1183,11 +1183,6 @@ async fn check(st: &AppState, snapshot: &Snapshot) -> Result<(), String> {
     {
         return Err(format!("settings.base_domain ({base}) is not a domain name"));
     }
-    if settings.require_object_storage && settings.s3_bucket.is_empty() {
-        return Err(
-            "object storage is required (require_object_storage): set s3_bucket too, or require_object_storage false for a single-server install".into()
-        );
-    }
     if let Some(smtp) = config.mailer.as_ref().and_then(|m| m.smtp.as_ref()).filter(|s| s.enable) {
         crate::mailer::smtp_transport(smtp).map_err(|e| format!("the mail server: {e}"))?;
     }
@@ -1552,7 +1547,6 @@ mod tests {
             ("session_days", "7"),
             ("app_uploads", "cluster"),
             ("zones", r#"{"public": {"staff": "none"}}"#),
-            ("require_object_storage", "false"),
             ("tenant_requests", "4"),
             ("port", "6160"),
             ("log_level", "debug"),
@@ -1566,7 +1560,7 @@ mod tests {
         assert_eq!(settings.session_days, 7);
         assert_eq!(settings.apps.uploads, crate::state::Uploads::Cluster);
         assert_eq!(settings.zones, r#"{"public": {"staff": "none"}}"#);
-        assert!(!settings.require_object_storage && !settings.migrate_at_start);
+        assert!(!settings.migrate_at_start);
         assert_eq!(settings.tenant_requests, Some(4));
         assert_eq!((c.server.port, c.server.host.as_str()), (6160, "https://erp.example.com"));
         assert!(matches!(c.logger.level, loco_rs::logger::LogLevel::Debug));

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""What the Kubernetes manifests promise about scaling, checked before anything is applied.
+"""What the product chart promises about scaling, checked on what it renders.
 
-Two things here go wrong quietly. A Deployment that sets replicas under an autoscaler goes back to that
-number on every apply, which is how a deployment during a peak cuts capacity. And a number of replicas that
-fits the database's connections on the day it was chosen stops fitting when either side changes.
+Two things here go wrong quietly. A Deployment that sets replicas under an autoscaler goes back to that number on every
+apply, which is how a deployment during a peak cuts capacity. And the chart's own figures for the connections a replica
+opens stop being right when the kernel's change: the budget the chart refuses by (deploy/helm/ferrum/templates/_pools.tpl,
+against database.connectionLimit) is the template's, and its refusals are proven by deploy/helm/test_pools.sh; here only
+that its three figures are what crates/kernel/src/db.rs opens.
+
+    helm template ferrum deploy/helm/ferrum -f values.yaml | python3 scripts/check_manifests.py -
 """
 import pathlib
 import re
@@ -26,42 +30,19 @@ DIRECT = constant("LISTENERS") + constant("DIRECT_LOCKS")
 DETACHED = constant("DETACHED_LOCKS")
 
 
-# What each replica opens besides its pool (side_connections and DbConfig's direct_connections in
-# crates/kernel/src/db.rs; docs/operations.md, "Database role"): its side pool for short side writes and the vault's
-# verbs (an eighth of the pool, at least SIDE_CONNECTIONS) and the direct pool.
-def beside(size):
-    return max(-(-size // 8), constant("SIDE_CONNECTIONS")) + DIRECT
-
-
-def chart_drift():
-    """Where the chart counts other connections than the code opens: its ferrum.beside and the pooler's
-    directConnectionsPerReplica."""
-    chart = ROOT / "deploy/helm/ferrum"
+def chart_drift(pools=None):
+    """Where the chart counts other connections than the code opens: its ferrum.beside, ferrum.detached and ferrum.direct
+    (in `pools`, the text of _pools.tpl, or the file's)."""
+    pools = pools or (ROOT / "deploy/helm/ferrum/templates/_pools.tpl").read_text()
     wrong = []
     line = f"{{{{ add (max {constant('SIDE_CONNECTIONS')} (div (add (int .) 7) 8)) {DIRECT} }}}}"
-    pools = (chart / "templates/_pools.tpl").read_text()
     if line not in pools:
         wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.beside must be {line}, what crates/kernel/src/db.rs opens")
-    detached = f'{{{{- define "ferrum.detached" -}}}}{DETACHED}{{{{- end -}}}}'
-    if detached not in pools:
-        wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: ferrum.detached must be {detached}, what crates/kernel/src/db.rs holds")
-    per = yaml.safe_load((chart / "values.yaml").read_text())["database"]["pooler"]["directConnectionsPerReplica"]
-    if per != DIRECT:
-        wrong.append(f"deploy/helm/ferrum/values.yaml: database.pooler.directConnectionsPerReplica is {per}, and a replica opens {DIRECT} direct")
+    for name, value, what in (("ferrum.detached", DETACHED, "holds"), ("ferrum.direct", DIRECT, "opens")):
+        define = f'{{{{- define "{name}" -}}}}{value}{{{{- end -}}}}'
+        if define not in pools:
+            wrong.append(f"deploy/helm/ferrum/templates/_pools.tpl: {name} must be {define}, what crates/kernel/src/db.rs {what}")
     return wrong
-
-
-# What else uses this role: Cloud's controller at two replicas of ten, when it is deployed.
-OTHERS = 20
-# What PostgreSQL must keep for an administrator and replication (RESERVED_CONNECTIONS in doctor.rs).
-RESERVED = 20
-
-
-def documents(directory):
-    for path in sorted(directory.glob("*.yaml")):
-        for doc in yaml.safe_load_all(path.read_text()):
-            if doc:
-                yield path.name, doc
 
 
 def rendered(name, text):
@@ -69,66 +50,12 @@ def rendered(name, text):
     return [(name, doc) for doc in yaml.safe_load_all(text) if doc]
 
 
-def pool_size(spec):
-    env = [e for c in spec["template"]["spec"]["containers"] for e in c.get("env", [])]
-    if not any(e["name"] == "DATABASE_URL" for e in env):
-        return None
-    return next((int(e["value"]) for e in env if e["name"] == "FERRUM_DB_MAX_CONNECTIONS"), 30)
-
-
-def through_pooler(spec):
-    return any(e["name"] == "FERRUM_DATABASE_DIRECT_URL" for c in spec["template"]["spec"]["containers"] for e in c.get("env", []))
-
-
-def per_replica(spec, pooler):
-    """What one replica opens on PostgreSQL itself: its pool and what it opens beside it, or, when it reaches the
-    database through the pooler (it then has FERRUM_DATABASE_DIRECT_URL), only its direct ones."""
-    size = pool_size(spec)
-    if size is None:
-        return None
-    if pooler and through_pooler(spec):
-        return int(pooler["metadata"].get("annotations", {}).get("ferrum.dev/direct-connections-per-replica", DIRECT))
-    return size + beside(size)
-
-
-def surge(workload, most):
-    """Pods a rollout runs beside `most` replicas: the Deployment's maxSurge, a percentage rounded up against `most`
-    (Kubernetes' default 25%). A Job or StatefulSet runs none."""
-    if workload.get("kind") != "Deployment":
-        return 0
-    strategy = workload["spec"].get("strategy", {})
-    if strategy.get("type") == "Recreate":
-        return 0
-    value = strategy.get("rollingUpdate", {}).get("maxSurge", "25%")
-    if isinstance(value, str) and value.endswith("%"):
-        return -(-most * int(value[:-1]) // 100)
-    return int(value)
-
-
-def at_most(n, extra, each):
-    """What `n` pods of `each` connections and the `extra` a rollout adds hold at most, with the locks a starting pod
-    holds outside its pools: in a rollout the `extra` start beside the others; at a first install or a full restart all
-    `n` start at once, with none extra. The larger of the two."""
-    return max((n + extra) * each + extra * DETACHED, n * (each + DETACHED))
-
-
-def pooler_connections(pooler):
-    """A PgBouncer pooler's connections to PostgreSQL: each instance's pool and reserve (PgBouncer's defaults
-    20 and 0)."""
-    if not pooler:
-        return 0
-    params = pooler["spec"].get("pgbouncer", {}).get("parameters", {})
-    each = int(params.get("default_pool_size", 20)) + int(params.get("reserve_pool_size", 0))
-    return pooler["spec"].get("instances", 1) * each
-
-
 def problems(docs):
     docs = list(docs)
     found = []
     workloads = {(d["kind"], d["metadata"]["name"]): (f, d) for f, d in docs if d.get("kind") in ("Deployment", "StatefulSet")}
     scalers = [d for _, d in docs if d.get("kind") == "HorizontalPodAutoscaler"]
-    # A KEDA ScaledObject makes an autoscaler of its own: count it as one, at its maxReplicaCount (KEDA's
-    # default 100), and never beside another on the same workload.
+    # A KEDA ScaledObject makes an autoscaler of its own: never beside another on the same workload.
     for so in (d for _, d in docs if d.get("kind") == "ScaledObject"):
         ref = so["spec"]["scaleTargetRef"]
         target = {"kind": ref.get("kind", "Deployment"), "name": ref["name"]}
@@ -143,66 +70,14 @@ def problems(docs):
             found.append(f"{hpa['metadata']['name']}: scales {target['kind']}/{target['name']}, which is not here")
         elif "replicas" in entry[1]["spec"]:
             found.append(f"{entry[0]}: {target['name']} sets replicas under an autoscaler, and two things now own that number")
-
-    clusters = [d for _, d in docs if d.get("kind") == "Cluster"]
-    # The read-write pooler in front of the cluster, if there is one.
-    pooler = next((d for _, d in docs if d.get("kind") == "Pooler" and d["spec"].get("type", "rw") == "rw"
-                   and clusters and d["spec"]["cluster"]["name"] == clusters[0]["metadata"]["name"]), None)
-    for hpa in scalers:
-        target = hpa["spec"]["scaleTargetRef"]
-        entry = workloads.get((target["kind"], target["name"]))
-        if entry is None or not clusters:
-            continue
-        each = per_replica(entry[1]["spec"], pooler)
-        if each is None:
-            continue
-        through = pooler is not None and through_pooler(entry[1]["spec"])
-        most = hpa["spec"]["maxReplicas"]
-        needed = at_most(most, surge(entry[1], most), each) + OTHERS + (pooler_connections(pooler) if through else 0)
-        spec = clusters[0]["spec"]
-        allowed = int(spec["postgresql"]["parameters"]["max_connections"])
-        roles = spec.get("managed", {}).get("roles", [])
-        limit = next((r.get("connectionLimit", -1) for r in roles if r["name"] == "ferrum"), -1)
-        if limit < 0:
-            found.append("database: the ferrum role has no connection limit, so nothing keeps a reserve")
-        elif limit > allowed - RESERVED:
-            found.append(f"database: the ferrum role may hold {limit} of {allowed}, leaving less than {RESERVED}")
-        if limit >= 0 and needed > limit:
-            found.append(f"{target['name']}: at {most} replicas and {surge(entry[1], most)} more in a rollout it needs {needed} connections, and the role may hold {limit}")
-
-    # Every workload on the role at once: each server Deployment at its most replicas (its autoscaler's
-    # maximum, or its replicas) and the pods a rollout adds, and each Job that runs the server (a migration).
-    if not clusters:
-        return found
-    roles = clusters[0]["spec"].get("managed", {}).get("roles", [])
-    limit = next((r.get("connectionLimit", -1) for r in roles if r["name"] == "ferrum"), -1)
-    most = {(h["spec"]["scaleTargetRef"]["kind"], h["spec"]["scaleTargetRef"]["name"]): h["spec"]["maxReplicas"] for h in scalers}
-    parts = []
-    for _, d in docs:
-        if d.get("kind") in ("Deployment", "StatefulSet", "Job"):
-            each = per_replica(d["spec"], pooler)
-            if each is not None:
-                key = (d["kind"], d["metadata"]["name"])
-                n = most.get(key, d["spec"].get("parallelism" if d["kind"] == "Job" else "replicas", 1))
-                parts.append((key, at_most(n, surge(d, n), each)))
-    if pooler:
-        parts.append((("Pooler", pooler["metadata"]["name"]), pooler_connections(pooler)))
-    needed = sum(n for _, n in parts) + OTHERS
-    alone = len(parts) == 1 and parts[0][0] in most  # already said above
-    if limit >= 0 and needed > limit and not alone:
-        names = ", ".join(f"{k[1]} {n}" for k, n in parts)
-        found.append(f"all together ({names}, others {OTHERS}) they need {needed} connections, and the role may hold {limit}")
     return found
 
 
 if __name__ == "__main__":
-    # A directory of manifests (deploy/k8s by default), or a file of rendered documents, or - for stdin:
-    #   helm template ferrum deploy/helm/ferrum -f values.yaml | python3 scripts/check_manifests.py -
-    source = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "deploy" / "k8s")
+    # A file of rendered documents, or - (the default) for stdin.
+    source = sys.argv[1] if len(sys.argv) > 1 else "-"
     if source == "-":
         docs = rendered("stdin", sys.stdin.read())
-    elif pathlib.Path(source).is_dir():
-        docs = documents(pathlib.Path(source))
     else:
         docs = rendered(pathlib.Path(source).name, pathlib.Path(source).read_text())
     wrong = chart_drift() + problems(docs)

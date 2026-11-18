@@ -4,7 +4,7 @@
 16 November 2026 for the object-storage slice (docs/plan/stateless.md, D6). MinIO was not tried: both candidates ran,
 and one passed.
 
-**Chosen: SeaweedFS**, in `deploy/docker-compose.yml` as `store`, started by `deploy/store/start.sh`. Three facts
+**Chosen: SeaweedFS**, in `deploy/docker-compose.yml` as `store`, started by `reference/store/start.sh`. Three facts
 decided it:
 
 1. Garage answers `PutBucketVersioning` and `ListObjectVersions` with `NotImplemented`, and drops
@@ -78,4 +78,4 @@ disk: a marker written into an object of an encrypted bucket and of a plain one,
 
 MinIO (both candidates ran; its server's licence is AGPL-3.0 too). Recovery from a lost volume, and lifecycle rules
 taking effect (each needs days); `scripts/object_store_rehearsal.sh` runs the chosen store again with
-`deploy/store/start.sh` on each run.
+`reference/store/start.sh` on each run (given its key; `ferrum task bucket_set_up` makes the bucket).

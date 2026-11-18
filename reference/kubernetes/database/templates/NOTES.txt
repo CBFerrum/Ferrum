@@ -1,0 +1,3 @@
+The example database {{ include "ferrum.fullname" . }}-db is created by CloudNativePG; its backups reach {{ include "ferrum.backupDays" . }} days (database.backupReachDays in the server's values).
+Its address for the server is the key `uri` of the Secret {{ include "ferrum.fullname" . }}-db-app, which CloudNativePG makes in this namespace once the cluster is up:
+  kubectl -n {{ .Release.Namespace }} get cluster {{ include "ferrum.fullname" . }}-db

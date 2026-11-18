@@ -1,8 +1,8 @@
 #!/bin/sh
 # Before the first `docker compose up`: what would stop this host from running Ferrum safely.
 # Run from the repository: deploy/preflight.sh [--generate]
-#   --generate  fills secrets missing from deploy/.env with new random ones, makes the online editor's WOPI
-#               proof key (deploy/office-proof-key) when there is none, and changes nothing else
+#   --generate  makes the online editor's WOPI proof key (deploy/office-proof-key) when there is none, and changes nothing
+#               else: the database and the bucket are yours (reference/single-host/up.sh makes them, and their passwords)
 # Blockers exit non-zero; warnings do not. Nothing it prints is secret.
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -16,15 +16,6 @@ placeholder() { case "$1" in "" | *[Cc][Hh][Aa][Nn][Gg][Ee]* | *example* | *repl
 
 if [ "${1:-}" = "--generate" ]; then
   [ -f .env ] || cp .env.example .env
-  # The database's two passwords and nothing else: the vault (in the database) keeps and makes every other secret.
-  for pair in POSTGRES_PASSWORD:24 FERRUM_DB_PASSWORD:24; do
-    name=${pair%:*} bytes=${pair#*:}
-    if placeholder "$(value "$name")"; then
-      generated=$(openssl rand -base64 "$bytes" | tr -d '\n')
-      grep -v "^$name=" .env > .env.new && echo "$name=$generated" >> .env.new && mv .env.new .env
-      echo "generated $name"
-    fi
-  done
   chmod 600 .env
   # The online editor's WOPI proof key: with it, Ferrum refuses any WOPI call the editor did not sign.
   # The editor runs as another user and must read it, so the file is readable by all; it signs calls
@@ -42,18 +33,24 @@ command -v docker > /dev/null 2>&1 && ok "docker is installed" || blocker "docke
 docker compose version > /dev/null 2>&1 && ok "docker compose is available" || blocker "docker compose is not available" "Install the Compose plugin."
 
 if [ ! -f .env ]; then
-  blocker "deploy/.env does not exist" "Run deploy/preflight.sh --generate, then set FERRUM_IMAGE, PUBLIC_URL and MAILER_* in it."
+  blocker "deploy/.env does not exist" "Run deploy/preflight.sh --generate, then set DATABASE_URL, FERRUM_S3_*, FERRUM_IMAGE, PUBLIC_URL and MAILER_* in it."
 else
   case "$(ls -l .env | cut -c5-10)" in
     ------) ok "deploy/.env is readable only by its owner" ;;
     *) warning "deploy/.env can be read by others" "chmod 600 deploy/.env" ;;
   esac
-  for name in POSTGRES_PASSWORD FERRUM_DB_PASSWORD; do
-    if placeholder "$(value "$name")"; then
-      blocker "$name is missing, or a placeholder" "Run deploy/preflight.sh --generate."
-    else
-      ok "$name is set"
-    fi
+  # Ferrum takes the two addresses and operates neither: the server refuses to start without them.
+  case "$(value DATABASE_URL)" in
+    "" | *change-me* | *example.com*) blocker "DATABASE_URL is missing, or a placeholder" "Set it to the address of your PostgreSQL, the ordinary role's (docs/operations.md, Any PostgreSQL); reference/single-host/up.sh runs one beside Ferrum." ;;
+    *) ok "DATABASE_URL is set" ;;
+  esac
+  case "$(value FERRUM_S3_BUCKET)" in
+    "") blocker "FERRUM_S3_BUCKET is not set" "Set the bucket, with FERRUM_S3_ENDPOINT, FERRUM_S3_REGION and the keys, and make it once: ferrum task bucket_set_up." ;;
+    *) ok "FERRUM_S3_BUCKET is set" ;;
+  esac
+  for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+    if placeholder "$(value "$name")"; then warning "$name is missing, or a placeholder" "Set the store's keys, or give the machine an identity the store trusts (docs/operations.md, Object storage)."
+    else ok "$name is set"; fi
   done
   case "$(value FERRUM_IMAGE)" in
     "" | *"<commit>"* | *:latest) blocker "FERRUM_IMAGE is not pinned" "Set it to a commit's tag, ghcr.io/cbferrum/ferrum:<full SHA> (docs/operations.md, Images): Compose refuses to start without it." ;;
@@ -109,7 +106,7 @@ fi
 
 memory_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
 if [ "$memory_kb" -gt 0 ]; then
-  if [ "$memory_kb" -lt 3900000 ]; then blocker "less than 4 GB of memory" "PostgreSQL's shared buffers alone are set to 512 MB; see docs/operations.md, Capacity."
+  if [ "$memory_kb" -lt 3900000 ]; then blocker "less than 4 GB of memory" "The server, the renderer and the editor need more; see docs/operations.md, Capacity (the database is yours, and takes its own)."
   elif [ "$memory_kb" -lt 7800000 ]; then warning "less than 8 GB of memory" "Enough for a few people; see docs/operations.md, Capacity."
   else ok "memory: $((memory_kb / 1048576)) GB"; fi
   # The editor takes about 590 MB at rest and 50 to 60 MB for each small open document (docs/operations.md, Online editing).

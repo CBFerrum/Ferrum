@@ -391,15 +391,8 @@
   default: /var/lib/ferrum/files
   path: settings.files_dir
   doc: >-
-    Local attachment directory (default `/var/lib/ferrum/files`).
-- key: require_object_storage
-  env: FERRUM_REQUIRE_OBJECT_STORAGE
-  type: bool
-  default: "true"
-  path: settings.require_object_storage
-  doc: >-
-    Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false`
-    only for single-server installs.
+    Local attachment directory, used only by development and tests (`-e development`, `-e test`): a production start
+    without `FERRUM_S3_BUCKET` is refused.
 - key: s3_bucket
   env: FERRUM_S3_BUCKET
   path: settings.s3_bucket
@@ -435,17 +428,6 @@
   doc: >-
     A session token with the object store's keys, when they are temporary.
 # Object storage only (docs/plan/stateless.md, D6; docs/operations.md, "Object storage").
-- key: s3_set_up_bucket
-  env: FERRUM_S3_SET_UP_BUCKET
-  type: bool
-  default: "false"
-  path: settings.s3_set_up_bucket
-  doc: >-
-    `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has
-    none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished
-    uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks
-    for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to
-    change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds).
 - key: files_delete_after_days
   env: FERRUM_FILES_DELETE_AFTER_DAYS
   type: int
@@ -463,7 +445,7 @@
   applies: live
   path: settings.backup_reach_days
   doc: >-
-    How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not
+    How many days back the database's backups reach (the chart sets it from `database.backupReachDays`; 0: not
     said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule.
 - key: files_direct_links
   env: FERRUM_FILES_DIRECT_LINKS

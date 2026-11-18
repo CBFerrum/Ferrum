@@ -1,0 +1,93 @@
+# An example, not the product: a PostgreSQL for Ferrum on CloudNativePG (the operator and its Barman Cloud plugin are
+# installed by ../install.sh). Ferrum itself takes only an address (deploy/helm/ferrum, database.urlSecret): what runs
+# the database, its backups, its failover and its upgrades is yours (reference/kubernetes/README.md).
+
+# The cluster is "<fullnameOverride>-db"; CloudNativePG makes the Secret "<fullnameOverride>-db-app", whose key `uri` is the
+# address ferrum-values.yaml hands to the server.
+fullnameOverride: ferrum
+
+# The server's Deployments (app.kubernetes.io/name), the only pods the pooler admits.
+serverPods: [ferrum]
+
+networkPolicy:
+  enabled: true
+  monitoringNamespaces: [monitoring]
+# Needs the Prometheus operator: scrapes the cluster's and the pooler's exporters.
+serviceMonitor:
+  enabled: true
+
+database:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  storageSize: 100Gi
+  walStorageSize: 20Gi
+  # What the application role may hold: max_connections minus 20 for an administrator, the standbys'
+  # replication and CloudNativePG's checks and monitoring. Changed with ALTER ROLE: no restart. The server chart's
+  # database.connectionLimit (ferrum-values.yaml) is this number.
+  connectionLimit: 390
+  parameters:
+    max_connections: "410"
+    shared_buffers: 2GB
+    effective_cache_size: 6GB
+    work_mem: 16MB
+    idle_in_transaction_session_timeout: 60s
+    lock_timeout: 15s
+  resources:
+    requests: {cpu: "1", memory: 4Gi}
+    limits: {memory: 8Gi}
+  backup:
+    destinationPath: s3://CHANGE-ME-backup-bucket/ferrum
+    endpointURL: ""                    # S3-compatible stores
+    credentialsSecret: ferrum-backup-s3  # keys ACCESS_KEY_ID, ACCESS_SECRET_KEY
+    # How far back the backups reach: the server chart's database.backupReachDays is this, in days (a month as 31).
+    retention: 30d
+    schedule: "0 0 2 * * *"            # six fields, seconds first
+    # The name this cluster's backups and WAL go under in destinationPath (empty: "<fullname>-db"). A new
+    # cluster refuses to archive where one of the same name already did: give it a new name when it starts
+    # from a copy or a backup of a cluster that wrote there.
+    serverName: ""
+  # A connection pooler (PgBouncer, as CloudNativePG's Pooler) in front of the primary, in transaction mode,
+  # with protocol-level prepared statements (PgBouncer 1.21 or later; CloudNativePG's own image is newer).
+  # The server is then given the pooler's address (database.urlSecret) and the primary's host (database.directHost), which
+  # it uses for LISTEN, session locks and migrations: README.md says how to make that Secret. PostgreSQL then sees
+  # `instances x poolSize` connections from the pooler (plus reserve_pool_size, if set in parameters) and each server
+  # replica's direct ones: count them in `connectionLimit`.
+  pooler:
+    enabled: false
+    instances: 2
+    poolSize: 40                  # default_pool_size: connections each instance keeps to PostgreSQL
+    maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
+    maxPreparedStatements: 200    # max_prepared_statements; must be at least 1: the server uses prepared statements
+    parameters: {}                # other PgBouncer settings CloudNativePG allows
+    resources:
+      requests: {cpu: 100m, memory: 64Mi}
+      limits: {memory: 256Mi}
+  # How the database starts, read once when the Cluster is created. Keep the same values on later upgrades.
+  #   empty     a new, empty database
+  #   import    a dump of one database from a running PostgreSQL (pg_dump, then pg_restore here); any
+  #             version up to imageName's. The server treats the result as restored from a backup and holds
+  #             mail, webhooks, jobs and commands until an operator releases them. The vault comes with it,
+  #             but this cluster's role has a password of its own: run `ferrum task vault_rewrap` once with
+  #             the old one (docs/operations.md, "The vault", After a restore, a copy or a move).
+  #   copy      a physical copy of a running PostgreSQL (pg_basebackup), which must run imageName's major
+  #             version (17) on the same architecture with the same tablespaces, allow a replication
+  #             connection from this cluster in pg_hba.conf and have max_wal_senders free for two. It keeps
+  #             the database's identity, but starts on a new timeline: the server holds as after a restore
+  #             unless FERRUM_HOLD_ON_TIMELINE is false. Stop writes to the source first.
+  #   recovery  the newest state, or the state at targetTime, from the backups in object storage (the Barman
+  #             Cloud plugin, as this chart backs up). Held as after a restore.
+  bootstrap:
+    mode: empty
+    source:                    # import and copy: the existing server, reachable from this cluster
+      host: ""
+      port: 5432
+      database: ferrum         # the database to import or, for copy, the one the application uses
+      user: ""                 # import: the role the server runs as there (it reads every row through row-level
+                               # security as the system's own session; a superuser also will do);
+                               # copy: a role with REPLICATION and LOGIN
+      passwordSecret: {name: "", key: password}   # a Secret you created, holding that role's password
+      sslmode: prefer
+    recovery:
+      objectStore: ""          # an ObjectStore holding the backups; empty: this chart's own "<fullname>-backups"
+      serverName: ""           # the name they were taken under; empty: "<fullname>-db"
+      targetTime: ""           # e.g. "2026-11-14 10:00:00+00"; empty: up to the last archived change

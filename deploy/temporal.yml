@@ -1,20 +1,22 @@
 # Durable processes (docs/logic/processes.md, docs/operations.md "Processes"): a Temporal server beside the
-# stack, keeping its histories in the stack's PostgreSQL (databases temporal and temporal_visibility), at the
+# stack, keeping its histories in a PostgreSQL (databases temporal and temporal_visibility) it is given the address and
+# a role of: TEMPORAL_PG_HOST, TEMPORAL_PG_USER and TEMPORAL_PG_PASSWORD (and TEMPORAL_PG_PORT, 5432), a role that may make
+# those two databases, which is not the role Ferrum connects as. At the
 # version the platform was qualified on (docs/plan/spike-l01-temporal.md: Server 1.32.2 on PostgreSQL 17).
 # Ferrum's image has the process runtime built in; this add-on gives it somewhere to run.
 #   docker compose -f deploy/docker-compose.yml -f deploy/temporal.yml --env-file deploy/.env up -d
 # Nothing is published to the host: only Ferrum talks to Temporal, on the stack's network. Before a new
 # Ferrum image takes over while runs are open, replay their histories against it (docs/operations.md,
-# "Upgrading with processes open"). Back up the two Temporal databases with the stack's own.
+# "Upgrading with processes open"). Back up the two Temporal databases with the database's own.
 services:
   temporal-schema:
     image: temporalio/admin-tools:1.32.2
     restart: "no"
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      PGPASSWORD: ${TEMPORAL_PG_PASSWORD:?set TEMPORAL_PG_HOST, TEMPORAL_PG_USER and TEMPORAL_PG_PASSWORD in deploy/.env}
+      PGHOST: ${TEMPORAL_PG_HOST:?set TEMPORAL_PG_HOST in deploy/.env}
+      PGPORT: ${TEMPORAL_PG_PORT:-5432}
+      PGUSER: ${TEMPORAL_PG_USER:?set TEMPORAL_PG_USER in deploy/.env}
     entrypoint: ["sh", "-ec"]
     # Each step can run again: a database or schema already there is left as it is, and update-schema only
     # applies what is missing.
@@ -22,7 +24,7 @@ services:
       - |
         for db in temporal temporal_visibility; do
           dir=temporal; [ "$$db" = temporal_visibility ] && dir=visibility
-          tool="temporal-sql-tool --plugin postgres12 --ep db -p 5432 -u postgres --pw $$PGPASSWORD --db $$db"
+          tool="temporal-sql-tool --plugin postgres12 --ep $$PGHOST -p $$PGPORT -u $$PGUSER --pw $$PGPASSWORD --db $$db"
           $$tool create-database || true
           $$tool setup-schema -v 0.0 || true
           $$tool update-schema -d /etc/temporal/schema/postgresql/v12/$$dir/versioned
@@ -36,10 +38,10 @@ services:
         condition: service_completed_successfully
     environment:
       DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_SEEDS: db
-      POSTGRES_USER: postgres
-      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      DB_PORT: ${TEMPORAL_PG_PORT:-5432}
+      POSTGRES_SEEDS: ${TEMPORAL_PG_HOST:?set TEMPORAL_PG_HOST in deploy/.env}
+      POSTGRES_USER: ${TEMPORAL_PG_USER:?set TEMPORAL_PG_USER in deploy/.env}
+      POSTGRES_PWD: ${TEMPORAL_PG_PASSWORD:?set TEMPORAL_PG_PASSWORD in deploy/.env}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
       BIND_ON_IP: 0.0.0.0

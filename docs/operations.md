@@ -10,7 +10,7 @@ through PostgreSQL `NOTIFY`. Any replica can be killed or added at any time.
 | Component | Role | Failure behaviour |
 |---|---|---|
 | API replicas (`ferrum start`) | Stateless HTTP API; each also runs the outbox dispatcher, webhook sender, job runner, metadata listener and maintenance loops (the hourly maintenance on one replica at a time) | Any replica may die at any time; work is claimed with `SKIP LOCKED` / advisory locks and retried by the others. Stopped (`SIGTERM`), a replica stops its background loops and live connections, answers the requests in flight (up to 20 s), then closes its database pools: within Kubernetes' 40 s grace period |
-| PostgreSQL 17 (CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Synchronous replica + automatic failover; WAL archiving for point-in-time recovery |
+| PostgreSQL 17 (yours; the Kubernetes reference stack runs it with CloudNativePG) | All state: documents, ledgers, audit, outbox, plugins | Its owner's: replication and failover, backups with point-in-time recovery |
 | Object storage (S3 or compatible) | Attachments (`FERRUM_S3_BUCKET`, `FERRUM_S3_ENDPOINT`) | Required in production; a replica is not ready until a write-then-read probe has worked since it started, and a later failure is reported by the doctor and the metrics, not by taking it out of service |
 
 ## Configuration
@@ -23,7 +23,7 @@ wins wherever it sets a variable.
 
 `DATABASE_URL` (required): `postgres://user:pass@host:5432/db`, the database's address; its `application_name`
 names the replica's pool (*Pools*, below). `/run/ferrum/db-ca.pem`, when the file is there (the Helm chart mounts
-`database.external.caSecret` there): the certificate authority every connection to the database checks its
+`database.caSecret` there): the certificate authority every connection to the database checks its
 certificate against. The addresses then ask for TLS with the certificate checked: no `sslmode` (or `prefer`) becomes
 `verify-full`, `require` becomes `verify-ca` (as libpq does with a root certificate), an address's own `sslrootcert`
 is left as it is, and `disable` or `allow` refuses to start. A certificate that does not verify refuses the start too,
@@ -80,17 +80,15 @@ start; a secret, or a setting read from the environment by someone else, lives i
 | `proxy_hops` | `FERRUM_PROXY_HOPS` | int | `1` | installation, at once | How many proxies in front append to `X-Forwarded-For`: 1 (the default) for the Kubernetes gateway alone or your own TLS proxy, 0 when browsers reach the server directly (Compose sets it; set 1 there behind your proxy), 2 with a CDN or an HTTP load balancer before the proxy. The client's address for sign-in and request limits, zones and networks is the entry that many from the right; at 0 it is the connection's own address and the header is not read. Set it wrong and everyone shares one address (too low) or clients choose their own (too high). |
 | `operator_token` | `FERRUM_OPERATOR_TOKEN` | text |  | secret: the vault once it holds one, else the environment (compared) | Enables the operator's routes (`/api/operator/…`, docs/api.md) with header `X-Ferrum-Operator-Token`, in a zone whose rule says `operator: true` (they are in no other); empty (the default) disables them. |
 | `packages_dir` | `FERRUM_PACKAGES_DIR` | text | `packages` | installation, next start | Where the platform's packages are (the image's). |
-| `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory (default `/var/lib/ferrum/files`). |
-| `require_object_storage` | `FERRUM_REQUIRE_OBJECT_STORAGE` | bool | `true` | installation, next start | Production default `true`: refuse to start without object storage, so no replica keeps files locally. `false` only for single-server installs. |
+| `files_dir` | `FERRUM_FILES_DIR` | text | `/var/lib/ferrum/files` | installation, next start | Local attachment directory, used only by development and tests (`-e development`, `-e test`): a production start without `FERRUM_S3_BUCKET` is refused. |
 | `s3_bucket` | `FERRUM_S3_BUCKET` | text |  | installation, next start | Attachment storage on S3 (multi-replica); with `FERRUM_S3_REGION` (`auto` if empty), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
 | `s3_region` | `FERRUM_S3_REGION` | text |  | installation, next start | The bucket's region (`auto` if empty). |
 | `s3_endpoint` | `FERRUM_S3_ENDPOINT` | text |  | installation, next start | Any S3-compatible store: MinIO, Cloudflare R2, Wasabi, Backblaze B2, DigitalOcean Spaces, GCS interoperability. |
 | `aws_access_key_id` | `AWS_ACCESS_KEY_ID` | text |  | secret: the environment, else the vault (library) | The object store's key id. |
 | `aws_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | text |  | secret: the environment, else the vault (library) | The object store's secret key. |
 | `aws_session_token` | `AWS_SESSION_TOKEN` | text |  | secret: the environment, else the vault (library) | A session token with the object store's keys, when they are temporary. |
-| `s3_set_up_bucket` | `FERRUM_S3_SET_UP_BUCKET` | bool | `false` | installation, next start | `true`: at start, make the bucket when it is missing, and turn on what the doctor looks for when the bucket has none of it: versioning, lifecycle rules (old versions end after `backup_reach_days`, 30 when not set; unfinished uploads after a day) and default encryption. Never replaces a bucket's own rules. The store Compose bundles asks for this itself at its first start; a bucket of your own is changed only when this is set, with keys allowed to change its configuration. A replica is not ready until the set-up has worked (tried again every five seconds). |
 | `files_delete_after_days` | `FERRUM_FILES_DELETE_AFTER_DAYS` | int | `30` | installation, at once | Days a deleted file stays in object storage before it goes. At least `backup_reach_days`, so that a database restored to any moment its backups reach finds every file it names (see *Backups of files*); in production the doctor blocks while it is less. 0: at once, for an installation without backups to restore. |
-| `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `30` | installation, at once | How many days back the database's backups reach (the chart sets it from its `database.backup.retention`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
+| `backup_reach_days` | `FERRUM_BACKUP_REACH_DAYS` | int | `30` | installation, at once | How many days back the database's backups reach (the chart sets it from `database.backupReachDays`; 0: not said). The doctor compares it with `files_delete_after_days` and the bucket's lifecycle rule. |
 | `files_direct_links` | `FERRUM_FILES_DIRECT_LINKS` | bool | `false` | installation, at once | `true`: a download (`/files/{id}`) answers with a short-lived link signed for the object store, which the browser follows, instead of passing the bytes through the server. Never for files of entities whose reads are recorded, for outside people, for types a browser would run, or while files move. Off by default. |
 | `files_direct_link_seconds` | `FERRUM_FILES_DIRECT_LINK_SECONDS` | int | `60` | installation, at once | How long a direct link works, in seconds (default 60; at most 300). |
 | `direct_upload_max_bytes` | `FERRUM_DIRECT_UPLOAD_MAX_BYTES` | int | `2147483648` | installation, at once | Largest file browsers upload straight to the bucket, or in parts through the server (default 2 GiB). Straight to the bucket needs the bucket CORS rule below. |
@@ -369,8 +367,8 @@ database.
 
 **Database role.** Ferrum must connect as an ordinary role that owns its database, never as a
 superuser or a role with `BYPASSRLS`: those bypass PostgreSQL row-level security and with it tenant
-isolation, so the server refuses to start with them. CloudNativePG's `ferrum` application user and
-the Compose setup (`deploy/postgres-init`) are already set up this way. The role needs to create the
+isolation, so the server refuses to start with them. The reference stacks (CloudNativePG's `ferrum` application
+user, and `reference/single-host/postgres-init`) are already set up this way. The role needs to create the
 trusted extensions `btree_gist` and `citext`, which a database owner can do.
 
 Each replica opens up to `FERRUM_DB_MAX_CONNECTIONS` connections plus 8: 4 for short side writes and the vault
@@ -411,11 +409,11 @@ its own, counted like a replica.
 | API, 9 replicas and 1 more during a rollout (`maxSurge`) × (30 + 6), and 2 more for the one starting (a full restart's 9 × (36 + 2) = 342 is less) | 362 |
 | Cloud's controller, 2 replicas × (6 + 4), if deployed | 20 |
 | The role's limit | 390 |
-| Left of `max_connections` (410): an administrator, the standbys' replication, CloudNativePG's checks and monitoring | 20 |
+| Left of `max_connections` (410): an administrator, the standbys' replication, the operator's checks and monitoring (the reference stack's figures) | 20 |
 
-CloudNativePG applies a managed role's `connectionLimit` with `ALTER ROLE … CONNECTION LIMIT` on
-the primary, so changing it restarts nothing; raising `max_connections` would restart PostgreSQL. Past 9, put
-the pooler in front.
+A role's connection limit (`ALTER ROLE … CONNECTION LIMIT`) restarts nothing; raising `max_connections` would restart
+PostgreSQL. The chart is told the limit (`database.connectionLimit`, required) and checks its budget against it. Past 9, put
+a pooler in front (`database.directHost`).
 
 The manifests' figures here and in *Deployment shapes* (the chart's refusal and `check_manifests.py`) add 6 beside
 the pool: the side pool's 4 and the direct pool's 2, and 2 for each pod that may be starting (the locks outside every
@@ -429,33 +427,38 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
 
 ## First deployment (Kubernetes)
 
-1. Install the CloudNativePG operator with its Barman Cloud plugin (backups), a Gateway API
-   implementation, cert-manager with Gateway API support (`--enable-gateway-api`) and
-   metrics-server (and the Prometheus operator if you want the `ServiceMonitor`).
-   `deploy/kind/install.sh` installs the versions CI deploys with: CloudNativePG 1.30.1, Barman
-   Cloud plugin 0.15.1, Envoy Gateway 1.9.3, cert-manager 1.21.3. ingress-nginx is not supported:
-   it was retired in March 2026.
-2. Create the bucket for backups and the bucket for attachments. For uploads over 25 MB, which
-   browsers send straight to the attachments bucket, allow them in its CORS configuration:
+Ferrum takes the address of a PostgreSQL and a bucket of an S3-compatible store, and operates neither: the database's
+backups, failover and upgrades, and the store's keys and durability, are yours (*Any PostgreSQL*, *Object storage*).
+`reference/kubernetes/` is an example of both (CloudNativePG and SeaweedFS) with its own README, which says what you are
+responsible for if you use it; it is not the product.
+
+1. Install a Gateway API implementation, cert-manager with Gateway API support (`--enable-gateway-api`) and
+   metrics-server (and the Prometheus operator if you want the `ServiceMonitor`). `deploy/kind/install.sh` installs the
+   versions CI deploys with: Envoy Gateway 1.9.3, cert-manager 1.21.3. ingress-nginx is not supported: it was retired in
+   March 2026.
+2. Have a PostgreSQL (the ordinary role, *Any PostgreSQL*) and a bucket. Keep the database's address in a Secret
+   (`kubectl -n ferrum create secret generic ferrum-db --from-literal=uri=postgres://ferrum:…@<host>/ferrum`); the
+   chart reads it and runs no database. For uploads over 25 MB, which browsers send straight to the attachments bucket,
+   allow them in its CORS configuration:
    `[{"AllowedOrigins": ["https://erp.example.com"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["content-type"], "MaxAgeSeconds": 3600}]`.
    Optionally expire objects under `uploads/` after a day as a backstop; the server already deletes
    abandoned uploads.
-3. Create the secrets as shown in `deploy/k8s/secret.example.yaml`.
-4. Edit `deploy/k8s/kustomization.yaml` (the images' tag: a commit's, see *Images* below; until it is set the pods fail to pull), `deployment.yaml` (`PUBLIC_URL`, bucket, region),
-   `gateway.yaml` (host; `gatewayClassName` if not Envoy Gateway's `eg`) and `database.yaml` (the
-   `ObjectStore`'s backup bucket, sizes). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on
-   different nodes and keeps the client's address (`externalTrafficPolicy: Local`), which the
-   per-address limits count. With another gateway implementation, remove that file and the
-   Gateway's `infrastructure.parametersRef`, give its proxies the same properties, and allow the
-   namespace they run in (Envoy Gateway: `envoy-gateway-system`) in `networkpolicy.yaml`.
-   Create the `letsencrypt` ClusterIssuer the Gateway names, with an ACME HTTP-01 solver of type
-   `gatewayHTTPRoute` whose `parentRefs` is the Gateway `ferrum` in namespace `ferrum` (or use a DNS-01
-   solver). With a CDN or HTTP load balancer in front of the gateway, set `FERRUM_PROXY_HOPS=2`.
-5. `kubectl apply -k deploy/k8s`, and `kubectl apply -k deploy/k8s/office` for the online editor (Word, Excel
-   and PowerPoint files in Drive; on by default, in a namespace of its own: replace `office.example.com` in
-   `deploy/k8s/office/office.yaml`, `gateway.yaml` and `deployment.yaml` with its host, see *Online editing*), and
-   wait for `kubectl -n ferrum get pods` to show the database cluster healthy and the API pods ready
-   (`/api/ready` checks the database).
+3. Create the Secret `ferrum-secrets` with the store's keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`; or give the pods
+   an identity the store trusts, *Object storage*). Nothing else in it is required.
+4. Install the chart (*Installing with the Helm chart*, below): the image, `publicUrl`, the hosts, `storage.bucket`, and
+   the three values with no default, `database.urlSecret.name`, `database.connectionLimit` and
+   `database.backupReachDays`. Create the `letsencrypt` ClusterIssuer the Gateway names, with an ACME HTTP-01 solver of
+   type `gatewayHTTPRoute` whose `parentRefs` is the Gateway `ferrum` in namespace `ferrum` (or use a DNS-01
+   solver). `envoy-proxy.yaml` runs two of Envoy Gateway's proxies on different nodes and keeps the client's address
+   (`externalTrafficPolicy: Local`), which the per-address limits count; with another gateway implementation, set
+   `envoyProxy.enabled: false` and `gateway.gatewayClassName`, give its proxies the same properties, and add the
+   namespace they run in to `networkPolicy.ingressNamespaces`. With a CDN or HTTP load balancer in front of the gateway,
+   set `FERRUM_PROXY_HOPS=2` (`extraEnv`). The online editor (Word, Excel and PowerPoint files in Drive; on by default, in
+   a namespace of its own) needs its own host, `office.host`: see *Online editing*.
+5. The server is not ready until its bucket exists, saying `NoSuchBucket`. Make it, once, with keys allowed to change its
+   configuration: `kubectl -n ferrum exec deploy/ferrum -- ferrum task bucket_set_up` (versioning, lifecycle rules and
+   encryption where the bucket has none of them; *Object storage*). Wait for `kubectl -n ferrum get pods` to show the API
+   pods ready (`/api/ready` checks the database and the store).
 6. Create the first tenant:
 
    ```bash
@@ -470,74 +473,78 @@ Past the limit a request waits for its pool and answers 503; nothing queues with
 8. Sign in at `https://<host>/`, create the company (its chart of accounts, warehouses and,
    with `india`, GST templates are set up automatically) and a fiscal year.
 
-Single host: `cp deploy/.env.example deploy/.env`, set the database's two passwords (`POSTGRES_PASSWORD`,
-`FERRUM_DB_PASSWORD`) and the image, `FERRUM_IMAGE`, to a commit's tag (*Images*; Compose refuses to start
-without it); nothing else is required. Then
-`docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
+Single host: Ferrum takes the same two addresses. `reference/single-host/` runs PostgreSQL and a store beside the product
+with one command (`reference/single-host/up.sh`) and a daily backup of the database, and says what you are then responsible
+for. For the product alone: `cp deploy/.env.example deploy/.env`, set `DATABASE_URL`, `FERRUM_S3_BUCKET`,
+`FERRUM_S3_ENDPOINT`, `FERRUM_S3_REGION`, the store's keys (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) and the image,
+`FERRUM_IMAGE`, to a commit's tag (*Images*; Compose refuses to start without it); the server refuses to start without
+the two addresses, naming them. Make the bucket once (`docker compose -f deploy/docker-compose.yml --env-file deploy/.env
+run --rm ferrum task bucket_set_up`), then `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`.
 
-**Installing with the Helm chart.** `deploy/helm/ferrum` renders what `deploy/k8s` renders, so one command
-replaces step 5 (steps 1 to 3 and 6 to 8 are the same):
+**Installing with the Helm chart.** `deploy/helm/ferrum` is the one description of the deployment (there is no other
+set of manifests):
 
 ```bash
 helm install ferrum deploy/helm/ferrum --namespace ferrum --create-namespace \
   --set image.digest=sha256:<digest> \
   --set publicUrl=https://<host> --set gateway.hostname=<host> --set office.host=<editor's host> \
-  --set storage.bucket=<files bucket> --set database.backup.destinationPath=s3://<backup bucket>/ferrum
+  --set storage.bucket=<files bucket> --set database.urlSecret.name=ferrum-db \
+  --set database.connectionLimit=<connections the role may hold> --set database.backupReachDays=<days>
 ```
 
-* *The placeholders.* `publicUrl`, `gateway.hostname`, `storage.bucket`, `database.backup.destinationPath` and
-  `office.host` (and `editors.host`, `privateGateway.hostnames` when those are on) ship as placeholders, a `CHANGE-ME`
-  bucket or a host on `example.com`: the chart refuses to render while any is still one, naming each.
+* *The placeholders and the values with no default.* `publicUrl`, `gateway.hostname`, `storage.bucket` and `office.host` (and
+  `editors.host`, `privateGateway.hostnames` when those are on) ship as placeholders, a `CHANGE-ME` bucket or a host on
+  `example.com`: the chart refuses to render while any is still one, naming each. `database.urlSecret.name`,
+  `database.connectionLimit` and `database.backupReachDays` have no default either, and rendering fails naming each. A
+  value of the chart that ran a database (`database.enabled`, `database.backup`, `database.pooler`, `database.bootstrap`,
+  `database.external.*`, and the rest of them) no longer exists: the chart fails, saying what to set instead.
 * *The secrets.* The chart makes one: the vault's key file, once, kept when the release is removed (`vault.keySecret`
-  names one of your own instead; *The vault*). It reads the Secret `ferrum-secrets` (another name:
-  `secrets.existingSecret`) where it is there, none of whose keys is required (`deploy/k8s/secret.example.yaml` lists
-  them), and needs the backups' Secret `ferrum-backup-s3` (`database.backup.credentialsSecret`).
+  names one of your own instead; *The vault*). It is a hook that runs before the migrate Job, so that the first
+  install's Job has it. It reads the Secret `ferrum-secrets` (another name: `secrets.existingSecret`) where it is there,
+  none of whose keys is required.
 * *The image.* Set `image.digest` (a digest wins) or `image.tag` (a commit's full SHA). With neither, the chart refuses to
   render; there is no default and never `latest`. The same holds for the optional parts' images.
 * *Settings.* `values.yaml` lists them with the environment variable each becomes; `extraEnv` adds any other.
-* *An outside database.* With `database.enabled=false` the chart runs no PostgreSQL: no Cluster, backups, pooler,
-  read service, database PodMonitor or bootstrap (the service's own tools back up, restore and fail over; *Any
-  PostgreSQL*). `database.external` says where it is: `urlSecret`, the Secret holding `DATABASE_URL` (the ordinary
-  role's address, the pooler's if there is one; the older `database.urlSecret` still works); `directHost`, PostgreSQL
-  itself as `host` or `host:port` when that address is a pooler in transaction mode (`FERRUM_DATABASE_DIRECT_HOST`:
-  listeners, session locks, migrations and the schema sync go there, with the address's role, password, database and
-  TLS options; the migrate and settings Jobs get it too); `readHost`, a read replica (`FERRUM_DATABASE_READ_HOST`, the
-  server's pods only); `caSecret`, a Secret whose key holds the certificate authority the database's certificate is
-  checked against, mounted at `/run/ferrum/db-ca.pem` in the pods and both Jobs; `egress`, the address ranges and
-  ports of the database and its pooler, which the network policy lets the server reach (without them, and with
-  `networkPolicy.enabled`, the pods cannot reach it). The chart still runs the migrate and settings Jobs and applies
-  the network policy.
+* *The database.* The chart runs no PostgreSQL (the service's own tools back up, restore and fail over; *Any
+  PostgreSQL*). `database.urlSecret` is the Secret holding `DATABASE_URL` (the ordinary role's address, the pooler's if
+  there is one) and its key; `directHost`, PostgreSQL itself as `host` or `host:port` when that address is a pooler in
+  transaction mode (`FERRUM_DATABASE_DIRECT_HOST`: listeners, session locks, migrations and the schema sync go there, with
+  the address's role, password, database and TLS options; the migrate and settings Jobs get it too); `readHost`, a read
+  replica (`FERRUM_DATABASE_READ_HOST`, the server's pods only); `caSecret`, a Secret whose key holds the certificate
+  authority the database's certificate is checked against, mounted at `/run/ferrum/db-ca.pem` in the pods and both Jobs;
+  `egress`, the network policy's way out to it: `to`, a list of NetworkPolicy peers (an `ipBlock` for a provider, a
+  `podSelector` for a database in the cluster) and `ports`, its pooler's too (without peers, and with
+  `networkPolicy.enabled`, the pods cannot reach it). `connectionLimit` is the connections the role may hold for this
+  installation, which the chart's budget is checked against; `backupReachDays` is how far back the database's backups reach,
+  which is also how long a deleted file waits (`FERRUM_BACKUP_REACH_DAYS` and `FERRUM_FILES_DELETE_AFTER_DAYS`).
+  `storage.egress` is the same for the store, beside the HTTPS the policy already allows. A database or store of your own
+  in the cluster is a peer here; the reference stack's are named in `reference/kubernetes/ferrum-values.yaml`.
 * *The online editor.* `office.enabled` (on by default): Collabora in the namespace `office.namespace`, on the host
   `office.host` with its own certificate, with its limits, probes and network policy; see *Online editing*. The image
   is an exact tag (`office.image`; a digest wins), pinned like the PDF renderer's.
 * *Optional parts.* `editors.enabled` (Browser editors; set `editors.host` and its image) and `metricsEngine.enabled`
-  (create what *Metrics' engine for external sources* lists first) switch on the same components as in `deploy/k8s`.
-  The PDF renderer, autoscaler, budget, network policy, `ServiceMonitor`, Gateway, Envoy proxies and database are on by
-  default, each behind its own `enabled`.
-* *Migrations.* Off by default: every pod migrates itself as it starts. `migrate.enabled` adds a Helm hook Job that runs
-  `ferrum task migrate` before an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the
-  server (`migrate.serverEnv`), so the pods only check that the database is ready and refuse to start, naming the
-  command, when it is not. Pods of the release before still start on the migrated database, as guests (*Rolling back
-  and the two-version window*), so a paused or failed rollout keeps its capacity. On a first install with
-  `database.enabled` the database does not exist yet when hooks run,
-  so that one install has no Job and the pods migrate themselves; every `helm upgrade` after it uses the Job. (Tools
-  that render with `helm template` and never mark an upgrade, such as some GitOps setups, then never get the Job:
-  the pods keep migrating themselves, which is safe.)
+  (create what *Metrics' engine for external sources* lists first) switch on those components. The PDF renderer,
+  autoscaler, budget, network policy, `ServiceMonitor`, Gateway and Envoy proxies are on by default, each behind its own
+  `enabled`.
+* *Migrations.* On by default (the database exists before the release): a Helm hook Job runs `ferrum task migrate` before
+  an install or upgrade (`migrate.args`) and sets `FERRUM_MIGRATE_AT_START=false` on the server (`migrate.serverEnv`), so
+  the pods only check that the database is ready and refuse to start, naming the command, when it is not. A database that
+  is down or refuses the role fails the release, and nothing rolls out. Pods of the release before still start on the
+  migrated database, as guests (*Rolling back and the two-version window*), so a paused or failed rollout keeps its
+  capacity. `migrate.enabled: false`: every pod migrates itself as it starts, as the Compose files do.
 * *Settings in the database.* `settings` in the values is a document as `ferrum task apply_settings` takes it
-  (*Settings in the database*), which a hook Job applies before an install or upgrade, after the migrate Job, and
-  under the same rule for a first install with the chart's own database (from the first upgrade on). The environment
+  (*Settings in the database*), which a hook Job applies before an install or upgrade, after the migrate Job. The environment
   still wins: a setting the chart also renders as a variable keeps the variable's value. `environment: minimal` gives
   the server's pods only the database's address, naming each pod's pool (`application_name=pool:<name>`, `default`
-  without `pools`; `database.urlHasQuery: true` when an outside database's address already has a query), the
+  without `pools`; `database.urlHasQuery: true` when the database's address already has a query), the
   secrets, and the variables apps compiled into the server read themselves (`FERRUM_OFFICE_URL`, `FERRUM_EDITORS_URL`
   and the like); the Job then writes every other value the chart would have set as a variable, under its setting's
-  key, each pool's three of its own too, with `settings` over them. It cannot be the first install with the chart's
-  own database (the chart refuses): install with `full`, then switch on an upgrade. The settings Job counts in the
-  connection budget like the migrate Job. The default, `full`, renders every setting as a variable. Compose and
-  `deploy/k8s` keep the full environment; `ferrum task apply_settings` moves a stack's settings into the table by hand.
+  key, each pool's three of its own too, with `settings` over them. The settings Job counts in the
+  connection budget like the migrate Job. The default, `full`, renders every setting as a variable. Compose keeps the full
+  environment; `ferrum task apply_settings` moves a stack's settings into the table by hand.
 
-`bash deploy/helm/test.sh` (CI runs it) fails when the chart and `deploy/k8s` differ in resources, environment variables,
-ports, probes, security context or resources.
+`bash deploy/helm/test.sh` (CI runs it) renders the chart with and without its optional parts and fails when the values
+with no default stop failing, when a gone value stops saying what to set instead, or when the chart renders a database.
 
 **Images.** For each commit on `main` whose images pass every check, CI publishes
 `ghcr.io/cbferrum/ferrum` and `ghcr.io/cbferrum/ferrum-editors` tagged with the commit's full SHA.
@@ -559,8 +566,8 @@ kubectl -n ferrum create secret docker-registry ghcr --docker-server=ghcr.io \
 kubectl -n ferrum patch serviceaccount default -p '{"imagePullSecrets": [{"name": "ghcr"}]}'
 ```
 
-**Checking an image before it goes out.** `deploy/smoke.sh` deploys the Compose stack (database,
-Ferrum, PDF renderer) with freshly generated secrets. The workspace is created, seeded and
+**Checking an image before it goes out.** `reference/single-host/smoke.sh` deploys the single-host reference stack (the
+product's Compose file, with a database, a store and a daily dump beside it) with freshly generated secrets. The workspace is created, seeded and
 invoiced by the release being replaced (`FERRUM_PREVIOUS_IMAGE`, if set), then the server's
 container is replaced with `FERRUM_IMAGE` as an upgrade does; the session and the data must
 survive. On the new image it then checks the security headers; the shell's pages, apps' pages and
@@ -577,23 +584,23 @@ own checkout as the interfaces' source (`--build-context frontend=<checkout>`). 
 port 8080 and the 20-second load test):
 
 ```bash
-FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest deploy/smoke.sh
+FERRUM_IMAGE=ghcr.io/cbferrum/ferrum:<tag> FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest reference/single-host/smoke.sh
 ```
 
-**Checking the Kubernetes deployment.** `deploy/kind/smoke.sh` deploys `deploy/k8s` to a cluster
-(through `deploy/kind/kustomization.yaml`, which only swaps in local images and points
-attachments and backups at an S3 emulator) and checks it as an operator would: three database
-instances, the server and renderer ready, the Gateway serving HTTPS with a certificate from
+**Checking the Kubernetes deployment.** `deploy/kind/smoke.sh` deploys the chart (`deploy/helm/ferrum`) to a cluster, on
+the Kubernetes reference stack (`reference/kubernetes/install.sh`: an example database and bucket the chart is given the
+addresses of; `deploy/kind/values.yaml` only swaps in local images and hosts of its own) and checks it as an operator
+would: the server and renderer ready, the Gateway serving HTTPS with a certificate from
 cert-manager, HTTP redirected, no metrics outside; no pod but the gateway's and monitoring's
 reaching the server (the network policy), metrics only with their token, the
 autoscaler reading the API's CPU use (metrics-server); a workspace created and an invoice submitted,
-printed and given an attachment that every replica serves from object storage; the database
-primary killed (a standby is promoted and writes resume within 90 s — about 25 s in CI — with
-nothing lost); the API restarted replica by
-replica under traffic without a failed request; a backup taken and restored into a new cluster
-that holds the latest writes. CI runs it on kind (a control plane and three workers) for every
+printed and given an attachment that every replica serves from object storage; the API restarted replica by
+replica under traffic without a failed request; one person in several workspaces on subdomains and a custom domain.
+What tests the example database (three instances, the primary killed with a standby promoted and writes resumed within
+90 s, growing it, a backup restored into a new cluster that holds the latest writes) is `reference/kubernetes/smoke.sh`.
+CI runs the first on kind (a control plane and three workers) for every
 image published from main (`.github/workflows/cluster.yml`). To run it yourself (Docker, kind,
-kubectl, curl, python3):
+kubectl, helm, curl, python3):
 
 ```bash
 kind create cluster --config deploy/kind/kind.yaml
@@ -624,9 +631,10 @@ GitHub; `scripts/local_ci.sh` runs every other job. From the repository's root, 
    `python:3.13-alpine` and `nginxinc/nginx-unprivileged:1.27-alpine` and the pinned editor builds).
 4. **The image** (job `image`):
    ```bash
-   FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 deploy/smoke.sh
+   FERRUM_IMAGE=ferrum:ci FERRUM_EDITORS_IMAGE=ferrum-editors:ci SMOKE_MEET=1 reference/single-host/smoke.sh
    ```
-   It pulls `postgres:17`, `chrislusf/seaweedfs:4.53`, `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10`,
+   It pulls `gotenberg/gotenberg:8`, `collabora/code:26.04.5.2.1` and `livekit/livekit-server:v1.13.10` (and, from the
+   single-host reference stack that gives it a database and a store, `postgres:17` and `chrislusf/seaweedfs:4.53`),
    listens on 127.0.0.1 ports 8080, 9980, 8090 and 7880 (`SMOKE_PORT`, `SMOKE_OFFICE_PORT`, `SMOKE_EDITORS_PORT`,
    `SMOKE_MEET_PORT` move them), and removes its containers and volumes when it ends. As CI runs it, an upgrade: add
    `FERRUM_PREVIOUS_IMAGE=ghcr.io/cbferrum/ferrum:latest` after `docker login ghcr.io` (the package is private; amd64,
@@ -639,10 +647,10 @@ GitHub; `scripts/local_ci.sh` runs every other job. From the repository's root, 
    deploy/kind/install.sh && deploy/kind/smoke.sh
    kind delete cluster
    ```
-   `install.sh` applies Envoy Gateway v1.9.3, cert-manager v1.21.3, CloudNativePG 1.30.1 and its Barman Cloud plugin
-   v0.15.1, metrics-server v0.9.0, the Prometheus operator's definitions and an S3 emulator (`motoserver/moto:5.2.5`), and
-   their images are pulled; `smoke.sh` adds `ghcr.io/cloudnative-pg/postgresql:17`, gotenberg, collabora and
-   `curlimages/curl:8.21.0`.
+   `install.sh` applies Envoy Gateway v1.9.3, cert-manager v1.21.3, metrics-server v0.9.0 and the Prometheus operator's
+   definitions, and their images are pulled; `smoke.sh` then runs `reference/kubernetes/install.sh`, which adds CloudNativePG
+   1.30.1 and its Barman Cloud plugin v0.15.1, `ghcr.io/cloudnative-pg/postgresql:17` and SeaweedFS, and gotenberg, collabora
+   and `curlimages/curl:8.21.0`. `reference/kubernetes/smoke.sh` is run beside it on the same cluster.
 6. **Moving between shapes** (job `pools`), on a cluster of its own:
    ```bash
    kind create cluster --config deploy/kind/kind.yaml --wait 5m
@@ -671,11 +679,14 @@ deploy/offline/bundle.py <commit> --kubernetes --with editors,clamav    # Kubern
 tar -cf ferrum-offline-<commit>.tar ferrum-offline-<commit>/
 ```
 
-The bundle holds every image (the server's at that commit, the database's, the object store's, the PDF renderer's, the online editor's, and
-what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); with `--kubernetes`, the operators'
-manifests at the versions `deploy/kind/install.sh` names and every image they name, including the ones
-named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which only its
-code names; this checkout's `deploy/` with these tools, `deploy/k8s` already naming the release;
+The bundle holds every image (the server's at that commit, the PDF renderer's, the online editor's, and
+what `--with` adds: `editors`, `mail`, `meet`, `clamav`; the editor, Collabora, is in the stack); for one host, the
+single-host reference stack's too (PostgreSQL, SeaweedFS), and for Kubernetes no database and no object store, which are
+the site's; with `--kubernetes`, the operators'
+manifests at the versions `deploy/kind/install.sh` names (Gateway API, cert-manager, metrics-server) and every image they
+name, including the ones named only in their settings or in a Secret, and the Envoy proxy Envoy Gateway starts, which
+only its code names, and the images `helm template` of the chart names (the release's is given to it as `image.tag`); this
+checkout's `deploy/` with these tools;
 `bundle.json` (each image with its digest, each manifest with where it came from) and `SHA256SUMS`.
 Images named by a moving tag are copied as they are that day: pin them (`COLLABORA_TAG`,
 `STALWART_TAG`, `CLAMAV_TAG`) to know what was carried. Images pinned by digest are copied whole, every
@@ -688,8 +699,10 @@ ferrum-offline-<commit>/deploy/offline/load.py --check
 ```
 
 * *One host*: `deploy/offline/load.py` puts the images into Docker under their own names and writes
-  `release.env`; fill in `deploy/.env` (*Configuration*) and start it with
-  `docker compose -f deploy/docker-compose.yml --env-file deploy/.env --env-file release.env up -d`.
+  `release.env`; the bundle carries the single-host reference stack's images and files too (`reference/`, with the
+  database and the store it runs beside the product): with that stack, `FERRUM_IMAGE=<the release.env's> reference/single-host/up.sh`
+  (it writes its `.env`), or, with a database and a bucket of your own, fill in `deploy/.env` (*Configuration*) and start the
+  product with `docker compose -f deploy/docker-compose.yml --env-file deploy/.env --env-file release.env up -d`.
 * *Kubernetes*: put the images in the site's registry (any OCI registry: Harbor, Zot, CNCF
   Distribution) with `deploy/offline/load.py --registry registry.site:5000` (`--insecure` for plain
   http or a certificate the nodes do not trust). Each image goes to
@@ -814,7 +827,7 @@ schema. The build that migrates or syncs the schema records both in `cluster_sta
   old interfaces). Two such builds on one database are level. A local build from git takes the
   date of the commit checked out when the kernel's build script last ran, so two local builds may look the same age:
   they are then level, which is safe.
-  `deploy/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
+  `reference/single-host/smoke.sh` starts the previous image again on the database the new one migrated, when the previous image has
   the label.
 * **Rehearsed with two real binaries.** `scripts/window_rehearsal.sh <older commit> ferrum_windowrehearsal_<name>`
   builds an older commit of main as the image build does (its tree read with `git archive`, `BUILD_DATE` its commit's
@@ -892,62 +905,28 @@ store does not take a replica out of service, which would take every replica out
 doctor's `storage` line says so, and so do `ferrum_object_storage_up` (0 when this replica's last probe, every thirty
 seconds, failed) and `ferrum_object_storage_probe_failures_total`. The chart has no alert rules for the server; alert on
 `ferrum_object_storage_up == 0` for five minutes. Compose starts the server once the store's health check passes.
-Where the bucket is to be set up (the bundled store's handoff, or `s3_set_up_bucket`), each probe sets it up first,
-one replica at a time, until that has worked: until then the replica is not ready, and its answer and the log say that
-the set-up fails and why, so a store that refused the first start's set-up needs no restart either.
 
-**A local directory** (`files_dir`) is for development and tests. Elsewhere a server without a bucket starts only for
-an installation that already keeps its files there: the newest file its database names (a workspace's newest file,
-else the newest interface's) must be in that directory. A new database names none, an empty or wrong directory (a
-volume that was not mounted, another machine's) lacks it, and a database that has kept its files in a store says so: so
-no mistake in the settings makes a new installation keep files where a new container loses them. Refused, the server
-says what to set. An installation that keeps its files there works, with a warning at each start and an error-level
-line in the doctor (`storage.directory`), until its files move. `require_object_storage` refuses a directory outright.
+**The bucket is the store's owner's.** The server never makes a bucket, keys one or changes one: a replica whose bucket is
+missing is not ready, saying `NoSuchBucket`, and becomes ready once the bucket exists, with no restart. `ferrum task
+bucket_set_up` (below) makes it and turns on what the doctor looks for; the reference stacks run it once.
 
-### Moving files from a directory
-
-1. Set the store (`ferrum task set key:s3_bucket value:…`, its endpoint and region, and its keys: `ferrum task
-   secret_set`), or the variables, and start the servers again. A server that starts with a bucket while the directory
-   still holds files records that files are moving (`file_store`, once, whichever replica starts first): from then on
-   every write goes to the store, a read looks in the store first and the directory second, and a deletion takes both.
-   Nothing needs to wait: everything is readable all along. Keep the directory mounted.
-2. Run `ferrum task files_move` (where the store is set: in the server's container, or as a Job). It copies every file
-   of the directory to the store, reads each copy back, and compares its length and SHA-256 with the directory's;
-   each one copied is recorded (`file_move`), so a run that stops, or is killed, goes on from there when run again.
-   One runs at a time, wherever it is run (a session lock: another run stops at once). It never writes over what the
-   store holds (a file there with other bytes is named, and stops the confirmation), never deletes from the directory,
-   and leaves out uploads not yet recorded and the restore marker (each server writes the store's own).
-3. It ends by recording that the directory is no longer read, once nothing failed, no server that may still write to
-   the directory runs (one started before files began to move, or a build older than this one: from `replica`), and a
-   last pass after that check found nothing new. Otherwise it says why; fix that and run it again. Then start the
-   servers again (until then they still look in the directory second, which does no harm), and keep the directory
-   until you are sure.
-
-What guarantees that nothing is lost: a write goes to the store from the moment a server starts with it; a server of
-this build without a bucket refuses to start while files move; the confirmation waits for every replica that might
-still write to the directory, then passes over the directory once more; a file deleted while it is copied is deleted
-from the directory first, so the copy sees it gone and deletes its own. A server of a build from before the settings'
-`replica` table (a rollback after the move, or one still running when it is confirmed) is the one writer nothing sees,
-and it writes to the directory. So for as long as the old directory is still mounted, a read the store misses still
-looks there, and the file is readable at once; and at each start and every hour, one replica copies over every file the
-database names (since files began to move) that the store lacks and the directory holds, as `files_move` copies them,
-and logs it. The doctor counts such files (`storage.directory_files`), and says when the directory may go. Unmounted,
-nothing looks there.
+**A local directory** (`files_dir`) is for development and tests (`-e development`, `-e test`) alone. A production server
+without a bucket is refused, saying what to set (`FERRUM_S3_BUCKET`, with `FERRUM_S3_ENDPOINT`, `FERRUM_S3_REGION` and the
+keys): only one machine sees a directory, and a new container starts without it. The doctor says so (`storage.directory`).
 
 ### What the doctor checks
 
-`storage` (a write, a read and a delete), `storage.directory` and `storage.moving`, `storage.deletions` (below), and,
+`storage` (a write, a read and a delete), `storage.directory`, `storage.deletions` (below), and,
 asking the bucket with the same keys or identity: `storage.versioning` (versions kept, so that what is deleted or
 written over outside Ferrum can be taken back), `storage.lifecycle` (a rule over the whole bucket ending old versions,
 no sooner than `backup_reach_days`), `storage.encryption` (default encryption at rest), `storage.public` (a listing
 and a probe file asked for without keys are refused, and the bucket's policy does not make it public) and `storage.clock` (a request signed more
-than 15 minutes off the store's time is refused). Each says what to do. `s3_set_up_bucket` makes the bucket where it
-is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is not
-set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
-none of them; it never replaces a bucket's own rules. The store Compose bundles asks for it at its first start (its
-handoff, below); a bucket of an installation's own is never changed unasked: its doctor shows these lines, each saying
-what to turn on, and `ferrum task set key:s3_set_up_bucket value:true` (then a restart) has the server do it, with keys
-allowed to change the bucket's configuration.
+than 15 minutes off the store's time is refused). Each says what to do. `ferrum task bucket_set_up` makes the bucket
+where it is missing and turns on versioning, the lifecycle rules (old versions after `backup_reach_days`, 30 when it is
+not set; the restore marker's after a day; unfinished uploads after a day) and default encryption where the bucket has
+none of them; it never replaces a bucket's own rules, and running it again does nothing. It is run by whoever operates
+the store, once, with keys allowed to change the bucket's configuration (the reference stacks do); the server itself
+never does it. It prints each step it took (none: the bucket was as it should be).
 
 ### Direct links
 
@@ -965,8 +944,8 @@ by its content's digest), and only ever deleted. So a database restored to a mom
 names at T still exist. Deletions therefore wait: `files_delete_after_days` (30 by default) keeps a deleted file that
 many days before it goes, recorded in `object_release` and swept every ten minutes by the replicas that run background
 work. It is at least how far back the database's backups reach (`backup_reach_days`, 30 by default), so every moment
-the backups reach finds its files: the Helm chart sets both from its `database.backup.retention`, deploy/k8s to its
-cluster's 30 days, and Compose leaves them at 30 for the dumps you keep. Backups that reach further need both raised; 0 for
+the backups reach finds its files: the Helm chart sets both from the required `database.backupReachDays`, and Compose
+leaves them at 30 for the dumps you keep (the single-host reference stack sets them from `BACKUP_KEEP_DAYS`). Backups that reach further need both raised; 0 for
 `files_delete_after_days` deletes at once, for an installation without backups to restore. In production the doctor
 blocks while deleted files go sooner than the backups reach. A key written again
 while its deletion waits (an interface published again) calls the deletion off. Nothing is swept while a restore is
@@ -996,50 +975,25 @@ for. It writes nothing to the live database and never takes the store back: a co
 reads its restore marker, finds itself behind and is held; a copy with another identity keeps a marker of its own. Run
 it after each change to backups, and at least quarterly.
 
-### The store Compose bundles
+### The store the single-host reference stack runs
 
-`deploy/docker-compose.yml` runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one
-process with its own volume. Only its S3 port listens, on Compose's network alone. Its first start
-(`deploy/store/start.sh`) makes an access key and the key that encrypts what it keeps, in its own volume, and hands the
-access key to the server once (`/run/ferrum/object-store/keys.json`, a volume only the two share): the server keeps it
-in the vault and deletes the file. Nothing goes into `deploy/.env`. The handoff also asks the server to make the bucket
-`ferrum` with versioning, lifecycle rules and encryption, which it does then (and before each probe until it has: not ready meanwhile), and only
-while it signs with the key handed over: an installation that points Compose at a store of its own signs with that
-store's keys, so its bucket is left as it is even with the bundled store left running (`STORE_REPLICAS=0` stops it).
-The store makes no bucket a write names, so a wrong bucket name is refused, and the server is not ready, saying
-`NoSuchBucket`. A database restored from a dump brings the
-keys with its vault; a database made anew beside a store that already has keys finds none, and the server says so:
-read them from the store (`docker compose exec store cat /data/ferrum/s3.json`) and give them once with `ferrum task
-secret_set`. To use a store of your own instead, set its address and keys and `STORE_REPLICAS=0`.
-
-Once it has handed its keys over, the store can take them back from the vault at each start, and the vault rotates
-them from then on (`-f deploy/store-files.yml`; *Files for the programs beside the server*): a one-shot service renders
-the keys the server keeps into a file before each start of the store (`STORE_S3_CONFIG` for `deploy/store/start.sh`).
-The first render keeps the handed-over keys for the service, as they are: the store keeps its data, its keys and its
-encryption key. A new installation starts once without that file, so that the handoff happens. The render, and a
-rotation through it, are refused, writing and making nothing, on an installation whose store is not the bundled one:
-where the vault holds no keys the bundled store handed over (the server signs with the machine's identity, or a store
-of the installation's own has keys given elsewhere), or where the keys there now were set by an operator (`secret_set`,
-the environment). `ferrum task services` says so. Without the refusal, keys made by a render would be what the server
-signs with at its next start, and its real store would never have heard of them.
-
-An installation whose `files` volume holds files starts with the store set and files moving, reads both, and moves
-its files with `docker compose exec ferrum ferrum task files_move`. Back the store up beside the database with the commands
-in *Backups and restore* (the dump, then the store's volume while the store is paused); they were not run here, as
-there is no Docker on the machine this was built on.
+Ferrum is given a bucket and operates no store. The single-host reference stack (`reference/single-host/compose.yml`, an
+example, not the product) runs SeaweedFS as `store` (chosen by trial: docs/references/object-stores.md), in one process with its
+own volume. Only its S3 port listens, on Compose's network alone. It is given the key in `reference/single-host/.env`
+(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, which `up.sh` makes once, and the server signs with:
+`reference/store/start.sh` refuses to start without them, naming them) and makes the key that encrypts what it keeps, in its own
+volume. The one-shot `store-setup` service runs `ferrum task bucket_set_up` once the store answers, which makes the bucket
+`ferrum` with versioning, lifecycle rules and encryption. The store makes no bucket a write names, so a wrong bucket name is
+refused, and the server is not ready, saying `NoSuchBucket`. Its volume and key are the stack's owner's to back up
+(`reference/single-host/README.md`).
 
 ## Backups and restore
 
-* CloudNativePG archives WAL continuously through the Barman Cloud plugin and takes a base backup
-  daily (`ScheduledBackup`), keeping 30 days (the `ObjectStore`'s `retentionPolicy`). On-demand
-  backup: `kubectl -n ferrum cnpg backup ferrum-db --method plugin --plugin-name barman-cloud.cloudnative-pg.io`
-  (or create a `Backup` resource with `method: plugin`).
-* Point-in-time restore: create a new cluster recovering from the object store, shaped like
-  `deploy/kind/restore.yaml` (`bootstrap.recovery.source` names an external cluster read through
-  the plugin, `barmanObjectName: ferrum-backups`, `serverName: ferrum-db`), adding
-  `recoveryTarget: {targetTime: "2026-10-28 10:00:00+00"}`; verify it, then point the
-  `ferrum-db-app` secret / `DATABASE_URL` at it and restart the API pods. CI restores every image's
-  backup this way.
+* The database's own backups are its owner's, whatever it is (a provider's snapshots and point-in-time recovery, your own
+  tools): `database.backupReachDays` (`FERRUM_BACKUP_REACH_DAYS`) says how far back they reach, so that deleted files wait
+  as long (*Backups of files*). The Kubernetes reference stack's example database (CloudNativePG with the Barman Cloud
+  plugin: continuous WAL, a daily base backup, point-in-time recovery into a new cluster) and its restore are in
+  `reference/kubernetes/README.md`; they are the example's, not the product's.
 * A whole database as the server's own role, on any PostgreSQL: `deploy/dump.sh dump <address> <file>` and
   `deploy/dump.sh restore <address> <file>`, with PostgreSQL's direct address (never a pooler in transaction mode)
   and the role the server runs as. That role is held to the workspaces' row-level security: a plain `pg_dump` as
@@ -1052,84 +1006,14 @@ there is no Docker on the machine this was built on.
   row-level security and its append-only record with them), and the server started on the copy with its vault open and
   its secrets as they were. Restored where the role has another password, see *The vault* (After a restore, a copy or a
   move). By hand: `PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' pg_dump --enable-row-security -Fc`.
-* Docker Compose (commands run in `deploy/`): schedule a dump of the database (as `ferrum`, as above, or as the
-  `postgres` superuser) and an archive of the attachments volume, and copy both off the host:
-
-  ```bash
-  docker compose exec -T -e PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' db pg_dump -U ferrum --enable-row-security -Fc ferrum > ferrum-$(date +%F).dump
-  docker compose exec -T ferrum tar -C /var/lib/ferrum/files --warning=no-file-changed -czf - . > files-$(date +%F).tgz
-  ```
-
-  Take the attachments after the database, so that they include everything the dump refers to,
-  and every erasure journalled since (`privacy-journal/`, which `ferrum task reapply_erasures`
-  replays after a restore). The server keeps writing while tar reads. An exit status of 1 means a
-  file changed as it was read, and the archive still holds it as it was then; 2 means the archive
-  failed.
-
-  To restore onto a new host, start the database alone (`docker compose up -d db`), wait until
-  `docker compose exec db pg_isready -h 127.0.0.1` succeeds, then:
-
-  ```bash
-  docker compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < ferrum.dump
-  docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -xzf - < files.tgz
-  docker compose up -d
-  ```
-
-  Restoring in place, stop the server and restore into an empty database, as on a new host:
-  `pg_restore --clean` over the old one cannot drop a partitioned table's partitions one by one
-  (the journals and measurements are partitioned), and stops partway with the database half
-  dropped.
-
-  ```bash
-  docker compose stop ferrum
-  docker compose exec -T db dropdb -U postgres --force ferrum
-  docker compose exec -T db createdb -U postgres -O ferrum ferrum
-  docker compose exec -T db pg_restore -U postgres -d ferrum --exit-on-error < ferrum.dump
-  docker compose up -d ferrum
-  ```
-
-  Then run `ferrum task reapply_erasures` (After restoring a backup, below) before anyone uses it.
-* Docker Compose with the store it bundles: files, journals and the restore marker are
-  in the `store` volume, not `files` (the commands above are for an installation whose files are still there). That
-  volume also holds the key that encrypts what the store keeps, and the store's own access key: keep its archive as
-  carefully as the dump. Set `FERRUM_FILES_DELETE_AFTER_DAYS` to at least the time between the two, so nothing the dump
-  names is deleted before the archive. Commands run in `deploy/`; **not run here: there is no Docker on the machine
-  this was written on.** The backup, the dump first:
-
-  ```bash
-  docker compose exec -T -e PGOPTIONS='-c ferrum.system=on -c ferrum.vault=on' db pg_dump -U ferrum --enable-row-security -Fc ferrum > ferrum-$(date +%F).dump
-  docker compose pause store
-  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -czf - . > store-$(date +%F).tgz
-  docker compose unpause store
-  ```
-
-  While the store is paused, uploads and downloads wait (a large store takes a while to archive). Onto a new host:
-
-  ```bash
-  docker compose up -d db
-  docker compose exec db pg_isready -h 127.0.0.1    # until it answers
-  docker compose exec -T db pg_restore -U postgres -d ferrum --clean --if-exists --exit-on-error < ferrum.dump
-  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -xzf - < store.tgz
-  docker compose up -d
-  ```
-
-  In place, into an empty database and an empty store volume (the project is named `ferrum`, so its volume is
-  `ferrum_store`):
-
-  ```bash
-  docker compose stop ferrum store
-  docker compose rm -f store
-  docker volume rm ferrum_store
-  docker compose exec -T db dropdb -U postgres --force ferrum
-  docker compose exec -T db createdb -U postgres -O ferrum ferrum
-  docker compose exec -T db pg_restore -U postgres -d ferrum --exit-on-error < ferrum.dump
-  docker compose run --rm --no-deps -T --entrypoint tar store -C /data -xzf - < store.tgz
-  docker compose up -d
-  ```
-
-  The keys come back with the vault in the dump, and the store's own with its volume. Then, as after any restore,
-  `docker compose exec ferrum ferrum task reapply_erasures`, and `ferrum task release_restore` once checked (*After
-  restoring a backup*); `deploy/drill.sh` checks every file a row names (*Object storage*, Backups of files).
+* The single-host reference stack (`reference/single-host/`) dumps its database daily into a volume, keeps
+  `BACKUP_KEEP_DAYS` of them (which is what it hands the server as `FERRUM_BACKUP_REACH_DAYS`), and says how to copy them
+  off the host, archive the store's volume beside them and restore both onto a new host or in place
+  (`reference/single-host/README.md`; `reference/single-host/smoke.sh` restores a dump and checks the files). Where the
+  database and the store are yours, take the dump with `deploy/dump.sh` as above and the store's copy by its own means, the
+  dump first, with `FERRUM_FILES_DELETE_AFTER_DAYS` at least the time between the two. Then run `ferrum task
+  reapply_erasures` (*After restoring a backup*, below) before anyone uses the restored installation, and `ferrum task
+  release_restore` once checked; `deploy/drill.sh` checks every file a row names (*Object storage*, Backups of files).
 * Test a restore at least quarterly. After restoring, run the audit verification below.
 
 ## Regions
@@ -1214,7 +1098,7 @@ as above. Otherwise one replica moves both on, at most every 30 seconds: the dat
   object versions rolled back); a restore to less than about a minute before the store's last write; a database
   given another store that lacks its marker. The identity and the timeline still notice what they can.
 
-A database the Helm chart starts from another one (`database.bootstrap.mode`, "Moving from one shape to
+A database started from another one (the reference stack's `database.bootstrap.mode`, "Moving from one shape to
 another") is held the same way unless the move was planned: `import` makes a database this server never
 knew, and `recovery` and `copy` start on a new timeline. A `copy` keeps the database's identity, so with
 `FERRUM_HOLD_ON_TIMELINE=false` it is not held, and neither is a `recovery`, whose base backup has the same
@@ -1243,9 +1127,10 @@ backup from your identity provider.
 
 ## Any PostgreSQL
 
-Ferrum runs on the chart's own PostgreSQL (CloudNativePG) or on one run by someone else: Amazon RDS or Aurora, Google
-Cloud SQL, Azure Database for PostgreSQL, Supabase, Neon, or your own. It needs no superuser anywhere, and nothing a
-managed service keeps for its administrator.
+Ferrum takes the address of a PostgreSQL and runs none: Amazon RDS or Aurora, Google Cloud SQL, Azure Database for
+PostgreSQL, Supabase, Neon, or your own (the Kubernetes and single-host reference stacks run one as an example). Its
+backups, failover and upgrades are its owner's. It needs no superuser anywhere, and nothing a managed service keeps for its
+administrator.
 
 **What it needs, on any of them.** `scripts/local_ci.sh managed` runs the server and the suites below against a private
 PostgreSQL that behaves like a managed service (`scripts/managed_pg.sh`: an ordinary role owning only its databases, no
@@ -1267,7 +1152,7 @@ remembered:
   the environment) rather than in the settings table where a provider's certificate authority signs every customer's
   instances. The direct address carries `DATABASE_URL`'s role, password, database and TLS options. Where the two differ
   in more than the host, give `FERRUM_DATABASE_DIRECT_URL` whole.
-- The service's certificate authority at `/run/ferrum/db-ca.pem` (`database.external.caSecret` in the chart), so that
+- The service's certificate authority at `/run/ferrum/db-ca.pem` (`database.caSecret` in the chart), so that
   every connection checks the database's certificate (*Configuration*). Connecting by IP address, put
   `sslmode=verify-ca` in the address: the certificate names a host, not the address.
 - A dump as the server's role: `deploy/dump.sh` (*Backups and restore*), from the direct address.
@@ -1305,7 +1190,7 @@ remembered on 15 November 2026, every line marked *(from memory)*. Check it agai
 | Azure Database for PostgreSQL, Flexible Server | As the administrator (`azure_pg_admin`, no superuser); allow-list the two extensions in `azure.extensions` *(from memory)* | The built-in PgBouncer on port 6432 of the same host *(from memory)* | The same host, port 5432 *(from memory)* | Point-in-time restore makes a new server, with the roles and passwords it had *(from memory)* | Zone-redundant high availability replicates synchronously: `false` *(from memory)* |
 | Supabase | A role of its own (`postgres` there has `BYPASSRLS`, which the server refuses): `CREATE ROLE ferrum LOGIN NOBYPASSRLS …` and a database it owns; the extensions are in the `extensions` schema already, as in the rehearsal *(from memory)* | Supavisor's transaction port (6543), user `ferrum.<project ref>` *(from memory)* | Supavisor's session port (5432) on the same host and user, since the database's own host takes another user name *(from memory)* | Daily backups and point-in-time recovery restore in place: the same identity, noticed by the marker, and the same passwords *(from memory)* | Managed by Supabase; `true` unless they say a failover loses nothing *(from memory)* |
 | Neon | The project's role owns its database and is no superuser; whether a role made in Neon's console has `BYPASSRLS` is unchecked: make it with SQL (`CREATE ROLE ... NOBYPASSRLS`) if the server refuses it *(from memory)* | The `-pooler` host (PgBouncer, transaction mode) *(from memory)* | The same host without `-pooler` *(from memory)* | A branch or a restore to a point in time keeps the identity: noticed by the marker; a branch's roles keep their passwords *(from memory)* | Compute is stateless over replicated storage: `false` *(from memory)* |
-| Your own, or CloudNativePG (the chart's) | `deploy/postgres-init` (Compose) or the chart do it | PgBouncer (`database.pooler`) | `-rw` (the chart sets it) | `pg_basebackup`, Barman, CloudNativePG's recovery (*Backups and restore*); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
+| Your own, or the reference stacks' (CloudNativePG, `reference/single-host/postgres-init`) | The reference stacks do it for theirs | PgBouncer (yours, in front: `database.directHost`) | `-rw` (the reference stack's Secret names it) | `pg_basebackup`, Barman, CloudNativePG's recovery (`reference/kubernetes/README.md`); a new cluster's role has a password of its own, so `vault_rewrap` (*The vault*) | Synchronous replication: `false`; otherwise `true` |
 
 ## Optional services
 
@@ -1580,7 +1465,7 @@ it. The first rotation run where `JWT_SECRET` is no longer set gives the copy an
    callers hold if they were ever seen elsewhere (`secret_set name:metrics_token overlap:…`, and so on).
 4. `ferrum task doctor` says which secrets the environment still decides, and warns while the vault is closed.
 
-The chart, `deploy/k8s` and Compose require none of these: a new installation gives them none.
+The chart and Compose require none of these: a new installation gives them none.
 
 ### The kernel's stores in the vault
 
@@ -1622,8 +1507,8 @@ says (*A sandbox of a workspace*), with keys of its own. A move carries them (*M
 
 ## Files for the programs beside the server
 
-Some programs run beside the server and share a secret or a setting with it: the object store Compose bundles, the
-meeting server, the mail server, an app's engine. Each can take what it needs from files written as it starts, from the
+Some programs run beside the server and share a secret or a setting with it: the meeting server, the mail server, an
+app's engine. Each can take what it needs from files written as it starts, from the
 database and the vault alone, instead of a Secret or a `deploy/.env` value typed once for it and once for the server. A
 secret the two share is then made once, by the vault, and typed by nobody.
 
@@ -1677,14 +1562,13 @@ server's image, with the database's address as its one input (straight to Postgr
 `/run/ferrum` for the vault's key file. It writes into a memory-backed volume the program mounts read-only at
 `/run/companion`, and the program's network policy lets the pod reach the database, and DNS, for the render. It opens
 the vault with the key file or the database password, never with the pod's service account. In Compose, a one-shot
-service renders them before the program starts, into a volume the two share (on the host's disk, as the store's own
-keys always were: a volume in memory would be gone before the program starts). What makes each program take its
+service renders them before the program starts, into a volume the two share (on the host's disk: a volume in memory
+would be gone before the program starts). What makes each program take its
 files this way:
 
 | Program | Its service (owner) | Switched by | What it is given |
 |---|---|---|---|
-| The store Compose bundles | `object-store` (the platform) | `-f deploy/store-files.yml`, once it has handed its keys over | `s3.json`: the access keys it handed over, both pairs while an overlap of a day lasts |
-| Metrics' engine | `metrics-engine` (Metrics) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal`; `deploy/k8s`: the component `metrics-engine-files` after `metrics-engine` | `token`: one token a line, the current first |
+| Metrics' engine | `metrics-engine` (Metrics) | `deploy/metrics-engine.yml`; the chart's `metricsEngine.files: rendered`, implied by `environment: minimal` | `token`: one token a line, the current first |
 | The meeting server (LiveKit) | `meet` (Comms) | `deploy/meet.yml` (LiveKit started with `--config /run/meet-files/livekit.yaml`) | `livekit.yaml`: its configuration, with a key for each version kept |
 | The mail server (Stalwart) | `mail` (Comms) | `deploy/mail.yml`, and in Stalwart's `config.toml` once: `authentication.fallback-admin.user = "admin"`, `authentication.fallback-admin.secret = "%{file:/run/mail-files/admin-secret}%"` | `admin-secret`: the fallback administrator's secret alone (the server's `FERRUM_MAIL_ADMIN` is `admin`) |
 
@@ -1704,22 +1588,10 @@ address alone, and the program takes it at its next start.
 The online editor and the browser editors take no secret of ours, only settings the chart's values give
 them; a render would put the database's address into pods that hold no secret today (and, for the editor, into a
 namespace of a lower security level), so they keep their values. None of this was run on a cluster or in Compose: the
-chart and `deploy/k8s` were rendered and compared (`deploy/helm/test.sh`), Compose with `docker compose config`; the
-store's switch was rehearsed with its own binary (`scripts/companions_rehearsal.sh`).
+chart was rendered (`deploy/helm/test.sh`), Compose with `docker compose config`.
 
 **Rotating, program by program.**
 
-- *The store Compose bundles* (`object-store`): both keys rotate together. Restart the store first: it then lets in
-  both pairs. Then restart the servers: each starts with the new pair, and one not yet restarted keeps the pair before,
-  which the store still lets in. A day later the overlap is over: restart the store once more, and it lets in the new
-  pair alone.
-  ```bash
-  C="docker compose -f deploy/docker-compose.yml -f deploy/store-files.yml --env-file deploy/.env"
-  $C exec ferrum ferrum task vault_rotate level:service service:object-store
-  $C up -d --force-recreate store-files store      # both pairs rendered; the store started on them
-  $C up -d --force-recreate ferrum
-  $C up -d --force-recreate store-files store      # a day later: the new pair alone
-  ```
 - *Metrics' engine* (`metrics-engine`): rotate, then restart the engine's pods
   within the overlap (a day): each is given both tokens, and Metrics sends the one before until the overlap is over, so
   no pod refuses it meanwhile.
@@ -1849,7 +1721,7 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
   and queries at once. The datasets directory (`FERRUM_METRICS_DATASETS`) is mounted read-only. Nothing is
   published to the host. Compose builds the image from a Metrics checkout (`FERRUM_METRICS_REPO`) unless
   `FERRUM_METRICS_ENGINE_IMAGE` names the published one.
-- **On Kubernetes,** list the `metrics-engine` component in `deploy/k8s/kustomization.yaml`. It runs two
+- **On Kubernetes,** set `metricsEngine.enabled` in the chart's values. It runs two
   replicas, either one answering, read-only and unprivileged, with a disruption budget; only the API may call
   them, and they call nothing. It points Ferrum at them and lets Ferrum's network policy reach them. First
   create the Secret `ferrum-metrics-engine` (key `token`), the ConfigMap `ferrum-metrics-engine` (key
@@ -1869,7 +1741,7 @@ docker compose -f deploy/docker-compose.yml -f deploy/metrics-engine.yml --env-f
 - **Datasets** are files. Refresh them in place, by writing a new file and renaming it over the old one; the
   newest file's time is the dataset's age. They are not backed up with the stack: they are the lake's.
 - **Its token from the vault**, typed by nobody (*Files for the programs beside the server*): the chart's
-  `metricsEngine.files: rendered` (or the `deploy/k8s` component `metrics-engine-files`) renders the token into each
+  `metricsEngine.files: rendered` renders the token into each
   engine pod as it starts, and neither side reads the Secret `ferrum-metrics-engine`. With `secret`, the default
   (`rendered` under `environment: minimal`), both read that Secret.
 
@@ -1925,7 +1797,7 @@ stay `unscanned`, and signatures added later do not reach files already stored.
 ## Checking a deployment
 
 **Before the first start**, `deploy/preflight.sh` looks at the host and `deploy/.env`: Docker, secrets
-left as placeholders, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` fills in missing secrets, makes the online
+left as placeholders, the database's and the store's addresses, an image not pinned to a commit, TLS, DNS, memory, disk and ports. `--generate` makes the online
 editor's WOPI proof key (`deploy/office-proof-key`) when there is none, and changes nothing else. Blockers exit non-zero; warnings do not.
 
 **Once it runs**, `ferrum task doctor` reports on the deployment itself, blockers apart from warnings,
@@ -2031,19 +1903,13 @@ Logs are JSON. Clients may send an `x-request-id` header to correlate their call
 ## Scaling
 
 * API: the HPA scales 3–9 replicas on CPU (the connection budget above); replicas are interchangeable.
-* Database: scale vertically first; add a PgBouncer pooler (`database.pooler.enabled` in the Helm chart,
-  "Deployment shapes") when connections become the limit. Change the number of instances or the size of their
-  volumes with `deploy/scale-database.sh --instances N` or `--storage 200Gi` (`--wait 600` to wait for
-  replication to recover first). It changes nothing, says why, and exits 3 in these cases:
-  - an instance is not ready;
-  - a standby is not streaming, or is more than `MAX_LAG_BYTES` (16 MiB) behind;
-  - fewer instances than `minSyncReplicas + 1` would be left, so writes would have no synchronous standby;
-  - a volume would shrink, or the storage class cannot grow one.
-
-  More instances are more copies to read from (`ferrum-db-ro`) and to fail over to. Every write still
-  goes to the one primary (`ferrum-db-rw`): they are not more room for writes. `deploy/kind/smoke.sh`
-  fences a standby, sees the change refused, then goes to two instances and back to three under writes. The journal is partitioned by year (partitions for the
-  next year are created automatically); stock and audit tables are append-only.
+* Database: its owner's. Scale vertically first; put a pooler in front (`database.directHost` in the Helm chart,
+  "Deployment shapes") when connections become the limit, and tell the chart what the role may hold
+  (`database.connectionLimit`). More instances are more copies to read from and to fail over to; every write still goes
+  to the one primary: they are not more room for writes. The journal is partitioned by year (partitions for the
+  next year are created automatically); stock and audit tables are append-only. The Kubernetes reference stack's
+  `reference/kubernetes/scale-database.sh --instances N` or `--storage 200Gi` changes its example database only when that is
+  safe (`reference/kubernetes/README.md` lists the cases it refuses).
 * Very large tenants or many tenants: shard on `tenant_id` (Citus), which the schema already
   allows (every key starts with `tenant_id`).
 
@@ -2097,21 +1963,23 @@ migrate Job (when it runs) as many again. With pools, the chart adds up every po
 `replicas` without an autoscaler) plus the pod a rollout adds (`maxSurge`, 1; `check_manifests.py` reads each
 Deployment's own, a percentage rounded up against its most replicas), the migrate Job and 20 for other users of the role (as
 `scripts/check_manifests.py` does), and refuses to render when the sum is above `database.connectionLimit`.
-Each preset says its sum. Without pools the chart refuses nothing new: check it with
-`helm template ... | python3 scripts/check_manifests.py -`, which adds up every server Deployment and Job it
-is given (and a pooler, as below). With the pooler on, the chart checks the budget with or without pools. (With the default values and `migrate.enabled`, that is 420 of 390 (382 and the Job's 30 + 6 + 2): lower
-`autoscaling.maxReplicas` to 8 when you turn the Job on.)
+Each preset says its sum. The chart checks the budget with or without pools, against the required `database.connectionLimit`;
+`python3 scripts/check_manifests.py` checks that the figures it counts with are what `crates/kernel/src/db.rs` opens and
+that no Deployment sets `replicas` under an autoscaler (`helm template ... | python3 scripts/check_manifests.py -`).
+With `database.directHost` (a pooler in front) a replica counts only its 2 direct connections: the pooler's own
+connections to PostgreSQL are the provider's to fit. (With the default values, the migrate Job on by default and a
+`connectionLimit` of 390, that is 420 of 390: 382 and the Job's 30 + 6 + 2, and 38 more for the settings Job when it runs;
+the reference stack's values set `autoscaling.maxReplicas` to 8.)
 
-**Connection pooler.** `database.pooler.enabled` puts PgBouncer (CloudNativePG's `Pooler`, `ferrum-db-pooler`,
-`database.pooler.instances` of them, at most one down at a time) in front of the primary, in transaction mode
-with protocol-level prepared statements (`max_prepared_statements`, PgBouncer 1.21 or later; the operator
-supplies the image; the chart refuses `maxPreparedStatements` below 1, which would fail every query). The server's pods then get `DATABASE_URL` pointing at the pooler and
-`FERRUM_DATABASE_DIRECT_URL` at the primary (`ferrum-db-rw`), which the server uses for LISTEN, session locks
-and migrations; the migrate Job always connects directly. Only the server's pods may reach the pooler, and Prometheus its metrics (`ferrum-db-pooler`
-PodMonitor). With the pooler, PostgreSQL sees `instances x poolSize` connections from it (plus
-`reserve_pool_size` if you set it in `database.pooler.parameters`) and `directConnectionsPerReplica`
-(default 2: 1 listener and 1 session lock) from each replica, and the budget counts that instead of `dbMaxConnections + 6`. `dbMaxConnections` is then what each replica opens to the
-pooler; keep the sum over every replica under `maxClientConnections` times `instances`.
+**Connection pooler.** A pooler in front of the database is its owner's (RDS Proxy, PgBouncer, Supabase's or Neon's pooled
+address, or the one the reference stack can run beside its database: `reference/kubernetes/database/values.yaml`,
+`database.pooler`). `database.urlSecret` then holds the pooler's address and `database.directHost` PostgreSQL itself, which the
+server uses for LISTEN, session locks and migrations (the migrate and settings Jobs get it too); it needs
+protocol-level prepared statements and a pooler that carries them (PgBouncer 1.21 or later with
+`max_prepared_statements` above 0, which the reference chart refuses to set below 1: every query fails through
+PgBouncer without them). With a pooler, PostgreSQL sees the pooler's own connections (its pool and reserve, which are the
+pooler's to fit within the role's limit) and each replica's direct ones (`ferrum.direct` in the chart: 1 listener and 1
+session lock), and the chart's budget counts only the direct ones.
 
 *What goes direct, and why.* In transaction mode PgBouncer gives each transaction whichever server connection
 is free, so anything that lives in one session longer than a transaction breaks through it: a LISTEN hears
@@ -2157,9 +2025,8 @@ lock whose connection drops is let go by PostgreSQL; its work is tried again in 
 restarts in the middle of a transaction ends it: PostgreSQL rolls it back, the request fails (503, or retried
 like any lost connection), and nothing half done stays.
 
-**Read address.** `database.readReplicas.enabled` sets `FERRUM_DATABASE_READ_URL` to CloudNativePG's
-read-only service (`ferrum-db-ro`, the standbys), and the chart refuses it with one instance, which has no
-standby. Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and a workspace's export (its
+**Read address.** `database.readHost` sets `FERRUM_DATABASE_READ_HOST` to a read replica (the standbys' read-only
+service, `ferrum-db-ro`, in the reference stack). Reports (`/api/reports`, apps' reports, Studio's queries and dashboards) and a workspace's export (its
 ledgers, the tables beside its records and its audit trail; its records come through the record API, from the
 primary) then read there, in read-only transactions that set the workspace as on the primary,
 when three things hold: the address is a replica (it is replaying), its lag, looked at every 2 seconds on
@@ -2216,7 +2083,7 @@ trigger would need a gauge of events due now (`available_at <= now()`), which th
 | Message | Meaning |
 |---|---|
 | `two pools are named …` | Each pool needs a name of its own: its objects are named after it |
-| `… is the name of another part of the chart` | `pdf`, `db`, `office`, `editors`, `metrics-engine`, `migrate`, `background` and `private` are taken |
+| `… is the name of another part of the chart` | `pdf`, `office`, `editors`, `metrics-engine`, `migrate`, `settings`, `background`, `private` and `vault-key` are taken |
 | `the first pool … cannot be background: only` | The first pool keeps the Service `ferrum`, which the gateway and the online editor call |
 | `zone … is not in zones` | A pool's `zone` must be one of `zones` |
 | `its zone … admits no staff, so it must not run background work` | A pool in a zone with `staff: none` needs `background: off`; the server refuses to start such a replica anyway |
@@ -2229,9 +2096,8 @@ trigger would need a gauge of events due now (`available_at <= now()`), which th
 | `the pools may open … database connections` | The connection budget above |
 | `a KEDA ScaledObject and an autoscaler must never both scale one Deployment` | Set `autoscaling: {enabled: false}` on a pool with `keda` |
 | `keda scales on waiting background work …` / `set keda.prometheusAddress` / `keda.minReplicas must be at least 1` | `keda` is for `background: only` pools, needs a Prometheus to ask, and keeps one worker |
-| `database.pooler … needs database.enabled` | The pooler is CloudNativePG's; in front of your own database, run PgBouncer yourself |
-| `database.bootstrap.mode …: set …` | A way of starting the database lacks what it reads ("Moving from one shape to another") |
-| `… where this cluster would also write its own` | A recovery from this chart's own backups needs a new `database.backup.serverName` |
+| `database.urlSecret.name is required` / `database.connectionLimit is required` / `database.backupReachDays is required` | The chart takes the address of a PostgreSQL and runs none: name its Secret, what the role may hold and how far back its backups reach |
+| `database.<value> is gone: …` | A value of the chart that ran a database (`enabled`, `external`, `backup`, `pooler`, `readReplicas`, `bootstrap`, …) no longer exists; the message says what to set instead |
 
 **Two gateways.** The public Gateway is `gateway`. `privateGateway.enabled` adds a second one,
 `ferrum-private`, with its own class, hosts, certificate and Envoy proxies; `privateGateway.envoyProxy.envoyService`
@@ -2784,8 +2650,8 @@ values after it; `my-values.yaml` below stands for yours.
 | split → pools | the same with `presets/pools.yaml` | `ferrum`'s pods; `ferrum-public` and `ferrum-finance` are new, with their routes and the portal host's listener | the new pools' rollouts; `kubectl -n ferrum get httproute` all `Accepted`; the portal host's certificate `Ready` |
 | pools → zones | first `… -f presets/zones.yaml --set gateway.defaultPool=general -f my-values.yaml`, then `… -f presets/zones.yaml -f my-values.yaml` | every pool's pods (each is now in a zone); the private gateway and its proxies are new. The second step moves the public host to `ferrum-public`, whose pods are by then ready | `kubectl -n ferrum wait gateway/ferrum-private --for=condition=Programmed`; the private host answers before staff are told to use it; after the second step, staff sign-ins on the public host are refused |
 | zones → pools or single | the same with that preset | the reverse; the private gateway is deleted | tell staff before: the private host stops answering, the public host admits them again |
-| pooler on | add `database: {pooler: {enabled: true}}` to your values | the pooler is new; every server pod is replaced (it now connects through it). A new pod is not ready until the pooler answers, so the rollout waits for it | `kubectl -n ferrum get pooler,pods -l cnpg.io/poolerName=ferrum-db-pooler`; PostgreSQL's connections (`cnpg_backends_total`) fall |
-| pooler off | first `pooler: {enabled: true, used: false}`, then `pooler: {enabled: false}` | first every server pod (it connects directly again), then the pooler is deleted. In one step the pooler would go while old pods still use it | the first rollout finishes before the second upgrade |
+| a pooler in front, on | the database's owner puts it up; give `database.urlSecret` the pooler's address and set `database.directHost` to PostgreSQL itself | every server pod is replaced (it now connects through it). A new pod is not ready until the pooler answers, so the rollout waits for it | PostgreSQL's connections: the pooler's own, and each replica's 2 direct ones |
+| a pooler in front, off | first set `database.urlSecret`'s address back to PostgreSQL's own and keep `database.directHost`, then remove it | every server pod, then nothing: in one step the pooler would go while old pods still use it | the first rollout finishes before the second upgrade |
 | worker scaling on | `keda: {enabled: true}` and `autoscaling: {enabled: false}` on the `background: only` pool, `keda.prometheusAddress` | nothing is restarted; KEDA's `ScaledObject` takes over the worker's replicas | `kubectl -n ferrum get scaledobject` `READY True`; the worker's replicas follow the gauges |
 
 A preset change that also changes `zones`, `dbMaxConnections` or a pool's `background` replaces that pool's
@@ -2796,8 +2662,10 @@ pool's pods being ready, the public host answers 503; the two steps avoid it. Go
 `pools` in one step has a shorter gap of its own: the first pool's network policy and the route change at
 slightly different moments.
 
-**How the database starts.** `database.bootstrap.mode` is read once, when CloudNativePG creates the cluster;
-keep it in your values afterwards. Every mode but `empty` needs the server's settings, the files (object storage) of
+**How the database starts.** The chart takes a database that exists; how one starts from another is its owner's (a
+provider's import or restore, your own tools). The Kubernetes reference stack's example database
+(`reference/kubernetes/database`) has `database.bootstrap.mode`, which is read once, when CloudNativePG creates the cluster;
+keep it in its values afterwards. Every mode but `empty` needs the server's settings, the files (object storage) of
 the installation it comes from, and a way into its vault: the new cluster's role has a password of its own, which the
 vault's credential slot was not made with (*The vault*, After a restore, a copy or a move).
 
@@ -2893,17 +2761,18 @@ the newest 200 files and every app bundle the database names that storage lacks 
 
 ### Compose to Kubernetes
 
-1. Prepare the cluster: the bucket, and, where the Compose installation sets `JWT_SECRET`, the Secret with it. Set
-   `database.bootstrap.mode: import` with the Compose database as the source ("Moving from one shape to another").
-   Do not install yet: `import` dumps the source when the cluster is created.
+1. Prepare the cluster: the bucket, and, where the Compose installation sets `JWT_SECRET`, the Secret with it. Prepare the
+   database to move into (with the reference stack's example database: `database.bootstrap.mode: import` with the Compose
+   database as the source, "Moving from one shape to another"; with your own: the import of your own tools, from
+   `deploy/dump.sh`'s dump). Do not install the product yet.
 2. On the Compose host (commands run in `deploy/`):
    `docker compose exec ferrum ferrum task plan_move reason:"to Kubernetes"`, and wait for it to finish.
 3. Copy the files into the bucket, the directory's root to the bucket's root, for example
    `docker compose run --rm --no-deps -T --entrypoint tar ferrum -C /var/lib/ferrum/files -cf - . | tar -C files -xf -`
    then `aws s3 sync files/ s3://<bucket>/` (or `rclone copy`). Compare the object count with the number
    of files.
-4. `helm install` with those values. CloudNativePG imports the fenced database, and the cluster's role has a new
-   password: the migrate Job stops on the vault's credential slot until `ferrum task vault_rewrap` has run once with
+4. `helm install` with those values (with the example database, install it first: CloudNativePG imports the fenced
+   database). The new database's role has a new password: the migrate Job stops on the vault's credential slot until `ferrum task vault_rewrap` has run once with
    the cluster's `DATABASE_URL` and the Compose database's password (*The vault*, After a restore, a copy or a move).
    Then the server starts, adopts the move and logs `THIS INSTALLATION MOVED HERE`.
 5. `kubectl -n ferrum exec deploy/ferrum -- ferrum task doctor`: no `move` and `files.missing` fine; then
@@ -3280,7 +3149,7 @@ client sending its next request when the last is answered:
 | Create a draft Sales Invoice (1 to 3 lines) | 10% |
 
 Every image build runs it for 20 seconds at 10 and then 50 clients, against the image deployed
-with the Compose stack on CI's runner (`deploy/smoke.sh`, the `image` job): the server, PostgreSQL,
+with the Compose stack on CI's runner (`reference/single-host/smoke.sh`, the `image` job): the server, PostgreSQL,
 the editors' server and LiveKit share one GitHub-hosted machine with the load generator. The build
 fails when a level misses a target:
 
@@ -3456,7 +3325,7 @@ editor reads and saves through Drive's WOPI endpoints with each person's own rig
 becomes a new version. Details are in the Drive app's README.
 
 **What runs.** The Compose stack has an `office` service (`collabora/code`, an exact tag, `COLLABORA_TAG`)
-and the Helm chart and `deploy/k8s/office` a Deployment `ferrum-office` of the same image. The server
+and the Helm chart a Deployment `ferrum-office` of the same image. The server
 reads these settings (the stack and the chart set them):
 
 | Setting | On | Value |
@@ -3470,9 +3339,8 @@ reads these settings (the stack and the chart set them):
 (set, empty) turns the editor off and its container does not start; `FERRUM_PDF_URL=` does the same for
 the PDF renderer. For an editor of your own, set `FERRUM_OFFICE_URL`, `FERRUM_OFFICE_WOPI_URL` and
 `OFFICE_REPLICAS=0` (the bundled one does not start). *Helm*: `office.enabled: false` and `pdf.enabled: false`;
-nothing of the editor is rendered, and the server is not told about it. *Kustomize*: leave out
-`kubectl apply -k deploy/k8s/office` (the server then says, in Administration, that online editing is
-off) or remove `FERRUM_OFFICE_*` from `deploy/k8s/deployment.yaml`.
+nothing of the editor is rendered, and the server is not told about it (Administration then says that online editing is
+off).
 
 **The editor's address.** The editor must have an origin of its own: another host name, or on one machine
 another port. It serves a full web application that must never share Ferrum's origin, where it could
@@ -3557,7 +3425,7 @@ shows whether the editor and the PDF renderer are set up and answering (`GET /ap
 on purpose, its address left empty: information, with no `fix`), `warning` or `blocker`), and `ferrum task doctor` prints the
 same. `deploy/office_check.py --url … --tenant … --token … --office …` opens a docx, an xlsx and a pptx made in Drive,
 does what the editor does over WOPI (CheckFileInfo, LOCK, GetFile, PutFile, UNLOCK), checks the save became a new
-version, and has the editor load a file itself; `deploy/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
+version, and has the editor load a file itself; `reference/single-host/smoke.sh` runs it on the Compose stack, and `deploy/kind/smoke.sh`
 checks the Kubernetes routes, the network policy and the server's report. With the editor down, Drive's "Open" answers
 that the editor server cannot be reached (it names the failure, not the address); everything else in Drive works, and
 files open in the browser editors if they are installed.
@@ -3611,10 +3479,9 @@ Set `FERRUM_EDITORS_URL` in `deploy/.env`. Copy and paste inside the editors nee
 HTTPS, or `localhost`.
 
 **Kubernetes.**
-1. List the component `editors` under `components:` in `deploy/k8s/kustomization.yaml`.
-2. Replace `editors.example.com` and `erp.example.com` in `deploy/k8s/editors/` with your hosts.
+1. Set `editors.enabled` in the chart's values, with `editors.host` and `editors.image`.
 
-The component adds:
+It adds:
 * the editor server: two replicas, read-only and without capabilities;
 * a Gateway listener with its own certificate, and the routes;
 * a network policy: only the gateway reaches the editor server, and it reaches nothing;
@@ -3739,7 +3606,7 @@ and Meet appears under Communication. Only people with a Comms role can join.
 * To try it on one machine: `FERRUM_MEET_URL=ws://localhost:7880`, `FERRUM_MEET_NODE_IP=127.0.0.1`,
   `FERRUM_MEET_EXTERNAL_IP=false`.
 
-`deploy/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
+`reference/single-host/smoke.sh` with `SMOKE_MEET=1` runs LiveKit beside the stack. It checks that LiveKit accepts
 the passes Ferrum signs, refuses one signed with another secret, and that Meet's pages may reach
 it. CI runs it on every image.
 
@@ -3813,7 +3680,7 @@ checks, and counts viewers from their token renewals. The app's `docs/deploy.md`
 * Rotating the key: add a new `<kid>.jwk` beside the old one, *Set Signing Key* with it, remove the old file once
   tokens signed with it have run out (60 minutes at most).
 
-**Kubernetes.** The app's `deploy/k8s/live.yaml`: relay and auth server in one pod, a LoadBalancer with UDP and TCP
+**Kubernetes.** The app's own `live.yaml`: relay and auth server in one pod, a LoadBalancer with UDP and TCP
 on 443, the secrets `live-relay-tls` and `live-relay-keys`. The platform's chart has no component for it, as for
 meetings.
 
@@ -4399,7 +4266,7 @@ workspaces, each at its own address, and people sign in once for all of them ([A
   through the accounts host as well, each with a session of its own.
 * **DNS and certificates.** A wildcard record `*.{base}` to the edge, and a wildcard certificate:
   cert-manager needs a DNS-01 solver for it (a Gateway listener with hostname `*.{base}` and the
-  `cert-manager.io/cluster-issuer` annotation, as `deploy/kind/kustomization.yaml` adds for the test
+  `cert-manager.io/cluster-issuer` annotation, as `deploy/kind/smoke.sh` adds for the test
   cluster). Caddy's on-demand TLS above covers subdomains and custom domains alike (`/_tls/ask`
   answers for both). Put the base domain on the Public Suffix List once you can, so each workspace's
   host is a site of its own for browsers.
