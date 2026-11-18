@@ -24,7 +24,7 @@ use sqlx::AssertSqlSafe;
 use uuid::Uuid;
 
 /// What became of `id`, if it was merged into another record.
-pub(crate) async fn canonical(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Result<Option<Uuid>> {
+pub async fn canonical(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Result<Option<Uuid>> {
     Ok(sqlx::query_scalar("select canonical_id from record_alias where tenant_id = $1 and entity = $2 and alias_id = $3")
         .bind(tenant)
         .bind(entity)

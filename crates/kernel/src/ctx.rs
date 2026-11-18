@@ -643,7 +643,7 @@ impl Ctx {
 }
 
 /// A condition restricting which records an action applies to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeCond {
     /// `None` = the record's own id.
     pub field: Option<String>,
@@ -653,7 +653,7 @@ pub struct ScopeCond {
     pub strict: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowScope {
     /// The user, when some grant reaches only their own records: matched against `created_by` ...
     pub owner: Option<Uuid>,
@@ -667,7 +667,7 @@ pub struct RowScope {
 
 /// A rule's reach, ready to test: the user's own records and/or fields holding given values or
 /// falling in given ranges.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScopeGrant {
     pub owner: bool,
     pub fields: Vec<GrantField>,
@@ -678,7 +678,7 @@ pub struct ScopeGrant {
 
 /// An owner path compiled against the schema in force (BD-02): its SQL from the record (`{a}`, the
 /// person's email bound between `prefix` and `suffix`), and how one record in memory is tested.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViaScope {
     pub path: String,
     prefix: String,
@@ -686,7 +686,7 @@ pub struct ViaScope {
     first: ViaFirst,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ViaFirst {
     /// The record's own field holds the email.
     Field(String),
@@ -757,7 +757,7 @@ fn compile_via(schema: &Schema, ent: &EffEntity, path: &str) -> Option<ViaScope>
 }
 
 /// A field of a grant's condition: its accepted values as text, and its SQL (`{a}`: the alias).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantField {
     pub field: String,
     pub values: Vec<String>,
@@ -767,7 +767,7 @@ pub struct GrantField {
 }
 
 /// A range of a grant's condition, with days from today resolved: its ends as text, and its SQL.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantRange {
     pub field: String,
     low: Option<String>,
@@ -820,7 +820,7 @@ fn condition_text(v: Option<&Value>) -> String {
 }
 
 /// An owner field and its SQL test (`{a}`: the table alias; the email is bound after `prefix`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerField {
     pub field: String,
     pub child: Option<String>,
