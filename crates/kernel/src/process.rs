@@ -80,6 +80,23 @@ struct Listening {
 
 static LISTENING: LazyLock<DashMap<Uuid, (i64, Arc<Listening>)>> = LazyLock::new(DashMap::new);
 
+/// Forgets what a workspace's active releases listen for, as its schema leaves the registry's cache (registry.rs): read
+/// again, by the version the database has, on the next event.
+pub(crate) fn forget(tenant: Uuid) {
+    LISTENING.remove(&tenant);
+}
+
+/// What the registry's tests keep and look for: a workspace's entry, made and asked after.
+#[cfg(test)]
+pub(crate) fn keep(tenant: Uuid) {
+    LISTENING.insert(tenant, (1, Arc::new(Listening::default())));
+}
+
+#[cfg(test)]
+pub(crate) fn kept(tenant: Uuid) -> bool {
+    LISTENING.contains_key(&tenant)
+}
+
 fn waits_in(nodes: &[Node], out: &mut BTreeSet<String>) {
     for n in nodes {
         if let Node::WaitEvent { event, .. } = n {
