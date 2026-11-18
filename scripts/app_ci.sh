@@ -1,6 +1,7 @@
 #!/bin/bash
 # An app's CI on this machine, as its .github/workflows/ci.yml runs it on GitHub:
-#   cargo fmt --check, scripts/window.py --app (what in its package SQL holds writes), cargo clippy --all-targets -D warnings, and cargo test against a Postgres
+#   cargo fmt --check, scripts/window.py --app (what in its package SQL holds writes), scripts/agent_parity.py --app
+#   (writes outside the gate, actions without a contract), cargo clippy --all-targets -D warnings, and cargo test against a Postgres
 #   test database owned by the non-superuser `ferrum` role (superusers bypass row-level security);
 #   then its interface's checks: the dist/ it commits built from its sources, typecheck and tests.
 #
@@ -81,6 +82,11 @@ cargo fmt --all -- --check || fail=1
 # holds its writes while it runs.
 step sql
 python3 "$PLATFORM/scripts/window.py" --app "$APP_DIR" || fail=1
+
+# Every route of its Site that writes runs through the gate or is in the platform's registry with a kind; every action
+# a person can press has a contract.
+step parity
+python3 "$PLATFORM/scripts/agent_parity.py" --app "$APP_DIR" || fail=1
 
 clippy() {
   step clippy

@@ -19,6 +19,7 @@ How to follow it, step by step and with examples, is in the app developer's hand
 | An interface, when it has one | `ui/dist` built, with `.source` saying which sources and which Ferrum-Frontend it was built from |
 | A launcher icon the shell draws | Every `shell.app` contribution names an icon `server/shell/runtime.js` knows |
 | Operator settings, when it declares any | Native apps only, each with a key, a variable, a known type and a doc; the app requires the platform that reads them; its code reads the variables with `ferrum_kernel::env::var` (*Operator settings*, below) |
+| One path for people and agents | Every route of its `Site` that writes calls the gate (`Kernel::invoke`, `invoke_tx`, `call_tx`) and nothing else that writes, or is listed with its kind in [registry/agent-parity.md](registry/agent-parity.md); every action a person can press (not `hidden`) has a contract with at least `effect`, `returns` and `completion` (`scripts/agent_parity.py --app`; [guides/06](guides/06-events-jobs-and-logic.md), *One path for people and agents*) |
 
 ## Reviewed
 
