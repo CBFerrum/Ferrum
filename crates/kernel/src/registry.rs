@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use dashmap::DashMap;
 use ferrum_meta::{Catalog, Overlay, OverlayOp, Schema, SchemaWarning, effective};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -15,9 +15,97 @@ pub const META_CHANNEL: &str = "ferrum_meta";
 /// The channel a change of the server's settings is announced on (server/src/settings.rs).
 pub const SETTINGS_CHANNEL: &str = "ferrum_settings";
 
+/// What a replica may hold of workspaces' schemas, counted in entities: 512 MiB over [`ENTITY_BYTES`]. Past it the entries
+/// checked longest ago leave ([`SchemaCache::put`]) and are built again when their workspace is next used. Not a setting:
+/// a replica that touches more than this is told by `ferrum_schema_cache_misses_total`.
+///
+/// A schema's size follows its entities (the packages installed), and varies 50-fold between workspaces, so a count of
+/// schemas would bound nothing. Counted by `schema_size_is_printed` (a counting allocator around `effective::build`):
+/// `cargo test -p ferrum-kernel --test registry_it schema_size_is_printed -- --nocapture`
+/// * 10,238,857 bytes for 745 entities (13,743 each) with every package of the platform and of 39 apps' repositories
+///   installed (66 packages; Edge and Cloud left out), with `FERRUM_SCHEMA_SIZE_PACKAGES` naming each app's `packages`
+///   directory, colon-separated;
+/// * 198,841 bytes for 21 entities (9,468 each) with the platform's five packages, without it.
+const ENTITY_BYTES: usize = 14_000;
+const BUDGET: usize = 512 * 1024 * 1024 / ENTITY_BYTES;
+
 struct Cached {
     schema: Arc<Schema>,
-    checked_at: Instant,
+    /// What it counts against the budget: its entities, at least one.
+    weight: usize,
+    /// Milliseconds after the cache was made at which the database last said this schema is current.
+    checked_at: AtomicU64,
+}
+
+/// The schemas kept, their weights adding up to at most `budget` (but for the entry just put, which stays even if it alone
+/// is over). A map and a stamp each, no thread of its own: entries checked longest ago are dropped while the total is
+/// over. Workspaces in use are checked again at least every `ttl`, so the stamp is a last-use time good to that; upkeep
+/// touching every workspace blurs it, which only costs a rebuild.
+/// ponytail: the oldest is found by scanning all entries, once per drop; a rebuild reads the database several times and
+/// costs far more. An ordered structure if misses at the budget ever become the common case.
+struct SchemaCache {
+    map: DashMap<Uuid, Cached>,
+    /// The weights of everything in `map`, moved with each insertion and removal.
+    total: AtomicUsize,
+    budget: usize,
+    start: Instant,
+}
+
+impl SchemaCache {
+    fn new(budget: usize) -> Self {
+        SchemaCache { map: DashMap::new(), total: AtomicUsize::new(0), budget, start: Instant::now() }
+    }
+
+    fn now(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    /// The schema, if it was checked within `ttl`.
+    fn fresh(&self, tenant: Uuid, ttl: Duration) -> Option<Arc<Schema>> {
+        let c = self.map.get(&tenant)?;
+        (self.now().saturating_sub(c.checked_at.load(Ordering::Relaxed)) < ttl.as_millis() as u64).then(|| c.schema.clone())
+    }
+
+    /// The schema, if it is of `version`; it counts as checked now.
+    fn current(&self, tenant: Uuid, version: i64) -> Option<Arc<Schema>> {
+        let c = self.map.get(&tenant)?;
+        (c.schema.version == version).then(|| {
+            c.checked_at.store(self.now(), Ordering::Relaxed);
+            c.schema.clone()
+        })
+    }
+
+    fn put(&self, tenant: Uuid, schema: Arc<Schema>) {
+        let weight = schema.entities.len().max(1);
+        if let Some(old) = self.map.insert(tenant, Cached { schema, weight, checked_at: AtomicU64::new(self.now()) }) {
+            self.total.fetch_sub(old.weight, Ordering::Relaxed);
+        }
+        self.total.fetch_add(weight, Ordering::Relaxed);
+        // Several puts at once may each see it over and each drop some: a loop, and never the entry just put.
+        while self.total.load(Ordering::Relaxed) > self.budget {
+            let oldest = self.map.iter().filter(|e| *e.key() != tenant).min_by_key(|e| e.checked_at.load(Ordering::Relaxed)).map(|e| *e.key());
+            match oldest {
+                Some(t) => self.remove(t),
+                None => break,
+            }
+        }
+    }
+
+    /// Drops a workspace's schema, and what the kernel keeps beside it by the schema's version (rules, listeners).
+    fn remove(&self, tenant: Uuid) {
+        if let Some((_, c)) = self.map.remove(&tenant) {
+            self.total.fetch_sub(c.weight, Ordering::Relaxed);
+        }
+        crate::logic::forget(tenant);
+        crate::process::forget(tenant);
+    }
+
+    fn clear(&self) {
+        let all: Vec<Uuid> = self.map.iter().map(|e| *e.key()).collect();
+        for t in all {
+            self.remove(t);
+        }
+    }
 }
 
 /// `META_CHANNEL` payload announcing that the cluster catalog changed (an app became available).
@@ -29,7 +117,9 @@ pub struct Registry {
     base: Vec<ferrum_meta::Package>,
     catalog: std::sync::RwLock<Arc<Catalog>>,
     db: Db,
-    cache: DashMap<Uuid, Cached>,
+    cache: SchemaCache,
+    /// Schemas built from the database (a workspace not kept, or whose settings changed), since this replica started.
+    misses: AtomicU64,
     ttl: Duration,
     /// How often each workspace's settings were seen to change, from this replica or another.
     changes: DashMap<Uuid, u64>,
@@ -48,7 +138,8 @@ impl Registry {
             base: base.packages().cloned().collect(),
             catalog: std::sync::RwLock::new(catalog),
             db,
-            cache: DashMap::new(),
+            cache: SchemaCache::new(BUDGET),
+            misses: AtomicU64::new(0),
             ttl: Duration::from_secs(30),
             changes: DashMap::new(),
             epoch: AtomicU64::new(0),
@@ -105,10 +196,8 @@ impl Registry {
 
     /// The tenant's effective schema; rebuilt only when its `meta_version` changed.
     pub async fn schema(&self, tenant: Uuid) -> Result<Arc<Schema>> {
-        if let Some(c) = self.cache.get(&tenant)
-            && c.checked_at.elapsed() < self.ttl
-        {
-            return Ok(c.schema.clone());
+        if let Some(schema) = self.cache.fresh(tenant, self.ttl) {
+            return Ok(schema);
         }
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let row: Option<(i64, serde_json::Value)> =
@@ -116,11 +205,8 @@ impl Registry {
         let Some((version, settings)) = row else {
             return Err(Error::NotFound("tenant".into()));
         };
-        if let Some(mut c) = self.cache.get_mut(&tenant)
-            && c.schema.version == version
-        {
-            c.checked_at = Instant::now();
-            return Ok(c.schema.clone());
+        if let Some(schema) = self.cache.current(tenant, version) {
+            return Ok(schema);
         }
         let installed: Vec<String> =
             sqlx::query_scalar("select name from installed_package where tenant_id = $1 order by name").bind(tenant).fetch_all(&mut *tx).await?;
@@ -199,12 +285,19 @@ impl Registry {
             tracing::warn!(%tenant, entity = %w.entity, "customization skipped: {}", w.message);
         }
         let schema = Arc::new(schema);
-        self.cache.insert(tenant, Cached { schema: schema.clone(), checked_at: Instant::now() });
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        self.cache.put(tenant, schema.clone());
         Ok(schema)
     }
 
+    /// How many schemas were built from the database since this replica started (`ferrum_schema_cache_misses_total`): it
+    /// climbing while the workspaces in use stay the same means more are in use than [`BUDGET`] keeps.
+    pub fn schema_cache_misses(&self) -> u64 {
+        self.misses.load(Ordering::Relaxed)
+    }
+
     pub fn invalidate(&self, tenant: Uuid) {
-        self.cache.remove(&tenant);
+        self.cache.remove(tenant);
         *self.changes.entry(tenant).or_insert(0) += 1;
         self.bumps.fetch_add(1, Ordering::SeqCst);
     }
@@ -319,5 +412,77 @@ impl Registry {
             self.set_catalog(Arc::new(catalog));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A schema of `n` entities (the one entity of a small package, named over and over).
+    fn schema(n: usize) -> Arc<Schema> {
+        let files: std::collections::BTreeMap<String, String> = [
+            ("package.yaml", "package: small\nversion: 0.1.0\n"),
+            ("entities/lead.yaml", "name: Lead\nlabel: Lead\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data}\n"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let package = ferrum_meta::catalog::load_package_files(&files).unwrap();
+        let mut schema = effective::build(&Catalog::from_packages(vec![package]).unwrap(), &["small".to_string()], &[], 1).unwrap();
+        let one = schema.entities.values().next().expect("an entity").clone();
+        for i in 1..n {
+            schema.entities.insert(format!("Lead{i}"), one.clone());
+        }
+        assert_eq!(schema.entities.len(), n);
+        Arc::new(schema)
+    }
+
+    fn weights(cache: &SchemaCache) -> usize {
+        cache.map.iter().map(|e| e.weight).sum()
+    }
+
+    /// Workspaces of many sizes touched, the budget forced to 1,000 entities: what is kept never weighs more, the running
+    /// total is the sum of the weights, the one touched last is kept, an entry over the budget by itself is kept and
+    /// served, and no evicted workspace keeps its rules or listeners (logic.rs, process.rs).
+    #[test]
+    fn cache_is_bounded() {
+        let cache = SchemaCache::new(1000);
+        let (small, large) = (schema(1), schema(120));
+        let tenants: Vec<Uuid> = (0..1000).map(|_| Uuid::new_v4()).collect();
+        for (i, t) in tenants.iter().enumerate() {
+            crate::logic::keep(*t);
+            crate::process::keep(*t);
+            // Nine hundred small and a hundred large, mixed: 12,900 entities in all.
+            cache.put(*t, if i % 10 == 9 { large.clone() } else { small.clone() });
+            assert!(cache.total.load(Ordering::Relaxed) <= 1000, "over the budget after {} puts", i + 1);
+        }
+        assert_eq!(cache.total.load(Ordering::Relaxed), weights(&cache), "the running total is what is held");
+        assert!(cache.map.contains_key(tenants.last().unwrap()), "the one touched last is kept");
+        assert!((50..100).contains(&cache.map.len()), "{} kept", cache.map.len());
+        for t in &tenants {
+            let held = cache.map.contains_key(t);
+            assert_eq!((crate::logic::kept(*t), crate::process::kept(*t)), (held, held), "rules and listeners are kept as long as the schema, no longer");
+        }
+        // The one checked longest ago goes, not one in use: a kept workspace checked again outlives the rest.
+        let old = *tenants.iter().find(|t| cache.map.contains_key(t)).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(cache.current(old, 1).is_some());
+        for _ in 0..800 {
+            cache.put(Uuid::new_v4(), small.clone());
+        }
+        assert!(cache.map.contains_key(&old), "a workspace checked just now outlives the rest put after it");
+        // One schema over the budget by itself stays and is served; the rest make room, and it is the oldest after.
+        let (huge, big) = (Uuid::new_v4(), schema(5000));
+        cache.put(huge, big.clone());
+        assert!(Arc::ptr_eq(&cache.fresh(huge, Duration::from_secs(60)).expect("served"), &big));
+        assert_eq!((cache.map.len(), cache.total.load(Ordering::Relaxed)), (1, 5000));
+        std::thread::sleep(Duration::from_millis(5));
+        cache.put(Uuid::new_v4(), small.clone());
+        assert_eq!((cache.map.contains_key(&huge), cache.total.load(Ordering::Relaxed)), (false, 1));
+        // Everything dropped (a notice may have been missed) takes the rules and listeners with it.
+        cache.clear();
+        assert_eq!((cache.map.len(), cache.total.load(Ordering::Relaxed)), (0, 0));
+        assert!(tenants.iter().all(|t| !crate::logic::kept(*t) && !crate::process::kept(*t)));
     }
 }

@@ -673,6 +673,22 @@ impl Kernel {
 /// it, so every replica reads them again (registry.rs).
 static ACTIVE: LazyLock<DashMap<Uuid, (i64, Arc<Active>)>> = LazyLock::new(DashMap::new);
 
+/// Forgets a workspace's rules, as its schema leaves the registry's cache (registry.rs): read again by version on the next save.
+pub(crate) fn forget(tenant: Uuid) {
+    ACTIVE.remove(&tenant);
+}
+
+/// What the registry's tests keep and look for: a workspace's entry, made and asked after.
+#[cfg(test)]
+pub(crate) fn keep(tenant: Uuid) {
+    ACTIVE.insert(tenant, (1, Arc::new(Active::prepare(&[], &|_| None))));
+}
+
+#[cfg(test)]
+pub(crate) fn kept(tenant: Uuid) -> bool {
+    ACTIVE.contains_key(&tenant)
+}
+
 async fn active(hc: &mut HookCtx<'_>) -> Result<Arc<Active>> {
     // The workspace as it is now, not as it was when this caller's session was loaded: an activation takes
     // effect for every save that starts after it.

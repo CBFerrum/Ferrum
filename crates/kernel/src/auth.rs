@@ -839,6 +839,7 @@ impl Kernel {
             Some(c) => c,
             None => {
                 let c = Arc::new(self.load_core(tenant, user).await?);
+                sweep_users(&self.users, 100_000, self.settings.ctx_ttl);
                 self.users.insert(key, (c.clone(), Instant::now()));
                 c
             }
@@ -1517,9 +1518,30 @@ fn holds_personal(ctx: &Ctx, entity: &str) -> bool {
     ctx.schema.entity(entity).is_none_or(|e| ferrum_meta::holds_personal_data(&e.def, |n| ctx.schema.personal_data.iter().any(|d| d.entity == n)))
 }
 
+/// Drops the cached contexts past `ttl` once there are more than `over`: an entry that old is never read again (`core`),
+/// so nothing is lost, and a replica that has seen many people does not keep them all (the sessions' pattern, shell.rs).
+fn sweep_users<V>(users: &dashmap::DashMap<(Uuid, Uuid), (V, Instant)>, over: usize, ttl: Duration) {
+    if users.len() > over {
+        users.retain(|_, v| v.1.elapsed() < ttl);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn expired_contexts_go() {
+        let users = dashmap::DashMap::new();
+        let ttl = Duration::from_secs(30);
+        let (old, now) = (Instant::now() - Duration::from_secs(60), Instant::now());
+        for i in 0..10 {
+            users.insert((Uuid::from_u128(1), Uuid::from_u128(i)), ((), if i < 7 { old } else { now }));
+        }
+        sweep_users(&users, 10, ttl);
+        assert_eq!(users.len(), 10, "not over the size: nothing is looked at");
+        sweep_users(&users, 9, ttl);
+        assert_eq!(users.len(), 3, "over it: the seven past the time are dropped, the three in time stay");
+    }
 
     #[test]
     fn records_scopes() {
