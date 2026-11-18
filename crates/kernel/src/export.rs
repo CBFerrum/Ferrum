@@ -598,17 +598,43 @@ async fn make(k: &Kernel, job: &Job, ctx: &Ctx) -> Result<Value> {
 }
 
 impl Kernel {
-    /// A page of an entity's records with their child rows, and the cursor for the next.
+    /// A page of an entity's records with their child rows, and the cursor for the next: the rows of the whole page in
+    /// one statement, on a replica when there is one fit to read from, as the page itself is.
     async fn whole_records(&self, all: &Ctx, entity: &str, with_rows: bool, cursor: Option<String>) -> Result<(Vec<Value>, Option<String>)> {
         let q = ListQuery { sort: Some("created_at".into()), limit: Some(MAX_LIMIT), cursor, ..Default::default() };
         let page = self.list_with_timeout(all, entity, &q, self.db.config.report_timeout_ms).await?;
-        let mut rows = Vec::with_capacity(page.rows.len());
-        for row in page.rows {
-            let id = row.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
-            rows.push(Value::Object(match id.filter(|_| with_rows) {
-                Some(id) => self.get(all, entity, id, false).await?,
-                None => row,
-            }));
+        if !with_rows {
+            return Ok((page.rows.into_iter().map(Value::Object).collect(), page.next_cursor));
+        }
+        let ent = self.entity(all, entity)?;
+        let ids: Vec<Uuid> = page.rows.iter().filter_map(|r| r.get("id")?.as_str()?.parse().ok()).collect();
+        let mut tx = self.db.read_tx(all.tenant, self.db.config.report_timeout_ms).await?;
+        let mut whole: std::collections::HashMap<String, crate::Doc> = crate::store::load_many_whole(&mut tx, &all.schema, &ent, all.tenant, &ids)
+            .await?
+            .into_iter()
+            .filter_map(|d| Some((d.get("id")?.as_str()?.to_string(), d)))
+            .collect();
+        // Which secret fields hold a value (as a record read one at a time says), for the page at once.
+        let secrets: Vec<(Uuid, String)> = if ent.secret_fields().next().is_some() {
+            sqlx::query_as("select record_id, field from record_secret where tenant_id = $1 and entity = $2 and record_id = any($3)")
+                .bind(all.tenant)
+                .bind(&ent.def.name)
+                .bind(&ids)
+                .fetch_all(&mut *tx)
+                .await?
+        } else {
+            Vec::new()
+        };
+        tx.commit().await?;
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            // One deleted since the page was read is left out.
+            let Some(mut doc) = whole.remove(&id.to_string()) else { continue };
+            for f in ent.secret_fields() {
+                let set = secrets.iter().any(|(r, field)| *r == id && *field == f.name);
+                doc.insert(f.name.clone(), if set { Value::Bool(true) } else { Value::Null });
+            }
+            rows.push(Value::Object(self.mask(all, &ent, doc)));
         }
         Ok((rows, page.next_cursor))
     }

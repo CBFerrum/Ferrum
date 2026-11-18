@@ -1,6 +1,8 @@
 //! A workspace's export against a real PostgreSQL (`FERRUM_EXPORT_TEST_DATABASE_URL`; the database is reset first):
 //! what a replica holds while it exports a large file (K9), that what it writes opens with ordinary tools, and that a
-//! store failing, or a worker dying, part-way through a part leaves no object behind.
+//! store failing, or a worker dying, part-way through a part leaves no object behind; and that records' child rows are
+//! read a page at a time, not one record at a time (statements counted as every query sqlx runs, an event of target
+//! `sqlx::query`). The tests share the database: each holds [`SERIAL`].
 //!
 //! ```text
 //! cargo test -p ferrum-kernel --test export_it -- --nocapture --test-threads=1
@@ -61,6 +63,40 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static ALLOC: Counting = Counting;
+
+static SERIAL: Mutex<()> = Mutex::new(());
+
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static STATEMENTS: AtomicU64 = AtomicU64::new(0);
+
+struct Statements;
+
+impl tracing::Subscriber for Statements {
+    fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
+        m.target() == "sqlx::query"
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {
+        if COUNTING.load(Ordering::SeqCst) {
+            STATEMENTS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// The statements `f` runs.
+async fn counted<T>(f: impl std::future::Future<Output = T>) -> (T, u64) {
+    STATEMENTS.store(0, Ordering::SeqCst);
+    COUNTING.store(true, Ordering::SeqCst);
+    let out = f.await;
+    COUNTING.store(false, Ordering::SeqCst);
+    (out, STATEMENTS.load(Ordering::SeqCst))
+}
 
 fn reset_peak() -> i64 {
     let now = NET.load(Ordering::Relaxed);
@@ -275,6 +311,7 @@ fn sha_of(mut r: impl std::io::Read) -> String {
 /// or a worker that dies, part-way through a part leaves no object no file names.
 #[test]
 fn large_file_bounded_memory() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     run(async {
         let dir = std::env::temp_dir().join(format!("ferrum-export-store-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -380,6 +417,64 @@ fn large_file_bounded_memory() {
         assert_eq!(k.run_jobs_once(1).await.unwrap(), 1);
         assert_eq!(k.job(&admin, job).await.unwrap()["status"], "done");
         assert_eq!(store.left_over(&k).await, Vec::<String>::new(), "the dead worker's part is gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+}
+
+/// An export reads the child rows of a page of records in one go: exporting 200 records with two child tables takes
+/// no more statements than exporting 100, and each record comes out whole, its rows in order.
+#[test]
+fn children_one_query_per_table() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = tracing::subscriber::set_global_default(Statements);
+    run(async {
+        let dir = std::env::temp_dir().join(format!("ferrum-export-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Store { dir: dir.clone(), fail_at: AtomicU64::new(u64::MAX), hang_at: AtomicU64::new(u64::MAX), ..Default::default() });
+        let (k, admin) = boot(store.clone()).await;
+        let mut statements = Vec::new();
+        let mut result = serde_json::Value::Null;
+        for round in 0..2 {
+            for i in 0..100 {
+                let doc = serde_json::json!({
+                    "title": format!("shipment {round}-{i:03}"),
+                    "lines": [{"item": format!("first of {round}-{i:03}")}, {"item": format!("second of {round}-{i:03}")}],
+                    "notes": [{"note": "fragile"}, {"note": format!("note of {round}-{i:03}")}],
+                });
+                k.insert(&admin, "Shipment", doc.as_object().unwrap().clone()).await.unwrap();
+            }
+            let job = k.export_workspace(&admin).await.expect("queued");
+            let (ran, n) = counted(k.run_jobs_once(1)).await;
+            assert_eq!(ran.unwrap(), 1);
+            let v = k.job(&admin, job).await.unwrap();
+            assert_eq!(v["status"], "done", "{v}");
+            statements.push(n);
+            result = v["result"].clone();
+        }
+        println!(
+            "export_statements: {} for 100 records with two child tables, {} for 200: {} more",
+            statements[0],
+            statements[1],
+            statements[1] as i64 - statements[0] as i64
+        );
+        let mut records = String::new();
+        for part in result["parts"].as_array().unwrap() {
+            let path = store.path(&format!("tenants/{}/{}", admin.tenant, part["id"].as_str().unwrap()));
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).expect("a zip");
+            for i in 0..zip.len() {
+                let mut f = zip.by_index(i).unwrap();
+                if f.name().unwrap().starts_with("records/Shipment/") {
+                    std::io::Read::read_to_string(&mut f, &mut records).unwrap();
+                }
+            }
+        }
+        assert_eq!(records.lines().count(), 200);
+        let one: serde_json::Value = serde_json::from_str(records.lines().find(|l| l.contains("shipment 1-042")).unwrap()).unwrap();
+        let items: Vec<&str> = one["lines"].as_array().unwrap().iter().map(|r| r["item"].as_str().unwrap()).collect();
+        let notes: Vec<&str> = one["notes"].as_array().unwrap().iter().map(|r| r["note"].as_str().unwrap()).collect();
+        assert_eq!((items, notes), (vec!["first of 1-042", "second of 1-042"], vec!["fragile", "note of 1-042"]), "{one}");
+        assert!(statements[1] <= statements[0] + 10, "child rows are read a page at a time, not a record at a time: {statements:?}");
         let _ = std::fs::remove_dir_all(&dir);
     });
 }

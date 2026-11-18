@@ -179,9 +179,10 @@ fn tables_sql(ent: &EffEntity, schema: &Schema, parent: &str, depth: usize) -> S
     if children.is_empty() { String::new() } else { format!(" || jsonb_build_object({})", children.join(", ")) }
 }
 
-fn load_sql(ent: &EffEntity, schema: &Schema) -> String {
+/// Records with their child rows, those whose id is `ids` (`= $2`, `= any($2)`).
+fn load_sql(ent: &EffEntity, schema: &Schema, ids: &str) -> String {
     format!(
-        "select to_jsonb(x){} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id = $2{}) x",
+        "select to_jsonb(x){} from (select {}, a.tenant_id from {} a where a.tenant_id = $1 and a.id {ids}{}) x",
         tables_sql(ent, schema, "x", 0),
         select_list(ent, "a"),
         q(&ent.table),
@@ -201,8 +202,15 @@ pub async fn load(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, i
             return Ok(None);
         }
     }
-    let row: Option<Value> = sqlx::query_scalar(AssertSqlSafe(load_sql(ent, schema))).bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
+    let row: Option<Value> = sqlx::query_scalar(AssertSqlSafe(load_sql(ent, schema, "= $2"))).bind(tenant).bind(id).fetch_optional(&mut **tx).await?;
     Ok(row.map(|r| row_to_doc(ent, schema, r)))
+}
+
+/// Loads several records with their child rows, in one statement whatever their number (a page of an export), in no
+/// particular order.
+pub async fn load_many_whole(tx: &mut Tx, schema: &Schema, ent: &EffEntity, tenant: Uuid, ids: &[Uuid]) -> Result<Vec<Doc>> {
+    let rows: Vec<Value> = sqlx::query_scalar(AssertSqlSafe(load_sql(ent, schema, "= any($2)"))).bind(tenant).bind(ids).fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().map(|r| row_to_doc(ent, schema, r)).collect())
 }
 
 /// Loads several records (without child rows).
