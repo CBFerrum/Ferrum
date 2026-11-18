@@ -198,28 +198,33 @@ async fn plain_build(w: &World) -> Duration {
 }
 
 /// While `building` is set, polls `pg_stat_activity` every few milliseconds for a writer's insert that waits on a lock
-/// another backend holds: what a plain `create index` makes (SHARE conflicts with the insert's ROW EXCLUSIVE; the
-/// concurrent build's SHARE UPDATE EXCLUSIVE does not). Returns the samples taken and those that saw one.
-async fn sampler(table: String, building: Arc<AtomicBool>, stop: Arc<AtomicBool>) -> tokio::task::JoinHandle<(u64, u64)> {
+/// another backend holds, and names the backend holding it by its query. A plain `create index` makes writers wait
+/// for the whole build (SHARE conflicts with the insert's ROW EXCLUSIVE; the concurrent build's SHARE UPDATE EXCLUSIVE
+/// does not). The sync's other statements take short locks of their own (`create or replace trigger`, `add constraint
+/// ... not valid`): a writer behind one is seen for a sample, and is listed, but is no build. Returns the samples
+/// taken, those that saw a writer blocked by an index build, and the distinct other blockers.
+async fn sampler(table: String, building: Arc<AtomicBool>, stop: Arc<AtomicBool>) -> tokio::task::JoinHandle<(u64, u64, Vec<String>)> {
     let mut conn = PgConnection::connect(&url()).await.unwrap();
     tokio::spawn(async move {
-        let (mut samples, mut blocked) = (0, 0);
+        let (mut samples, mut by_build, mut brief) = (0, 0, std::collections::BTreeSet::new());
         while !stop.load(Ordering::Relaxed) {
             if building.load(Ordering::Relaxed) {
-                let waiting: i64 = sqlx::query_scalar(
-                    "select count(*) from pg_stat_activity where datname = current_database() and query like $1 \
-                     and wait_event_type = 'Lock' and cardinality(pg_blocking_pids(pid)) > 0",
+                let blockers: Vec<(String, bool)> = sqlx::query_as(
+                    "select b.query, b.query ~* '^\\s*create\\s+(unique\\s+)?index\\s+(?!concurrently)' \
+                     from pg_stat_activity a cross join lateral unnest(pg_blocking_pids(a.pid)) as p(pid) join pg_stat_activity b on b.pid = p.pid \
+                     where a.datname = current_database() and a.query like $1 and a.wait_event_type = 'Lock'",
                 )
                 .bind(format!("insert into {table}%"))
-                .fetch_one(&mut conn)
+                .fetch_all(&mut conn)
                 .await
                 .unwrap();
                 samples += 1;
-                blocked += (waiting > 0) as u64;
+                by_build += blockers.iter().any(|b| b.1) as u64;
+                brief.extend(blockers.into_iter().filter(|b| !b.1).map(|b| b.0.chars().take(70).collect::<String>()));
             }
             tokio::time::sleep(Duration::from_millis(3)).await;
         }
-        (samples, blocked)
+        (samples, by_build, brief.into_iter().collect())
     })
 }
 
@@ -245,10 +250,10 @@ fn link_index_does_not_block_inserts() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         stop.store(true, Ordering::Relaxed);
         let (slowest, inserts) = writer.await.unwrap();
-        let (samples, blocked) = watcher.await.unwrap();
+        let (samples, blocked, brief) = watcher.await.unwrap();
         println!(
             "K7: {ROWS} rows; a plain unique index build over them {build:?}; the sync ({} statements) {synced:?}; {inserts} inserts, {during} of them during the sync, the slowest {slowest:?}; \
-             {samples} samples of the writers' locks during the sync, {blocked} saw a writer blocked",
+             {samples} samples of the writers' locks during the sync, {blocked} saw a writer blocked by an index build; behind a short lock: {brief:?}",
             report.statements
         );
 
@@ -257,7 +262,7 @@ fn link_index_does_not_block_inserts() {
         assert!(w.indexes().await.iter().any(|i| i.contains("from_currency")), "the link's index is built again");
         assert!(during > 0, "the writers did not run during the sync: nothing was observed");
         assert!(samples >= 20, "not observed: {samples} samples in {synced:?}, a build too fast to sample");
-        assert_eq!(blocked, 0, "a writer was blocked by the sync in {blocked} of {samples} samples");
+        assert_eq!(blocked, 0, "a writer was blocked by an index build of the sync in {blocked} of {samples} samples");
         assert!(
             slowest < Duration::from_secs(5),
             "an insert waited {slowest:?} (the verdict is the sampler's; this only catches a writer held for the whole build)"
