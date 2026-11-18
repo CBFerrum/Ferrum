@@ -201,6 +201,15 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Malware scanning** looks at a file once, when it is uploaded: files stored earlier, or past the
   scanner's size limit, stay `unscanned`, and nothing rescans them when signatures change.
 - **Bulk jobs** reach at most 100,000 records, and list the first 1,000 failures.
+- **Search reads rows.** The bar's search, a list's search box and a "contains" filter run one statement for
+  each searchable entity the person may read, and each reads that workspace's rows of the entity, within its
+  300 ms budget (`server/src/search.rs`): about 100 ms for 100,000 rows on a laptop under load. Past a few
+  hundred thousand rows of one entity in one workspace, a search may return that entity's matches incomplete.
+  No index can help: every entity table has a row-level-security policy, and PostgreSQL lets a condition use an
+  index on such a table only when its function is leakproof, which `ilike`, `like` and full-text matching are
+  not (`select proname, proleakproof from pg_proc where proname in ('texticlike','textlike','ts_match_vq')`). So
+  the sync builds no trigram indexes; they cost every write and answered nothing
+  (`crates/kernel/tests/search_index_it.rs`). Databases made before this keep the ones they have.
 - **Lists** someone waits for (the list API, search, link pickers, `Kernel::list`) give up on a statement
   past 15 s, and the request answers `503`, the query took too long. What reads page after page for a
   download, a workspace's export, a bulk job's records or a retention rule waits 60 s a page

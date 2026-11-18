@@ -377,23 +377,6 @@ impl Ddl<'_> {
         }
         Ok(())
     }
-
-    async fn search_indexes(&mut self, table: &str, ent: &EffEntity) -> Result<()> {
-        let mut cols: Vec<&str> = ent.def.search_fields.iter().map(String::as_str).collect();
-        if let Some(t) = &ent.def.title_field {
-            cols.push(t);
-        }
-        cols.sort();
-        cols.dedup();
-        for c in cols {
-            let is_text_col = ent.field(c).is_some_and(|f| f.ftype.is_text()) && ent.storage_of(c) == Some(Storage::Column);
-            if is_text_col {
-                let name = obj_name("trgm", table, &[c]);
-                self.make_index(&name, table, false, &format!("on {} using gin ({} gin_trgm_ops)", q(table), q(c))).await?;
-            }
-        }
-        Ok(())
-    }
 }
 
 const SYSTEM_COLUMNS: &str = "\
@@ -704,7 +687,7 @@ async fn sync_locked(conn: &mut PgConnection, catalog: &Catalog, force: bool) ->
             ddl.exec(format!("alter table {} add constraint {} exclude using gist ({}, {range} with &&){live}", q(&t), q(&name), eq.join(", "))).await?;
             ddl.constraints.insert(name);
         }
-        ddl.search_indexes(&t, ent).await?;
+        // No trigram indexes for search: the policy below keeps `ilike` out of every index (tests/search_index_it.rs).
         ddl.rls(&t).await?;
         // A held record is not deleted, whoever's SQL asks (the kernel baseline migration), and the row as
         // it was before each change to it is kept while it is held.
