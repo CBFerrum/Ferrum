@@ -420,7 +420,12 @@ impl Kernel {
     /// everyone out (of one workspace, or all), so that nothing revoked since the backup works again: every token version
     /// moves on, and every session, API key and OAuth refresh token is revoked. Passwords stay as the database has them,
     /// so people, administrators first, sign in again with theirs (or by single sign-on); integrations need new keys.
+    ///
+    /// It is one transaction with the hold, however long it takes: 300,000 waiting events took 11 s on a laptop, and a
+    /// statement cut short by the 15 s every transaction is given would leave the restore neither held nor set aside, and
+    /// a start that cannot finish. Batches would let a replica that dies part way leave restored events to go out on release.
     async fn set_aside(&self, tx: &mut crate::Tx, tenant: Option<Uuid>) -> Result<()> {
+        sqlx::query("set local statement_timeout = 0").execute(&mut **tx).await?;
         sqlx::query("update outbox set dead = true, last_error = $1 where processed_at is null and not dead and ($2::uuid is null or tenant_id = $2)")
             .bind(NOTE)
             .bind(tenant)
