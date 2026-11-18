@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -1151,6 +1152,83 @@ fn slot_check(kind: SlotKind) -> &'static str {
     }
 }
 
+/// Where the installation key's root sits, for the doctor (`vault.root`): the production profile is a `kms` slot (or a key
+/// file) and a recovery slot kept offline, and no credential slot, which anyone with `DATABASE_URL` opens. It is a finding
+/// and a documented default, never a refusal: one machine with a key file is a legitimate installation.
+fn root_finding(kinds: &[SlotKind]) -> crate::doctor::Finding {
+    use crate::doctor::Finding;
+    let has = |k: SlotKind| kinds.contains(&k);
+    let outside = has(SlotKind::Kms) || has(SlotKind::File);
+    let where_it_is = if has(SlotKind::Kms) { "the key-management service" } else { "a key file" };
+    match (outside, has(SlotKind::Credential)) {
+        (true, false) => Finding::ok(
+            "vault.root",
+            format!("the vault's root key is outside the database: {where_it_is} opens it, and no slot opens it from the database password"),
+        ),
+        (true, true) if has(SlotKind::Kms) => Finding::warning(
+            "vault.root",
+            "the vault has a credential slot beside its kms slot: anyone with DATABASE_URL opens the vault without asking the key-management service, so the service \
+             protects nothing. On one machine that may be what you want; for production the profile is a kms slot and a recovery key kept offline",
+            "Run ferrum task vault_remove_slot kind:credential (keep a recovery key first: ferrum task vault_recovery); docs/operations.md, \"The vault\", The production profile.",
+        ),
+        (true, true) => Finding::off(
+            "vault.root",
+            "the vault has a credential slot beside its key file: anyone with DATABASE_URL opens it without the file. That is legitimate on one machine; where the \
+             database is reached by more than the server (production, a cluster) move the root to a key-management service and remove the credential slot",
+        ),
+        (false, _) => Finding::off(
+            "vault.root",
+            "the vault's root key is derived from the database password in DATABASE_URL, so whoever has the database and its password has the vault. That is legitimate \
+             on one machine; for production keep the root outside the database: a key-management service (kms_transit) or a key file",
+        ),
+    }
+}
+
+/// What the key service says of the kms slot's key, for the doctor (`vault.root.key`): the slot's ciphertext is by an older
+/// version than the oldest the service still decrypts (the next start will not open it), or than the latest (made again
+/// with `vault_rotate level:slot kind:kms`).
+fn key_finding(slot_wrapped: &str, health: &kms::KmsHealth) -> crate::doctor::Finding {
+    use crate::doctor::Finding;
+    let made = kms::ciphertext_version(slot_wrapped);
+    if let (Some(v), Some((_, min))) = (made, health.key_versions)
+        && v < min
+    {
+        return Finding::blocker(
+            "vault.root.key",
+            format!(
+                "the kms slot is wrapped by version {v} of the Transit key, and the service no longer decrypts below version {min}: the next start will not open the vault with it"
+            ),
+            "Where another slot or a running server holds the vault: ferrum task vault_rotate level:slot kind:kms. Where none does: lower min_decryption_version of the Transit key \
+             (bao write transit/keys/<key>/config min_decryption_version=<n>) until the slot is made again. docs/operations.md, \"The vault\".",
+        );
+    }
+    match (made, health.key_versions) {
+        (Some(v), Some((latest, _))) if v < latest => Finding::ok(
+            "vault.root.key",
+            format!(
+                "the kms slot is wrapped by version {v} of the Transit key, which is at {latest}: ferrum task vault_rotate level:slot kind:kms wraps it by the latest"
+            ),
+        ),
+        (Some(v), Some(_)) => Finding::ok("vault.root.key", format!("the kms slot is wrapped by version {v}, the Transit key's latest")),
+        _ => Finding::off(
+            "vault.root.key",
+            "the Transit key's versions were not read (the service did not answer, or the policy allows no read on the key; encrypt and decrypt are all a server needs)",
+        ),
+    }
+}
+
+/// A token the key-management service is asked with that runs out within a day (`vault.root.token`); none for one that does
+/// not, and for a way in that signs in afresh at each use.
+fn token_finding(health: &kms::KmsHealth) -> Option<crate::doctor::Finding> {
+    let ttl = health.token_ttl.filter(|t| *t < Duration::from_secs(24 * 3600))?;
+    let left = if ttl.as_secs() < 3600 { format!("{} minutes", ttl.as_secs() / 60) } else { format!("{} hours", ttl.as_secs() / 3600) };
+    Some(crate::doctor::Finding::warning(
+        "vault.root.token",
+        format!("the token the key-management service is asked with expires in {left}: after that the next start is refused"),
+        "Replace the file /run/ferrum/kms.token with a new token, or sign in with an AppRole (kms_approle_role_id and the file /run/ferrum/kms.secret-id), which signs in afresh at each use.",
+    ))
+}
+
 impl crate::Kernel {
     /// What the doctor says of the vault (`ferrum task doctor`): whether it is open and with which slot, which slots
     /// there are and whether each opens it here, whether there is a recovery key, how old its keys are, and what waits
@@ -1192,6 +1270,16 @@ impl crate::Kernel {
                 "Run ferrum task vault_recovery and keep what it prints offline.",
             ),
         });
+        out.push(root_finding(&st.slots.iter().map(|s| s.kind).collect::<Vec<_>>()));
+        if let Some(opener) = self.db.vault.opener()
+            && let Some(transit) = &opener.transit
+            && let Some(slot) = read_slots(&self.db).await?.into_iter().find(|s| s.kind == SlotKind::Kms && s.params["how"] == "transit")
+            && let Some(wrapped) = &slot.kms_wrapped
+        {
+            let health = transit.health().await;
+            out.push(key_finding(wrapped, &health));
+            out.extend(token_finding(&health));
+        }
         for (kind, opens) in try_slots(&self.db).await? {
             out.push(match opens {
                 Ok(()) => Finding::ok(slot_check(kind), format!("the {kind} slot opens the vault here")),
@@ -1259,6 +1347,36 @@ mod tests {
         assert_eq!(pw("postgres://ferrum:%zz@db/ferrum"), None, "a broken escape is no password");
         let o = Opener { database_url: "postgres://ferrum:s3cret@db/ferrum".into(), ..Default::default() };
         assert!(!format!("{o:?}").contains("s3cret"), "an opener never shows the address: {o:?}");
+    }
+
+    #[test]
+    fn the_doctor_tells_where_the_root_key_sits_and_never_refuses_a_small_installation() {
+        use crate::doctor::Level;
+        use SlotKind::*;
+        let level = |kinds: &[SlotKind]| root_finding(kinds).level;
+        assert_eq!(level(&[Kms, Recovery]), Level::Ok, "the production profile");
+        assert_eq!(level(&[File, Recovery]), Level::Ok, "a key file outside the database");
+        assert_eq!(level(&[Kms, Credential, Recovery]), Level::Warning, "the service protects nothing beside a credential slot");
+        let small = root_finding(&[File, Credential]);
+        assert!(small.level == Level::Off && small.detail.contains("legitimate on one machine"), "{small:?}");
+        let alone = root_finding(&[Credential]);
+        assert!(alone.level == Level::Off && alone.detail.contains("legitimate on one machine"), "{alone:?}");
+    }
+
+    #[test]
+    fn the_doctor_reads_the_transit_keys_versions_and_the_tokens_time() {
+        use crate::doctor::Level;
+        let h = |ttl: Option<u64>, versions: Option<(u32, u32)>| kms::KmsHealth { token_ttl: ttl.map(Duration::from_secs), key_versions: versions };
+        let said = |wrapped: &str, health: &kms::KmsHealth| key_finding(wrapped, health).level;
+        assert_eq!(said("vault:v1:x", &h(None, Some((1, 1)))), Level::Ok);
+        assert_eq!(said("vault:v1:x", &h(None, Some((3, 1)))), Level::Ok, "older than the latest still opens: said, not an error");
+        assert_eq!(said("vault:v1:x", &h(None, Some((3, 2)))), Level::Blocker, "below what the service decrypts: the next start will not open it");
+        assert_eq!(said("vault:v2:x", &h(Some(3600), Some((2, 1)))), Level::Ok, "its token is another finding");
+        assert_eq!(token_finding(&h(Some(3600), None)).map(|f| f.level), Some(Level::Warning), "a token with an hour left");
+        assert!(token_finding(&h(Some(120), None)).unwrap().detail.contains("in 2 minutes"));
+        assert!(token_finding(&h(Some(48 * 3600), None)).is_none() && token_finding(&h(None, None)).is_none());
+        assert_eq!(said("vault:v2:x", &h(None, None)), Level::Off, "nothing could be read");
+        assert!(key_finding("vault:v1:x", &h(None, Some((3, 2)))).detail.contains("will not open the vault"));
     }
 
     #[test]

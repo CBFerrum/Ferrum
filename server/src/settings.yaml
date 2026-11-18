@@ -162,7 +162,8 @@
   path: settings.kms_transit
   doc: >-
     The OpenBao or Vault Transit key of the vault's `kms` slot: `https://host:8200/<mount>/<key>`. It signs in with the
-    token mounted at `/run/ferrum/kms.token`, or as the pod's service account (`kms_kubernetes_role`); its certificate
+    token mounted at `/run/ferrum/kms.token`, as an AppRole (`kms_approle_role_id`, with the secret id mounted at
+    `/run/ferrum/kms.secret-id`), or as the pod's service account (`kms_kubernetes_role`); its certificate
     is checked against `/run/ferrum/kms-ca.pem` too when that is there. The slot keeps the address it was made with,
     and the token goes nowhere else: changed here, the slot is not asked until it is made again
     (`ferrum task vault_add_slot kind:kms`). A move's source keys given as its ciphertext are unwrapped only at an address
@@ -183,6 +184,19 @@
   doc: >-
     The Vault token for `kms_transit`, when `BAO_TOKEN` is not set, through R1: give it as the file
     `/run/ferrum/kms.token` instead.
+- key: kms_approle_role_id
+  env: FERRUM_KMS_APPROLE_ROLE_ID
+  doc: >-
+    Signs in to Transit as an AppRole with this role id, when no token is mounted, for a server that is not in
+    Kubernetes. The secret id is never a setting: mount it as the file `/run/ferrum/kms.secret-id` (read at each sign-in,
+    so a replaced file is used with no restart), and let the role's secret id be used more than once, as each use signs in
+    again. The role's policy needs `encrypt` and `decrypt` on the Transit key, and `read` on it for the doctor's check of
+    its versions.
+- key: kms_approle_mount
+  env: FERRUM_KMS_APPROLE_MOUNT
+  default: approle
+  doc: >-
+    The AppRole auth mount for `kms_approle_role_id`.
 - key: kms_kubernetes_role
   env: FERRUM_KMS_KUBERNETES_ROLE
   doc: >-
