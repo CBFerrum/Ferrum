@@ -20,6 +20,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use dashmap::DashMap;
 use ferrum_kernel::ctx::RowScope;
+use ferrum_kernel::db::Heard;
 use ferrum_kernel::notify::LIVE_CHANNEL;
 use ferrum_kernel::outbox::Event;
 use ferrum_kernel::{Action, Ctx, Doc, EventSink, Kernel, row_scope, store};
@@ -170,9 +171,10 @@ impl LiveHub {
         }
     }
 
-    /// Delivers changes announced by any replica to the sockets held here. The listener only queues what it reads;
+    /// Delivers changes announced by any replica to the sockets held here. The listener only queues what it hears;
     /// one task delivers it, so reading a record never holds up the announcements behind it. A full queue drops the
-    /// announcement ([`dropped`]): a missed one only means a client refreshes later.
+    /// announcement ([`dropped`]), and so does a lost listening connection: a missed one only means a client refreshes
+    /// later.
     pub fn spawn_listener(self: &Arc<Self>, k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let (queue, mut queued) = mpsc::channel::<String>(QUEUE);
         let (hub, dk) = (self.clone(), k.clone());
@@ -183,29 +185,22 @@ impl LiveHub {
             }
         });
         tokio::spawn(async move {
+            let mut heard = tokio::select! { _ = shutdown.changed() => return, h = k.db.subscribe(&[LIVE_CHANNEL]) => h };
             loop {
-                let mut listener = match k.db.listen(LIVE_CHANNEL).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        tracing::warn!("live listener: {e}");
-                        tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
-                    }
-                };
-                loop {
-                    tokio::select! {
-                        _ = shutdown.changed() => return,
-                        n = ferrum_kernel::db::notification(&mut listener) => match n {
-                            Ok(n) => {
-                                if queue.try_send(n.payload().to_string()).is_err() {
-                                    DROPPED.fetch_add(1, Ordering::Relaxed);
-                                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    h = heard.recv() => match h {
+                        Some(Heard::Said { payload, .. }) => {
+                            if queue.try_send(payload).is_err() {
+                                DROPPED.fetch_add(1, Ordering::Relaxed);
                             }
-                            Err(e) => {
-                                tracing::warn!("live listener lost its connection: {e}");
-                                break;
-                            }
-                        },
-                    }
+                        }
+                        // What the listening task itself could not queue (never while this one keeps up).
+                        Some(Heard::Missed { dropped }) => {
+                            DROPPED.fetch_add(dropped, Ordering::Relaxed);
+                        }
+                        None => return,
+                    },
                 }
             }
         })

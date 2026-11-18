@@ -993,48 +993,38 @@ impl Kernel {
     /// Every replica drops cached users when another replica changes them (roles, scopes,
     /// deactivation, passwords, sign-out everywhere, permissions), so changes apply at once.
     pub fn spawn_user_listener(self: &std::sync::Arc<Self>, mut shutdown: tokio::sync::watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
+        use crate::db::Heard;
         let k = self.clone();
         tokio::spawn(async move {
+            // The vault's changes come the same way (crate::vault).
+            let mut heard = tokio::select! {
+                _ = shutdown.changed() => return,
+                h = k.db.subscribe(&[USERS_CHANNEL, crate::vault::CHANNEL]) => h,
+            };
             loop {
-                // The vault's changes come on the same connection (crate::vault): one held connection for both.
-                let listening = match k.db.listen(USERS_CHANNEL).await {
-                    Ok(mut l) => l.listen(crate::vault::CHANNEL).await.map(|_| l).map_err(Error::from),
-                    Err(e) => Err(e),
+                let h = tokio::select! {
+                    _ = shutdown.changed() => return,
+                    h = heard.recv() => h,
                 };
-                match listening {
-                    Ok(mut listener) => {
-                        // Anything may have changed while we were not listening.
+                match h {
+                    None => return,
+                    // Anything may have changed while nothing was heard.
+                    Some(Heard::Missed { .. }) => {
                         k.users.clear();
                         k.db.vault.cache.forget(None, None);
-                        loop {
-                            tokio::select! {
-                                _ = shutdown.changed() => return,
-                                msg = crate::db::notification(&mut listener) => match msg {
-                                    Ok(n) if n.channel() == crate::vault::CHANNEL => k.db.vault.heard(&k.db, n.payload()),
-                                    Ok(n) => match n.payload().split_once(':') {
-                                        Some((t, u)) => {
-                                            if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {
-                                                k.invalidate_user(t, u);
-                                            }
-                                        }
-                                        None => match n.payload().parse() {
-                                            Ok(t) => k.invalidate_tenant_users(t),
-                                            Err(_) => k.users.clear(),
-                                        },
-                                    },
-                                    Err(e) => {
-                                        tracing::warn!("user listener lost its connection: {e}");
-                                        break;
-                                    }
-                                },
+                    }
+                    Some(Heard::Said { channel, payload }) if channel == crate::vault::CHANNEL => k.db.vault.heard(&k.db, &payload),
+                    Some(Heard::Said { payload, .. }) => match payload.split_once(':') {
+                        Some((t, u)) => {
+                            if let (Ok(t), Ok(u)) = (t.parse(), u.parse()) {
+                                k.invalidate_user(t, u);
                             }
                         }
-                    }
-                    Err(e) => tracing::warn!("user listener cannot connect or subscribe: {e}"),
-                }
-                tokio::select! {
-                    _ = shutdown.changed() => return,
-                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        None => match payload.parse() {
+                            Ok(t) => k.invalidate_tenant_users(t),
+                            Err(_) => k.users.clear(),
+                        },
+                    },
                 }
             }
         })

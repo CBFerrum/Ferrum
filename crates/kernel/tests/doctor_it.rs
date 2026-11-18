@@ -249,7 +249,7 @@ async fn scenario() {
     // the locks on connections detached from the direct pool (2).
     let most = |p: &sqlx::PgPool| p.options().get_max_connections();
     let beside = most(&r.db.side) + most(&r.db.direct) + ferrum_kernel::db::DETACHED_LOCKS;
-    assert_eq!(most(&r.db.direct), 6, "5 listeners and 1 session lock: apps' upkeep holds none");
+    assert_eq!(most(&r.db.direct), 2, "1 listening connection and 1 session lock: apps' upkeep holds none");
     let budget = r.doctor(30).await.unwrap().into_iter().find(|f| f.check == "database.connections").unwrap();
     assert!(budget.detail.contains(&format!("30 per replica and {beside} beside its pool")), "{budget:?}");
     let _ = stop.send(true);

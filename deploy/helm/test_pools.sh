@@ -120,6 +120,8 @@ refuses 'zone "nope" is not in zones' "${small[@]}" --set-json 'pools=[{"name":"
 refuses 'names the gateway "private", which is not enabled' "${small[@]}" --set-json 'pools=[{"name":"web"},{"name":"b","routes":[{"gateway":"private","apps":["x"]}]}]'
 refuses 'defaultPool "nope" is not a pool' "${small[@]}" --set gateway.defaultPool=nope --set-json 'pools=[{"name":"web"}]'
 refuses "more than database.connectionLimit 380" --set-json 'pools=[{"name":"web"},{"name":"b"}]'
+# Past 32 connections the side pool is an eighth of the pool (crates/kernel/src/db.rs): 8 + 2 beside 64.
+refuses "web (9 + 1 in a rollout) x (64 + 10)" --set dbMaxConnections=64 --set-json 'pools=[{"name":"web"}]'
 # (2 + 1) x 36 twice + 20 = 236 fits (one more pod each in a rollout); the migrate Job's 36 more, with a limit of
 # 240, does not.
 tpl "${small[@]}" --set database.connectionLimit=240 --set-json 'pools=[{"name":"web"},{"name":"b"}]' > /dev/null
@@ -205,9 +207,10 @@ assert servers == ["ferrum", "ferrum-worker"], servers
 assert any(d["kind"] == "PodDisruptionBudget" and d["metadata"]["name"] == "ferrum-db-pooler" for d in docs)
 PY2
 refuses "maxPreparedStatements must be at least 1" --set database.pooler.enabled=true --set database.pooler.maxPreparedStatements=0 -f "$chart/presets/split.yaml"
-# (6 + 1) x 6 + (2 + 1) x 6 + 2 x 40 + 36 + 20 = 196 fits 200; one more instance does not.
-tpl --set database.pooler.enabled=true --set database.connectionLimit=200 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
-refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=200 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
+# (6 + 1) x 2 + (2 + 1) x 2 + 2 x 40 + 36 + 20 = 156 fits 160 (2 direct each: the connection that listens and a lock);
+# one more instance does not.
+tpl --set database.pooler.enabled=true --set database.connectionLimit=160 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade > /dev/null
+refuses "the pooler 3 x 40" --set database.pooler.enabled=true --set database.pooler.instances=3 --set database.connectionLimit=160 -f "$chart/presets/split.yaml" --set migrate.enabled=true --is-upgrade
 refuses "the pooler 2 x 45" --set database.pooler.enabled=true --set-json 'database.pooler.parameters={"reserve_pool_size":5}' --set database.pooler.directConnectionsPerReplica=40
 # Kept but not used: the server connects directly, and both count in the budget ((9 + 1) x 36 + 2 x 40 + 20 = 460).
 refuses "the pooler 2 x 40, ferrum (9 + 1 in a rollout) x (30 + 6)" --set database.pooler.enabled=true --set database.pooler.used=false

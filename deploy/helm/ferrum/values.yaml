@@ -28,8 +28,9 @@ names:
   domainProof: ""     # FERRUM_DOMAIN_PROOF: points, or record (a domain's DNS record as well); empty: record with a base domain
   dnsResolvers: ""    # FERRUM_DNS_RESOLVERS: DNS servers asked for that record, comma-separated; empty: the system's
 logLevel: info
-# Connections each replica may open (plus 6 beside them: 4 on the side, 2 of Loco's own). Autoscaling's
-# maxReplicas x (this + 6) must fit the database's connectionLimit.
+# Connections each replica may open (plus 6 beside them: 4 on the side, an eighth of this past 32, and 2 direct: the
+# connection that LISTENs and a session lock). Autoscaling's maxReplicas x (this + 6) must fit the database's
+# connectionLimit.
 dbMaxConnections: 30
 
 # Attachments must be shared by all replicas: object storage. The credentials are
@@ -311,9 +312,9 @@ database:
     maxClientConnections: 1000    # max_client_conn: each instance's connections from server replicas
     maxPreparedStatements: 200    # max_prepared_statements; must be at least 1: the server uses prepared statements
     parameters: {}                # other PgBouncer settings CloudNativePG allows
-    # Each replica's direct connections: its 5 listeners and 1 session lock at a time (apps' upkeep holds none: it
-    # works in the pool).
-    directConnectionsPerReplica: 6
+    # Each replica's direct connections: the one that LISTENs on every channel and 1 session lock at a time (apps'
+    # upkeep holds none: it works in the pool). scripts/check_manifests.py fails when the code opens another number.
+    directConnectionsPerReplica: 2
     resources:
       requests: {cpu: 100m, memory: 64Mi}
       limits: {memory: 256Mi}

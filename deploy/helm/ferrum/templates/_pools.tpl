@@ -75,8 +75,8 @@ Call with the root context: include "ferrum.pools" . | fromJson
 {{- end -}}
 {{- end -}}
 {{- /* The connection budget: every pool at its most replicas, the migrate Job, and what else uses the role
-(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). Each replica opens its pool and 6 beside
-it (BESIDE in scripts/check_manifests.py). With the pooler, each replica
+(scripts/check_manifests.py: OTHERS), within the role's limit (database.yaml). Each replica opens its pool and what
+ferrum.beside says beside it (6 with a pool of 30 or fewer). With the pooler, each replica
 counts only its direct connections and the pooler its own. Each pool counts its most replicas plus the pods a rollout
 adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- $pl := $v.database.pooler -}}
@@ -98,17 +98,20 @@ adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- $need = add $need (mul $r (int $pl.directConnectionsPerReplica)) -}}
 {{- $parts = append $parts (printf "%s (%d + %d in a rollout) x %d direct" (.name | default "ferrum") $m $s (int $pl.directConnectionsPerReplica)) -}}
 {{- else -}}
-{{- $need = add $need (mul $r (add (int .dbMaxConnections) 6)) -}}
-{{- $parts = append $parts (printf "%s (%d + %d in a rollout) x (%d + 6)" (.name | default "ferrum") $m $s (int .dbMaxConnections)) -}}
+{{- $b := int (include "ferrum.beside" .dbMaxConnections) -}}
+{{- $need = add $need (mul $r (add (int .dbMaxConnections) $b)) -}}
+{{- $parts = append $parts (printf "%s (%d + %d in a rollout) x (%d + %d)" (.name | default "ferrum") $m $s (int .dbMaxConnections) $b) -}}
 {{- end -}}
 {{- end -}}
+{{- /* A task (the migrate and settings Jobs) opens the same pools and listens on nothing. */ -}}
+{{- $b := int (include "ferrum.beside" $v.dbMaxConnections) -}}
 {{- if eq (include "ferrum.migrateJob" .) "true" -}}
-{{- $need = add $need (add (int $v.dbMaxConnections) 6) -}}
-{{- $parts = append $parts (printf "the migrate Job %d + 6" (int $v.dbMaxConnections)) -}}
+{{- $need = add $need (add (int $v.dbMaxConnections) $b) -}}
+{{- $parts = append $parts (printf "the migrate Job %d + %d" (int $v.dbMaxConnections) $b) -}}
 {{- end -}}
 {{- if eq (include "ferrum.settingsJob" .) "true" -}}
-{{- $need = add $need (add (int $v.dbMaxConnections) 6) -}}
-{{- $parts = append $parts (printf "the settings Job %d + 6" (int $v.dbMaxConnections)) -}}
+{{- $need = add $need (add (int $v.dbMaxConnections) $b) -}}
+{{- $parts = append $parts (printf "the settings Job %d + %d" (int $v.dbMaxConnections) $b) -}}
 {{- end -}}
 {{- if gt (int $need) (int $v.database.connectionLimit) -}}
 {{- fail (printf "the pools may open %d database connections (%s, and 20 for other users of the role), more than database.connectionLimit %d: lower maxReplicas or dbMaxConnections%s" $need (join ", " $parts) (int $v.database.connectionLimit) (ternary ", or the pooler's instances or poolSize" "" (and $pl.enabled true))) -}}
@@ -116,6 +119,12 @@ adds (ferrum.maxSurge). Checked with pools or the pooler on. */ -}}
 {{- end -}}
 {{- toJson (dict "pools" $out) -}}
 {{- end -}}
+
+{{/* What a replica opens beside its pool of `.` connections: the side pool, an eighth of the pool and at least 4
+(side_connections in crates/kernel/src/db.rs), and the direct pool's 2 (LISTENERS + DIRECT_LOCKS there: the one
+connection that LISTENs on every channel, and one session lock). scripts/check_manifests.py fails when this line no
+longer says what the code opens. */}}
+{{- define "ferrum.beside" -}}{{ add (max 4 (div (add (int .) 7) 8)) 2 }}{{- end -}}
 
 {{/* A selector for every server pod, whatever its pool. Call with the root context. */}}
 {{- define "ferrum.serverPods" -}}

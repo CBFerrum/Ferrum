@@ -31,6 +31,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use dashmap::DashMap;
 use ferrum_kernel::coedit::{self, CHANNEL, MAX_DOC, apply_stored, new_doc, plain_text};
+use ferrum_kernel::db::Heard;
 use ferrum_kernel::{Ctx, DocAccess, DocHost, Error, Kernel, Result};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -200,29 +201,20 @@ impl Docs {
 
     fn listen(self: Arc<Self>, k: Arc<Kernel>, mut shutdown: watch::Receiver<bool>) -> JoinHandle<()> {
         tokio::spawn(async move {
+            let mut heard = tokio::select! { _ = shutdown.changed() => return, h = k.db.subscribe(&[CHANNEL]) => h };
             loop {
-                let mut listener = match k.db.listen(CHANNEL).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        tracing::warn!("coedit listener: {e}");
-                        tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(Duration::from_secs(2)) => continue }
-                    }
-                };
-                // Changes announced while nobody listened are read now.
-                for room in self.all() {
-                    room.wake(&k);
-                }
-                loop {
-                    tokio::select! {
-                        _ = shutdown.changed() => return,
-                        n = ferrum_kernel::db::notification(&mut listener) => match n {
-                            Ok(n) => self.on_notify(&k, n.payload()),
-                            Err(e) => {
-                                tracing::warn!("coedit listener lost its connection: {e}");
-                                break;
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    h = heard.recv() => match h {
+                        Some(Heard::Said { payload, .. }) => self.on_notify(&k, &payload),
+                        // Changes announced while nothing was heard are read now.
+                        Some(Heard::Missed { .. }) => {
+                            for room in self.all() {
+                                room.wake(&k);
                             }
-                        },
-                    }
+                        }
+                        None => return,
+                    },
                 }
             }
         })

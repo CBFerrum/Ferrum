@@ -7,6 +7,7 @@
 //! physical effect goes through the command ledger (`ferrum-ops`).
 
 use dashmap::DashMap;
+use ferrum_kernel::db::Heard;
 use ferrum_kernel::{Db, Error, Result};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -202,29 +203,20 @@ impl SocketHub {
         Ok(Sent::Published)
     }
 
-    /// Delivers messages that other replicas published for sockets held here.
+    /// Delivers messages that other replicas published for sockets held here. One published while this replica could not
+    /// hear ([`Heard::Missed`]) is lost: delivery to other replicas is best effort.
     pub fn spawn_listener(self: &Arc<Self>, db: Db, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let hub = self.clone();
         tokio::spawn(async move {
+            let mut heard = tokio::select! { _ = shutdown.changed() => return, h = db.subscribe(&[CHANNEL]) => h };
             loop {
-                let mut listener = match db.listen(CHANNEL).await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        tracing::warn!("socket listener: {e}");
-                        tokio::select! { _ = shutdown.changed() => return, _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => continue }
-                    }
-                };
-                loop {
-                    tokio::select! {
-                        _ = shutdown.changed() => return,
-                        n = ferrum_kernel::db::notification(&mut listener) => match n {
-                            Ok(n) => hub.on_notification(n.payload()),
-                            Err(e) => {
-                                tracing::warn!("socket listener lost its connection: {e}");
-                                break;
-                            }
-                        },
-                    }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    h = heard.recv() => match h {
+                        Some(Heard::Said { payload, .. }) => hub.on_notification(&payload),
+                        Some(Heard::Missed { .. }) => {}
+                        None => return,
+                    },
                 }
             }
         })
