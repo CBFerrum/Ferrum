@@ -765,6 +765,12 @@ the operators' install from one has not run on a cluster without internet.
   sync's lock the same five minutes. A release that adds an index to every entity makes the first start after it take
   a while on large tables. What cannot be built that way, an exclusion constraint added to an existing table, holds the
   table while it checks the rows.
+* **Approvals by administrators wait a week after the upgrade that brings them.** An approval step whose approvers are
+  "the workspace's administrators" counts only people who have been administrators for seven days
+  ([BD-83](builder/decisions.md#bd-83-who-is-acting-the-calling-app-how-each-context-was-made-approvals-at-screens)).
+  The upgrade cannot know since when each existing administrator has been one, so it records the time it runs: for
+  the seven days after upgrading, nobody counts on such a step, and what waits on one (Payments' processors, routing
+  and reconciling) cannot be approved until then. Other approvals are not affected.
 * Roll forward with the image tag (`kubectl -n ferrum set image deploy/ferrum ferrum=<image>`);
   `maxUnavailable: 0` keeps capacity during the rollout.
 * Rolling back the image is safe within the two-version window (*Rolling back and the two-version window*, below). If a release notes a data migration, take an

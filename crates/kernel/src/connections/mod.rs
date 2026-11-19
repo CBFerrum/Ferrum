@@ -1793,7 +1793,7 @@ impl Kernel {
         };
         let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
         // A refusal the description says means "it already exists" (BD-84).
-        let exists = matches!(&answered, Ok(a) if !(worked(a.status) && !holds(&more.refused_if, a)) && holds(&more.exists_if, a));
+        let exists = matches!(&answered, Ok(a) if (!worked(a.status) || holds(&more.refused_if, a)) && holds(&more.exists_if, a));
         let (outcome, status, row_outcome) = match answered {
             Ok(a) if worked(a.status) && !holds(&more.refused_if, &a) => {
                 let status = a.status;

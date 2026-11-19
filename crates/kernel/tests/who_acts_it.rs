@@ -5,19 +5,75 @@
 //! make a screen is decided by the token's claims in `server/src/extract.rs` (`screens_are_decided_by_claims`), and
 //! `scripts/check_contexts.py` holds that no other code makes one. What an app's call names: `app_uses_it.rs`.
 
+use async_trait::async_trait;
+use ferrum_kernel::capability::Invocation;
 use ferrum_kernel::controls::Proof;
 use ferrum_kernel::ctx::Egress;
 use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
-use ferrum_kernel::{Ctx, Error, KernelSettings, Made};
-use ferrum_testkit::{Kit, database, obj, run, uid};
+use ferrum_kernel::{Ctx, Doc, DocHook, Error, HookCtx, HookRegistry, Made, automation};
+use ferrum_meta::{MetaError, Package};
+use ferrum_testkit::{App, Kit, database, obj, run, uid};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const PACKAGE: &str = "package: till\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Cashier\n    permissions:\n      - {entity: Payout, read: true, write: true, create: true}\n\
+const PACKAGE: &str = "package: till\nversion: 0.1.0\ndepends: [core]\nuses:\n  - {capability: till.payout.stamp, version: '^0.1'}\nroles:\n  - name: Cashier\n    permissions:\n      - {entity: Payout, read: true, write: true, create: true}\n      - {entity: Note, read: true, create: true}\n\
 approvals:\n  - entity: Payout\n    on: {action: release}\n    policy: {steps: [{label: A second administrator, approvers: {administrators: true}}], people_at_screens: true}\n";
-const ENTITIES: &str = "name: Payout\nlabel: Payout\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n\
-actions:\n  - {name: release, label: Release, permission: write}\n";
+const ENTITIES: &str = r#"
+name: Payout
+label: Payout
+kind: master
+title_field: title
+fields:
+  - {name: title, type: data, required: true}
+actions:
+  - {name: release, label: Release, permission: write}
+  - name: stamp
+    label: Stamp
+    permission: write
+    hidden: true
+    contract: {completion: A note says it was stamped}
+    effects: [{type: create_document, entity: Note, values: {title: "'stamped'"}}]
+"#;
+const NOTE: &str = "name: Note\nlabel: Note\nkind: master\ntitle_field: title\nfields:\n  - {name: title, type: data, required: true}\n";
+
+/// What the till's code saw acting: (where, how the context was made, its app, whether at a screen).
+static SEEN: std::sync::Mutex<Vec<(String, Made, Option<String>, bool)>> = std::sync::Mutex::new(Vec::new());
+
+fn seen(at: &str) -> Vec<(Made, Option<String>, bool)> {
+    SEEN.lock().unwrap().iter().filter(|s| s.0 == at).map(|s| (s.1, s.2.clone(), s.3)).collect()
+}
+
+/// Records the context of a note's save (titled after what made it) and of a payout's release.
+struct Watch;
+
+#[async_trait]
+impl DocHook for Watch {
+    async fn validate(&self, hc: &mut HookCtx<'_>, doc: &Doc) -> ferrum_kernel::Result<()> {
+        if let Some(title) = doc.get("title").and_then(Value::as_str).filter(|_| hc.entity.def.name == "Note") {
+            SEEN.lock().unwrap().push((format!("note:{title}"), hc.ctx.made, hc.ctx.app.clone(), hc.ctx.at_screen()));
+        }
+        Ok(())
+    }
+
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, _: &Doc, _: &Value) -> ferrum_kernel::Result<Option<Value>> {
+        SEEN.lock().unwrap().push((format!("action:{name}"), hc.ctx.made, hc.ctx.app.clone(), hc.ctx.at_screen()));
+        Ok(None)
+    }
+}
+
+fn till_packages() -> Result<Vec<Package>, MetaError> {
+    let files: BTreeMap<String, String> = [("package.yaml", PACKAGE), ("entities/payout.yaml", ENTITIES), ("entities/note.yaml", NOTE)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    Ok(vec![ferrum_meta::catalog::load_package_files(&files)?])
+}
+
+fn till_register(h: &mut HookRegistry) {
+    h.register("Payout", Arc::new(Watch));
+    h.register("Note", Arc::new(Watch));
+}
 
 #[test]
 fn who_acts() {
@@ -31,10 +87,8 @@ async fn request(kit: &Kit, of: &Ctx, screen: bool) -> Ctx {
 }
 
 async fn scenario() {
-    let files: BTreeMap<String, String> =
-        [("package.yaml", PACKAGE), ("entities/payout.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    let till = ferrum_meta::catalog::load_package_files(&files).expect("package");
-    let kit = Kit::boot_with(&database("FERRUM_TEST_DATABASE_URL"), &[], vec![till], KernelSettings::default()).await;
+    let till = App { id: "till", packages: till_packages, register: till_register, reports: Vec::new };
+    let kit = Kit::boot(&database("FERRUM_TEST_DATABASE_URL"), &[till]).await;
     let ws = kit.workspace("till", &["till"], Value::Null).await;
     let k = kit.k.clone();
     let (asha, ben) = (ws.user("asha@till.test", &["Cashier"]).await, ws.user("ben@till.test", &["Cashier"]).await);
@@ -182,8 +236,10 @@ async fn scenario() {
         };
         let package = PACKAGE.replace("{steps: [{label: A second administrator, approvers: {administrators: true}}], people_at_screens: true}", &policy);
         assert_ne!(package, PACKAGE);
-        let files: BTreeMap<String, String> =
-            [("package.yaml", package.as_str()), ("entities/payout.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let files: BTreeMap<String, String> = [("package.yaml", package.as_str()), ("entities/payout.yaml", ENTITIES), ("entities/note.yaml", NOTE)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         let core = ferrum_meta::catalog::load_package_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).unwrap();
         let refused = match ferrum_meta::catalog::load_package_files(&files) {
             Err(e) => Some(e.to_string()),
@@ -191,5 +247,44 @@ async fn scenario() {
         };
         assert!(refused.as_deref().is_some_and(|e| e.contains("in person")), "{extra}: {refused:?}");
     }
+    // ── an_approved_action_completes_made_approval: the release Carla approved ran as Asha, made Approval ──
+    let released = seen("action:release");
+    assert!(released.contains(&(Made::Approval, None, false)), "completed as the requester, not at a screen: {released:?}");
+
+    // ── an_automation_is_made_automation_even_in_a_zone ──
+    automation::save(
+        &k,
+        &ws.admin,
+        &obj(json!({"name": "note it", "entity": "Payout", "event": "created",
+        "actions": [{"type": "create_document", "entity": "Note", "values": {"title": "'by automation'"}}]})),
+    )
+    .await
+    .unwrap();
+    payout("Change for the till").await;
+    ws.drain().await;
+    let s = seen("note:by automation");
+    assert!(!s.is_empty() && s.iter().all(|x| *x == (Made::Automation, None, false)), "{}: {s:?}", "an automation, never a screen");
+
+    // ── effects_inside_an_apps_call_name_no_app: the till's call of its own stamp; the effect's note names no app ──
+    let stamped = payout("Stamp me").await;
+    let mut tx = k.db.tenant_tx(ws.tenant).await.unwrap();
+    k.call_tx(&kit.vault("till"), &asha, &mut tx, &Invocation::new("till.payout.stamp", json!({"id": stamped, "params": {}})).key("stamp-1"))
+        .await
+        .expect("stamped");
+    tx.commit().await.unwrap();
+    let s = seen("note:stamped");
+    assert!(!s.is_empty() && s.iter().all(|x| *x == (Made::System, None, false)), "{}: {s:?}", "the effect runs as the system, not as the app");
+
+    // ── a_mapping_run_as_the_system_is_not_at_a_screen ──
+    let desc = json!({"test": true, "inbound": {"verify": {"type": "token", "header": "x-token", "secret": "token"},
+        "map": {"entity": "Note", "by": {"title": "item.title"}, "as": "system"}}});
+    let input: ferrum_kernel::connections::ConnectionInput =
+        serde_json::from_value(json!({"name": "feed", "label": "Feed", "description": desc, "secrets": {"token": "tok-12345678"}, "enabled": true})).unwrap();
+    let feed = k.save_connection_def(&ws.admin, None, &input).await.unwrap();
+    let headers = BTreeMap::from([("x-token".to_string(), "tok-12345678".to_string())]);
+    k.connection_inbound(feed, &headers, &BTreeMap::new(), br#"{"title": "by mapping"}"#).await.unwrap();
+    while k.run_jobs_once(10).await.unwrap() > 0 {}
+    let s = seen("note:by mapping");
+    assert!(!s.is_empty() && s.iter().all(|x| *x == (Made::System, None, false)), "{}: {s:?}", "a mapping run as the system");
     let _ = ben;
 }
