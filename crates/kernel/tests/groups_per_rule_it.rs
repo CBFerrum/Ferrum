@@ -44,6 +44,11 @@ roles:
   - name: Editor
     permissions:
       - {entity: GpEmployee, read: true, write: true}
+  - name: Client
+    permissions:
+      - {entity: GpEmployee, read: true, write: true}
+      # A line's column hidden through the line's own entity: a rule that grants nothing, only hides (BD-40).
+      - {entity: GpGoal, hide: [weight]}
 "#;
 
 const ENTITIES: &str = r#"
@@ -65,6 +70,7 @@ const ENTITIES: &str = r#"
   fields:
     - {name: goal, type: data}
     - {name: review_note, type: data, perm_group: review}
+    - {name: weight, type: data}
 "#;
 
 fn catalog() -> Catalog {
@@ -131,7 +137,7 @@ async fn world() -> W {
     let admin = k.load_ctx(tenant, s.user, None, "it".into()).await.unwrap();
     let employee = |name: &str, dept: &str, email: &str| {
         obj(json!({"full_name": name, "department": dept, "user_email": email, "bank_account": format!("BANK-{name}"),
-            "id_number": format!("ID-{name}"), "personal_phone": "+1 555 0100", "goals": [{"goal": "ship", "review_note": format!("REVIEW-{name}")}]}))
+            "id_number": format!("ID-{name}"), "personal_phone": "+1 555 0100", "goals": [{"goal": "ship", "review_note": format!("REVIEW-{name}"), "weight": format!("W-{name}")}]}))
     };
     let asha = k.insert(&admin, "GpEmployee", employee("Asha", "sales", "asha@gp.test")).await.unwrap();
     let bo = k.insert(&admin, "GpEmployee", employee("Bo", "support", "bo@gp.test")).await.unwrap();
@@ -333,5 +339,53 @@ fn a_save_of_lines_by_someone_who_does_not_see_a_line_s_field_keeps_each_line_s_
             vec![(json!("one"), json!("R1")), (json!("two, sharper"), json!("R2")), (json!("four"), Value::Null)],
             "each kept line keeps its value; the new one starts empty"
         );
+    });
+}
+
+/// The keys of each of `d`'s goals.
+fn goal_keys(d: &Doc) -> Vec<BTreeSet<String>> {
+    d["goals"].as_array().unwrap().iter().map(|g| g.as_object().unwrap().keys().cloned().collect()).collect()
+}
+
+#[test]
+fn a_line_s_hidden_field_is_absent_as_a_record_s_is() {
+    go(|| async {
+        let w = world().await;
+        let client = w.person("cleo@gp.test", &["Client"]).await;
+        // One read, a page of the records, and what a save answers: no line carries the key of a field it hides,
+        // whether a rule hides it (weight) or its group is not granted (review_note).
+        let read = w.read(&client, w.bo).await;
+        let saved = w.k.update(&client, "GpEmployee", w.bo, obj(json!({"department": "support desk"})), None).await.unwrap();
+        let page = w.k.list(&client, "GpEmployee", &ListQuery { fields: Some(vec!["full_name".into(), "goals".into()]), ..Default::default() }).await;
+        let mut docs = vec![("get", read), ("update", saved)];
+        if let Ok(page) = page {
+            docs.extend(page.rows.into_iter().filter(|r| r.contains_key("goals")).map(|r| ("list", r)));
+        }
+        for (path, d) in docs {
+            for keys in goal_keys(&d) {
+                assert!(!keys.contains("weight") && !keys.contains("review_note"), "{path}: a hidden line field's key is left out: {keys:?}");
+                assert!(keys.contains("goal"), "{path}: the rest of the line shows: {keys:?}");
+            }
+            let text = serde_json::to_string(&d).unwrap();
+            assert!(!text.contains("W-Bo") && !text.contains("REVIEW-Bo"), "{path}: {text}");
+        }
+    });
+}
+
+#[test]
+fn a_record_read_and_saved_back_unchanged_by_someone_who_does_not_see_a_line_s_field_is_accepted() {
+    go(|| async {
+        let w = world().await;
+        let client = w.person("cleo@gp.test", &["Client"]).await;
+        let read = w.read(&client, w.bo).await;
+        w.k.update(&client, "GpEmployee", w.bo, as_sent(&read), None).await.expect("the record sent back as read");
+        let now = w.read(&w.admin, w.bo).await;
+        assert_eq!((now["goals"][0]["weight"].clone(), now["goals"][0]["review_note"].clone()), (json!("W-Bo"), json!("REVIEW-Bo")), "{now:?}");
+        // Naming a hidden line field, even as empty, on a line that exists is refused: a read never sends it.
+        let mut sent = as_sent(&w.read(&client, w.bo).await);
+        sent["goals"][0].as_object_mut().unwrap().insert("weight".into(), Value::Null);
+        let r = w.k.update(&client, "GpEmployee", w.bo, sent, None).await;
+        assert!(matches!(r, Err(Error::Validation(_))), "{r:?}");
+        assert_eq!(w.read(&w.admin, w.bo).await["goals"][0]["weight"], json!("W-Bo"));
     });
 }

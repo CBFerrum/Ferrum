@@ -1071,8 +1071,38 @@ pub async fn record_hidden(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc) -
             }
         }
     }
+    // A line entity's own rules' hides (BD-40: `{entity: Line, hide: [...]}`) hold on every line, whichever rule
+    // reaches the record.
+    for l in line_entities(&ctx.schema, ent) {
+        if let Some(own) = ctx.perms.write_hidden(&l) {
+            out.lines.entry(l).or_default().extend(own.iter().cloned());
+        }
+    }
     out.lines.retain(|_, h| !h.is_empty());
     Ok(out)
+}
+
+/// Whether one record of `ent` may hide something from `ctx` ([`record_hidden`] has anything to say): a field, or a
+/// field of its lines at any depth.
+pub fn may_hide(ctx: &Ctx, ent: &EffEntity) -> bool {
+    !ctx.perms.admin
+        && (ctx.perms.hidden(&ent.def.name).is_some()
+            || ctx.perms.hides_lines(&ent.def.name)
+            || line_entities(&ctx.schema, ent).iter().any(|l| ctx.perms.write_hidden(l).is_some()))
+}
+
+/// The entities of `ent`'s lines, at every depth.
+pub fn line_entities(schema: &ferrum_meta::Schema, ent: &EffEntity) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut todo: Vec<String> = ent.children.values().map(|c| c.entity.clone()).collect();
+    while let Some(l) = todo.pop() {
+        if out.contains(&l) {
+            continue;
+        }
+        todo.extend(schema.entity(&l).map(|e| e.children.values().map(|c| c.entity.clone()).collect::<Vec<_>>()).unwrap_or_default());
+        out.push(l);
+    }
+    out
 }
 
 /// What one record does not show its reader ([`record_hidden`]): its fields, and its lines' per line entity.
