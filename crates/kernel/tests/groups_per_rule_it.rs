@@ -41,6 +41,9 @@ roles:
   - name: Snoop
     permissions:
       - {entity: GpEmployee, read_groups: [bank]}
+  - name: Editor
+    permissions:
+      - {entity: GpEmployee, read: true, write: true}
 "#;
 
 const ENTITIES: &str = r#"
@@ -277,5 +280,58 @@ fn administrators_are_told_of_roles_whose_groups_narrow() {
         assert!(said.iter().any(|(t, b)| t.contains("Snoop") && b.contains("show nothing")), "{said:?}");
         // Once: the next round tells nobody again.
         assert_eq!(w.k.tell_of_narrowed_groups().await.unwrap(), 0);
+    });
+}
+
+/// What a form sends back: the record as its writer read it, without the system's own keys.
+fn as_sent(read: &Doc) -> Doc {
+    let system = ["id", "version", "docstatus", "created_at", "updated_at", "created_by", "updated_by", "number", "amended_from", "workflow_state", "_titles"];
+    read.iter().filter(|(k, _)| !system.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
+#[test]
+fn a_save_by_someone_who_does_not_see_a_field_keeps_its_value() {
+    go(|| async {
+        let w = world().await;
+        let asha = w.person("asha@gp.test", &["HrUser", "SelfService"]).await;
+        // A patch of other fields.
+        w.k.update(&asha, "GpEmployee", w.bo, obj(json!({"id_number": "ID-Bo-2"})), None).await.unwrap();
+        assert_eq!(w.read(&w.admin, w.bo).await["bank_account"], json!("BANK-Bo"));
+        // A whole save, as a form sends what it read.
+        let read = w.read(&asha, w.bo).await;
+        assert!(!shows(&read, "bank_account"));
+        let mut sent = as_sent(&read);
+        sent.insert("department".into(), json!("support desk"));
+        w.k.update(&asha, "GpEmployee", w.bo, sent, None).await.unwrap();
+        let now = w.read(&w.admin, w.bo).await;
+        assert_eq!((now["bank_account"].clone(), now["department"].clone()), (json!("BANK-Bo"), json!("support desk")), "{now:?}");
+    });
+}
+
+#[test]
+fn a_save_of_lines_by_someone_who_does_not_see_a_line_s_field_keeps_each_line_s_value() {
+    go(|| async {
+        let w = world().await;
+        let goals = json!([{"goal": "one", "review_note": "R1"}, {"goal": "two", "review_note": "R2"}, {"goal": "three", "review_note": "R3"}]);
+        w.k.update(&w.admin, "GpEmployee", w.bo, obj(json!({"goals": goals})), None).await.unwrap();
+        // The editor reads every employee, and no role of theirs gives `review` on goals.
+        let editor = w.person("ed@gp.test", &["Editor"]).await;
+        let read = w.read(&editor, w.bo).await;
+        assert!(!goal_shows(&read), "{read:?}");
+        let mut lines: Vec<Value> = read["goals"].as_array().unwrap().clone();
+        // Kept as read, one edited, one removed, one added.
+        lines[1]["goal"] = json!("two, sharper");
+        lines.remove(2);
+        lines.push(json!({"goal": "four"}));
+        let mut sent = as_sent(&read);
+        sent.insert("goals".into(), Value::Array(lines));
+        w.k.update(&editor, "GpEmployee", w.bo, sent, None).await.unwrap();
+        let now = w.read(&w.admin, w.bo).await;
+        let got: Vec<(Value, Value)> = now["goals"].as_array().unwrap().iter().map(|g| (g["goal"].clone(), g["review_note"].clone())).collect();
+        assert_eq!(
+            got,
+            vec![(json!("one"), json!("R1")), (json!("two, sharper"), json!("R2")), (json!("four"), Value::Null)],
+            "each kept line keeps its value; the new one starts empty"
+        );
     });
 }
