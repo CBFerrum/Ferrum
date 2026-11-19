@@ -1,12 +1,17 @@
 //! Resources and prompts.
 
 use crate::Fail;
-use crate::tools::{arg, entity_of, overview};
+use crate::tools::{entity_of, overview};
 use ferrum_kernel::describe::{describe, entity_schema};
 use ferrum_kernel::{Access, Action, Ctx, Kernel};
 use ferrum_meta::EntityKind;
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// A parameter a resource or prompt request needs (a protocol error when it is not there).
+fn param<'a>(params: &'a Value, name: &str) -> Result<&'a str, Fail> {
+    params.get(name).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).ok_or_else(|| Fail::Rpc(-32602, format!("argument '{name}' is required")))
+}
 
 pub(crate) fn resources(ctx: &Ctx) -> Value {
     let mut list = vec![json!({"uri": "ferrum://overview", "name": "Overview", "mimeType": "application/json",
@@ -21,7 +26,7 @@ pub(crate) fn resources(ctx: &Ctx) -> Value {
 }
 
 pub(crate) async fn read_resource(k: &Kernel, ctx: &Ctx, params: &Value) -> Result<Value, Fail> {
-    let uri = arg(params, "uri")?;
+    let uri = param(params, "uri")?;
     let rest = uri.strip_prefix("ferrum://").ok_or_else(|| Fail::Rpc(-32602, format!("unknown resource {uri}")))?;
     let parts: Vec<&str> = rest.split('/').collect();
     let value = match parts.as_slice() {
@@ -76,7 +81,7 @@ pub(crate) fn prompts() -> Value {
 }
 
 pub(crate) fn get_prompt(params: &Value) -> Result<Value, Fail> {
-    let name = arg(params, "name")?;
+    let name = param(params, "name")?;
     let (_, description, args, template) = PROMPTS.iter().find(|p| p.0 == name).ok_or_else(|| Fail::Rpc(-32602, format!("unknown prompt {name}")))?;
     let given = params.get("arguments").and_then(Value::as_object).cloned().unwrap_or_default();
     let mut text = template.to_string();

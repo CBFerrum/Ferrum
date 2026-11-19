@@ -212,6 +212,9 @@ pub(crate) async fn refuse_if(k: &Kernel, ctx: &Ctx, tx: &mut crate::db::Tx, ent
 pub(crate) fn system(ctx: &Ctx) -> Ctx {
     Ctx {
         is_system: true,
+        made: crate::ctx::Made::System,
+        // An effect inside an app's call never acts as that app (BD-83).
+        app: None,
         is_admin: true,
         egress: None,
         scopes: BTreeMap::new(),

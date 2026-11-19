@@ -149,6 +149,17 @@ let receipt = k.call_tx(&handle, ctx, tx, &ask.key(format!("deposit:{booking}"))
 
 The handle is what proves which app calls: keep it inside the app's crate (`pub(crate)`), never handed to another.
 
+## Who is acting
+
+A decision only a person makes (approving a refund, settling a payment by hand) asks `ctx.at_screen()`: true only for a
+person at a screen in this request (the browser's session cookie, or the web app's page token bound to it), never for an
+automation, an API key, a job, an approval completing later, the assistant, another app's call or the system
+([BD-83](builder/decisions.md#bd-83-who-is-acting-the-calling-app-how-each-context-was-made-approvals-at-screens)).
+`ctx.made` says what made the context; `ctx.app` names the app whose `call_tx` this is (none inside its effects);
+`ctx.stepped_up_within(600)` asks for a fresh step-up as well. Code that elevates a context uses `Ctx::elevated` or
+`ferrum_domain::util::elevated`, never `is_system = true` alone: `scripts/check_contexts.py` refuses that, in every app.
+An approval policy with `people_at_screens: true` refuses asking and deciding by anyone not at a screen.
+
 ## Files an app keeps for its own work
 
 What an app keeps for its own work in the platform's file store (built artifacts, databases' backups, a customer's

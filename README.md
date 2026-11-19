@@ -419,10 +419,10 @@ entity, action, workflow and report of every installed package, customizations i
 |---|---|
 | 🧭 Discover | `ferrum_overview`, `describe_entity` (with a JSON Schema) |
 | 🔎 Read | `search_records`, `get_record`, `run_report`, `get_audit_trail` |
-| ✏️ Write | `preview_record`, `create_record` (idempotent), `update_record`, `delete_record` |
+| ✏️ Write | `preview_record`, `create_record`, `update_record`, `delete_record` (each write through the gate, with a required idempotency key) |
 | 🔁 Lifecycle | `submit_record`, `cancel_record`, `amend_record`, `run_action`, `workflow_transition` |
 | 💬 Collaborate | `get_collaboration`, `add_comment`, `assign_record`, `my_assignments`, `set_tags` |
-| 🧱 Capabilities | `list_capabilities`, `invoke_capability` |
+| 🧱 Capabilities | `list_capabilities`, `describe_capability`, `invoke_capability` |
 | 🛠️ Administer | `customize_entity` (administrators) |
 
 Each call runs as the signed-in user with that user's permissions and lands in the audit trail;

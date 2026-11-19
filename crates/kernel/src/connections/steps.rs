@@ -524,7 +524,7 @@ impl Kernel {
         if changes {
             self.sending(conn, &step.operation, skey, true).await?;
         }
-        let (outcome, status, sent) = self.perform_full(ctx, conn, &step.operation, given, Some(skey), extra, about, Some(&digest)).await?;
+        let (outcome, status, sent, _) = self.perform_full(ctx, conn, &step.operation, given, Some(skey), extra, about, Some(&digest)).await?;
         // Not delivered, or the service said it did nothing (it refused, or asked to come back): free to send again.
         let not_done = !sent || status.is_some_and(|s| (400..500).contains(&s) || s == 503);
         if changes && (not_done || matches!(outcome, Outcome::Ok(..))) {
@@ -646,7 +646,7 @@ impl Kernel {
                         ask.insert(n.clone(), evaluate(e, &v)?);
                     }
                     let extra = Extra { now: Some(clock), ..Default::default() };
-                    let (outcome, status, _) = self.perform_full(ctx, conn, &of.operation, &Value::Object(ask), None, extra, about, None).await?;
+                    let (outcome, status, ..) = self.perform_full(ctx, conn, &of.operation, &Value::Object(ask), None, extra, about, None).await?;
                     let Outcome::Ok(r, _) = outcome else { return Ok(outcome) };
                     let held = match held_offset(&r["offset"]) {
                         // No offset and a plain success: the upload is complete, and this is its answer.

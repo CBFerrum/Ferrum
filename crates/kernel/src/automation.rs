@@ -893,7 +893,7 @@ async fn runner(
     zone: Option<&str>,
 ) -> std::result::Result<Ctx, String> {
     // A change made in a zone that limits staff to some apps sets going nothing that reaches past them (crate::zones).
-    let within = |ctx: Ctx| k.within_zone(ctx, zone).map_err(|e| e.to_string());
+    let within = |ctx: Ctx| k.within_zone(Ctx { made: crate::ctx::Made::Automation, ..ctx }, zone).map_err(|e| e.to_string());
     let Some(user) = made_by else {
         let mut ctx = Ctx::system(tenant, schema.clone());
         ctx.request_id = request_id;

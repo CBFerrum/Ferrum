@@ -2023,3 +2023,77 @@ Decided 18 November 2026.
   cross-origin`) sizes each `<iframe data-ferrum-embed>` on the outside page from messages whose source is that frame's
   window and whose origin is its page's, within 80 to 20 000 px, and fires `ferrum:done` on it. Nothing else leaves
   the frame.
+
+## BD-81. Inbound verification for payment providers
+
+Decided 19 November 2026 (S1-P0a, `gapclose/design/S1-payments.md` 2.20).
+
+* **The gap**: payment providers sign their notices in ways BD-30 and BD-49 did not take: Stripe puts the timestamp
+  and several signatures in one header (`t=…,v1=…`), Hyperswitch signs with HMAC-SHA512, and Mollie's and PayPal's
+  notices carry no signature at all.
+* **What a description says**: `algorithm: sha512` on a signature; `parts: {timestamp, signature}` for one header of
+  `key=value` pairs (any signature value that verifies passes; the timestamp is checked against the window); and
+  `{type: query, param, secret, repeats_after_secs?}`: a secret both sides hold in the inbound address's query, compared
+  in constant time and refused alike when wrong or missing. Request logs keep no query.
+* **Repeats**: a query secret signs nothing, so the same notice sent again would be a replay forever;
+  `repeats_after_secs` (10 to 3600, on the `query` verification) takes the same body again once that window has passed
+  (the delivery id is `sha256(body):{now / window}` when no delivery id is named). It sits on the `query` variant, not
+  on `Inbound`, so that apps building an `Inbound` keep compiling.
+* **The address in templates**: `connection.inbound_url`, with the query secret for a `query` connection, masked in
+  the call log and captures as every secret value is. A payment app never sees the token.
+
+## BD-82. Connections only apps call, an answer to class, a hold
+
+Decided 19 November 2026 (S1-P0a).
+
+* **Only its apps**: `exclusive: true` admits only the apps the connection lists; the system, administrators and
+  roles are refused (so no button, automation or administrator moves money past the app's checks), and an
+  administrator's *try* runs only operations that change nothing.
+* **An answer a money caller can class**: `connections::call_answer` gives whether a request left the server, the
+  status, the mapped result, whether to try later, and why not; only the platform's own failures are errors. A 409, a
+  5xx, a timeout and a 2xx not read as described all say `sent: true`, so the caller treats them as unknown, never as
+  refused; a refusal by the connection's checks or the address guard says `sent: false`. `call` is unchanged.
+* **A hold**: `connections::hold` / `release` (table `conn_hold`): deleting a connection an app holds is refused,
+  naming the app and its reason; turning it off stays possible, and its calls wait as not sent until it is on again.
+
+## BD-83. Who is acting: the calling app, how each context was made, approvals at screens
+
+Decided 19 November 2026 (S1-P0c, `gapclose/design/S1-payments.md` 2.21; shared with A2-A3).
+
+* **The gap**: nothing told a person pressing a button at a screen from an automation, an API key, the assistant, a
+  job, an approval completing later or another app's call: each was a `Ctx`, the system's included, so a "person
+  decides" guard (approving a refund, settling a payment by hand) could be passed by any of them.
+* **`Ctx.made`**: `Screen`, `Key`, `Automation`, `Job`, `Approval`, `Assistant`, `Agent`, `System`, set where each
+  context is made and nowhere else: `Kernel::request_ctx_as` (a screen or a key), the automation runner, `Job::creator`
+  and `Job::system`, `load_ctx`/`load_ctx_in` (queued work), an approved action completing, `Ctx::for_provider`,
+  `Ctx::system`, `actions::system`, `ferrum_domain::util::elevated`, an inbound mapping run as the system. A context
+  derived from another keeps its `made`; code setting `is_system` sets `made = System` with it (`Ctx::elevated`).
+* **A screen, by claims**: the browser's session cookie (`sid`) and the web app's page token bound to it (`bsid`, with
+  neither `app` nor `client_id`). A bare bearer token, an app token, an OAuth token, an API key, SCIM, DAV and a socket
+  are not. `Sec-Fetch-Site` decides nothing. Only `request_ctx_as` makes one (`scripts/check_contexts.py` fails
+  otherwise, over the platform and every app).
+* **`Ctx.app`**: the calling app on the context `Kernel::call_tx` builds; none for a request, a job, the system and
+  every effect inside an app's call (`actions::system`), so an effect never acts as the app.
+* **`Ctx::at_screen()`**: made `Screen`, not the system, no app, not the assistant (and, with A2-A3's AG-6, no agent
+  on `Trace`). The one test of a decision only a person makes. `Ctx::stepped_up_within(seconds)` reads the browser
+  session's step-up for decisions that also need a fresh one.
+* **`people_at_screens: true`** on an approval policy: asking and deciding are each refused unless `at_screen()`; the
+  action it completes runs made `Approval`.
+* **`administrators: true`** on a step's approvers: the workspace's active administrators (members), a flag on a
+  person and not a role, so no role can name them. With `people_at_screens`, "a second administrator approves at a
+  screen" (Payments' processors, routing and reconciling).
+
+## BD-84. A refusal that means "it already exists"
+
+Decided 19 November 2026 (S1-P0a-2, `gapclose/design/S1-payments.md` 2.5.4, 2.20).
+
+* **The gap**: a service that makes objects under an id the caller chooses (Hyperswitch's `payment_id` and
+  `refund_id`) answers a second create with that id as an error (`HE_01`, at 400 or 422), not as the object. Read as a
+  refusal, a payment lost in a timeout and sent again would be taken as never made.
+* **What a description says**: `exists_if` on an operation, an expression over `answer`, `headers`, `status` and
+  `inputs` (compiled when the connection is saved), saying which refusals mean the object exists. It is matched on the
+  answer's code, not its status, since the same code comes at 400 and at 422.
+* **What callers get**: `connections::call_answer` answers such a refusal with `exists: true` (still `sent`, with its
+  status and words); the caller reads the object back by its id and applies what it finds. `call`, the `call` effect
+  and the gate still treat it as a refusal: only a money caller that reads back uses the class.
+

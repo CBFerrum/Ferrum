@@ -197,9 +197,15 @@ pub async fn callback_page(k: &Kernel, ctx: &Ctx, sid: Option<Uuid>, b: &Back) -
 }
 
 /// `POST /api/connections/inbound/{id}`: no session; the connection's description says how its caller proves itself.
-async fn inbound(State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap, body: Bytes) -> ApiResult<Response> {
+async fn inbound(
+    State(app): State<AppContext>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<BTreeMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    inbound_answer(&st.kernel, &st.public_limiter, &headers, id, &body).await
+    inbound_answer(&st.kernel, &st.public_limiter, &headers, &q, id, &body).await
 }
 
 /// `GET /api/connections/inbound/{id}?…`: a service's check before it delivers (BD-78): the challenge as plain text, or
@@ -216,10 +222,18 @@ async fn handshake(State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q)
 }
 
 /// What an inbound call is answered: every refusal the same 401, counted; one accepted, `{accepted: true}`.
-pub async fn inbound_answer(k: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, id: Uuid, body: &[u8]) -> ApiResult<Response> {
+/// `query`: the address's query parameters (a `Query` connection's secret is one; request logs keep no query).
+pub async fn inbound_answer(
+    k: &Kernel,
+    limiter: &RateLimiter,
+    headers: &HeaderMap,
+    query: &BTreeMap<String, String>,
+    id: Uuid,
+    body: &[u8],
+) -> ApiResult<Response> {
     limiter.check(&format!("{}|connections", client_ip(headers))).await?;
     let names: BTreeMap<String, String> = headers.iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
-    Ok(Json(k.connection_inbound(id, &names, body).await?).into_response())
+    Ok(Json(k.connection_inbound(id, &names, query, body).await?).into_response())
 }
 
 pub fn routes() -> Routes {
