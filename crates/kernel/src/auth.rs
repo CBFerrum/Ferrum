@@ -363,7 +363,17 @@ impl Kernel {
                 .bind(user)
                 .fetch_one(&mut *tx)
                 .await?;
-        if lately >= CODES_PER_HOUR {
+        // After five wrong codes for this address within the hour, the next code needs a solved guard (A11 D10): until the
+        // platform's guard is here (S4-P5) none is mailed. Wrong codes never lock the person: a stranger who knows the
+        // address cannot keep its owner out, only from more mail for a while.
+        let wrong: i64 = sqlx::query_scalar(
+            "select coalesce(sum(attempts), 0)::bigint from sign_in_code where tenant_id = $1 and user_id = $2 and created_at > now() - interval '1 hour'",
+        )
+        .bind(tenant)
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+        if lately >= CODES_PER_HOUR || wrong >= CODE_TRIES as i64 {
             tx.commit().await?;
             return Ok(());
         }
@@ -394,8 +404,9 @@ impl Kernel {
         Ok(())
     }
 
-    /// Signs a portal person in with the code [`Kernel::send_sign_in_code`] sent last. A code takes
-    /// five wrong tries; someone with an authenticator app still gives its code next.
+    /// Signs a portal person in with the code [`Kernel::send_sign_in_code`] sent last. A code takes five wrong tries; someone
+    /// with an authenticator app still gives its code next. Every failure answers the same (an unknown address, a wrong,
+    /// used or ended code, a locked person), and wrong codes never lock anyone (A11 D10).
     pub async fn sign_in_with_code(&self, tenant_slug: &str, email: &str, code: &str) -> Result<SignIn> {
         let denied = || Error::Unauthorized("that code is wrong or has expired; ask for a new one".into());
         self.refuse_if_moving_slug(tenant_slug).await?;
@@ -420,9 +431,10 @@ impl Kernel {
             tx.commit().await?;
             return made.map(SignIn::Session).ok_or_else(denied);
         };
+        // Every failure answers alike (A11 D10): a locked person, an unknown address, a used or a wrong code.
         if locked {
             tx.commit().await?;
-            return Err(Error::TooManyRequests(format!("too many failed attempts; try again in {LOCK_MINUTES} minutes")));
+            return Err(denied());
         }
         // Locked, so two tries at once cannot both use it.
         let live: Option<(Uuid, String, i32)> = sqlx::query_as(
@@ -433,7 +445,7 @@ impl Kernel {
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((id, hash, attempts)) = live else {
+        let Some((id, hash, _attempts)) = live else {
             tx.commit().await?;
             return Err(denied());
         };
@@ -445,11 +457,7 @@ impl Kernel {
                 .execute(&mut *tx)
                 .await?;
             tx.commit().await?;
-            return Err(if attempts + 1 >= CODE_TRIES {
-                Error::Unauthorized("that code is wrong, and has now stopped working; ask for a new one".into())
-            } else {
-                denied()
-            });
+            return Err(denied());
         }
         sqlx::query("update sign_in_code set used_at = now() where id = $1").bind(id).execute(&mut *tx).await?;
         let session = Session { tenant, user, token_version };
