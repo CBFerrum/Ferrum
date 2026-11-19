@@ -118,8 +118,12 @@ fn catalog() -> Catalog {
     c
 }
 
+/// The tests reset one database: they take their turn.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
 #[test]
 fn a_customer_stays_one_customer() {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
     rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
 }
@@ -340,4 +344,253 @@ async fn scenario() {
     assert_eq!(k.get(&admin, "Party", dup, false).await.unwrap()["id"], json!(third.to_string()));
     assert!(matches!(k.merge_records(&admin, "Party", dup, other, "into a ghost").await, Err(Error::Invalid(_))), "not into what is gone");
     assert!(matches!(k.merge_records(&admin, "Party", other, dup, "again").await, Err(Error::Conflict(_))), "and not twice");
+}
+
+// ───────────── who may merge, and links that decide who reaches records (S9 K0-2, R19) ─────────────
+
+const REACH_PACKAGE: &str = r#"package: reach
+version: 0.1.0
+label: Reach
+depends: [core, parties]
+roles:
+  - name: Rep
+    permissions:
+      - {entity: RcLead, read: true, where: {territory: north}}
+      - {entity: RcLead, read: true, write: true, create: true, delete: true, if_owner: true}
+  - name: Keeper
+    permissions:
+      - {entity: Customer, read: true, write: true, create: true, delete: true}
+      - {entity: RcProject, read: true, write: true, create: true}
+      - {entity: RcInvoice, read: true, write: true, create: true}
+      - {entity: RcAccount, read: true, write: true, create: true, delete: true}
+      - {entity: RcTask, read: true, write: true, create: true}
+  - name: Writer
+    permissions:
+      - {entity: RcLead, read: true, write: true}
+      - {entity: RcLead, read: true, create: true, delete: true, if_owner: true}
+  - name: Client
+    permissions:
+      - {entity: RcTask, read: true, via: account.contact_email}
+"#;
+
+const REACH_ENTITIES: &str = r#"
+- name: RcLead
+  label: Lead
+  kind: master
+  title_field: lead_name
+  mergeable: true
+  fields:
+    - {name: lead_name, type: data, required: true}
+    - {name: territory, type: data}
+- name: RcProject
+  label: Project
+  kind: master
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: customer, type: link, to: Customer}
+- name: RcInvoice
+  label: Invoice
+  kind: master
+  title_field: title
+  reach_links: [customer]
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: customer, type: link, to: Customer}
+- name: RcAccount
+  label: Account
+  kind: master
+  title_field: account_name
+  mergeable: true
+  fields:
+    - {name: account_name, type: data, required: true}
+    - {name: contact_email, type: email}
+- name: RcTask
+  label: Task
+  kind: master
+  title_field: title
+  fields:
+    - {name: title, type: data, required: true}
+    - {name: account, type: link, to: RcAccount}
+"#;
+
+fn reach_catalog() -> Catalog {
+    let dir = std::env::temp_dir().join(format!("ferrum-merge-reach-it-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("reach/entities")).unwrap();
+    for p in ["core", "contacts", "parties"] {
+        std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../packages/{p}")).canonicalize().unwrap(), dir.join(p)).unwrap();
+    }
+    std::fs::write(dir.join("reach/package.yaml"), REACH_PACKAGE).unwrap();
+    std::fs::write(dir.join("reach/entities/reach.yaml"), REACH_ENTITIES).unwrap();
+    let c = Catalog::load_dir(&dir).expect("catalog");
+    let _ = std::fs::remove_dir_all(&dir);
+    c
+}
+
+struct Reach {
+    k: Arc<Kernel>,
+    admin: ferrum_kernel::Ctx,
+}
+
+impl Reach {
+    async fn user(&self, email: &str, roles: &[&str]) -> ferrum_kernel::Ctx {
+        let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
+        let u = self.k.create_user(&self.admin, email, email, Some("Correct-Horse-9"), &roles, false).await.unwrap();
+        self.k.load_ctx(self.admin.tenant, u, None, "it".into()).await.unwrap()
+    }
+    async fn insert(&self, ctx: &ferrum_kernel::Ctx, entity: &str, v: Value) -> Uuid {
+        id(&self.k.insert(ctx, entity, obj(v)).await.unwrap_or_else(|e| panic!("{entity}: {e}")))
+    }
+}
+
+async fn reach_world() -> Reach {
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let k = Kernel::boot(db, reach_catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let tenant = k
+        .create_tenant(NewTenant {
+            slug: "rc".into(),
+            name: "Reach".into(),
+            admin_email: "admin@rc.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec!["reach".into()],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    let s = k.login("rc", "admin@rc.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(tenant, s.user, None, "it".into()).await.unwrap();
+    Reach { k, admin }
+}
+
+fn reach_test<F: std::future::Future<Output = ()> + Send + 'static>(f: impl FnOnce() -> F) {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(f()).await.unwrap() });
+}
+
+#[test]
+fn a_reader_by_territory_cannot_merge_a_lead_into_their_own() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let rep = w.user("rep@rc.test", &["Rep"]).await;
+        let theirs = w.insert(&w.admin, "RcLead", json!({"lead_name": "Globex", "territory": "north"})).await;
+        let mine = w.insert(&rep, "RcLead", json!({"lead_name": "Globex Ltd"})).await;
+        w.k.get(&rep, "RcLead", theirs, false).await.expect("they read it through the territory");
+        let e = w.k.merge_records(&rep, "RcLead", mine, theirs, "same company").await.unwrap_err();
+        assert!(matches!(e, Error::Forbidden(_) | Error::NotFound(_)), "{e:?}");
+        w.k.get(&w.admin, "RcLead", theirs, false).await.expect("still there, its own");
+    });
+}
+
+#[test]
+fn merge_needs_delete_on_the_duplicate_and_write_on_the_kept() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let rep = w.user("rep@rc.test", &["Rep"]).await;
+        let writer = w.user("writer@rc.test", &["Writer"]).await;
+        let theirs = w.insert(&w.admin, "RcLead", json!({"lead_name": "Initech", "territory": "north"})).await;
+        let mine = w.insert(&rep, "RcLead", json!({"lead_name": "Initech Inc"})).await;
+        // Rep deletes their own, but may not change the other's: their own does not go into it.
+        let e = w.k.merge_records(&rep, "RcLead", theirs, mine, "same").await.unwrap_err();
+        assert!(matches!(e, Error::Forbidden(_) | Error::NotFound(_)), "{e:?}");
+        // Writer changes every lead but deletes only their own: the administrator's does not go.
+        let writers = w.insert(&writer, "RcLead", json!({"lead_name": "Initech Group"})).await;
+        let e = w.k.merge_records(&writer, "RcLead", writers, theirs, "same").await.unwrap_err();
+        assert!(matches!(e, Error::Forbidden(_) | Error::NotFound(_)), "{e:?}");
+        // Their own into one they may change: merged.
+        w.k.merge_records(&writer, "RcLead", theirs, writers, "same").await.expect("delete on the duplicate, write on the kept");
+    });
+}
+
+#[test]
+fn merging_customers_that_decide_portal_reach_is_for_administrators() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let keeper = w.user("keeper@rc.test", &["Keeper"]).await;
+        let a = w.insert(&keeper, "Customer", json!({"customer_name": "Acme"})).await;
+        let b = w.insert(&keeper, "Customer", json!({"customer_name": "ACME Inc"})).await;
+        w.insert(&keeper, "RcProject", json!({"title": "Roof", "customer": a.to_string()})).await;
+        // A customer belongs to the parties package: any link it moves decides someone's reach.
+        let e = w.k.merge_records(&keeper, "Customer", b, a, "same").await.unwrap_err();
+        assert!(matches!(&e, Error::Forbidden(m) if m.contains("administrator")), "{e:?}");
+        // Nothing moved.
+        let p = w.k.list(&w.admin, "RcProject", &ListQuery::default()).await.unwrap();
+        assert_eq!(p.rows[0]["customer"], json!(a.to_string()));
+        // An account (not a party) whose tasks a portal rule reaches through it: the same.
+        let x = w.insert(&keeper, "RcAccount", json!({"account_name": "X", "contact_email": "x@client.test"})).await;
+        let y = w.insert(&keeper, "RcAccount", json!({"account_name": "X Co", "contact_email": "y@client.test"})).await;
+        w.insert(&keeper, "RcTask", json!({"title": "Fix", "account": x.to_string()})).await;
+        let e = w.k.merge_records(&keeper, "RcAccount", y, x, "same").await.unwrap_err();
+        assert!(matches!(&e, Error::Forbidden(m) if m.contains("administrator")), "{e:?}");
+        // Accounts nothing links to merge for whoever may.
+        let z = w.insert(&keeper, "RcAccount", json!({"account_name": "Z"})).await;
+        w.k.merge_records(&keeper, "RcAccount", y, z, "same").await.expect("no link that decides reach moves");
+    });
+}
+
+#[test]
+fn merging_customers_with_portal_invoices_is_for_administrators() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let keeper = w.user("keeper@rc.test", &["Keeper"]).await;
+        let x = w.insert(&keeper, "RcAccount", json!({"account_name": "Inv"})).await;
+        let _ = x;
+        // RcInvoice declares `customer` in reach_links (its app's code reaches invoices by it): reach decides.
+        let schema = w.k.registry.schema(w.admin.tenant).await.unwrap();
+        let ent = schema.entity("RcInvoice").unwrap();
+        let mut tx = w.k.db.tenant_tx(w.admin.tenant).await.unwrap();
+        let fields = ferrum_kernel::reach::fields(&w.admin, &mut tx, ent).await.unwrap();
+        tx.rollback().await.unwrap();
+        assert!(fields.contains("customer"), "{fields:?}");
+        let a = w.insert(&keeper, "Customer", json!({"customer_name": "Hooli"})).await;
+        let b = w.insert(&keeper, "Customer", json!({"customer_name": "Hooli Corp"})).await;
+        w.insert(&keeper, "RcInvoice", json!({"title": "INV-1", "customer": a.to_string()})).await;
+        let e = w.k.merge_records(&keeper, "Customer", b, a, "same").await.unwrap_err();
+        assert!(matches!(&e, Error::Forbidden(m) if m.contains("administrator")), "{e:?}");
+    });
+}
+
+#[test]
+fn a_link_written_during_a_merge_is_counted() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let keeper = w.user("keeper@rc.test", &["Keeper"]).await;
+        let x = w.insert(&keeper, "RcAccount", json!({"account_name": "Late"})).await;
+        let y = w.insert(&keeper, "RcAccount", json!({"account_name": "Late Co"})).await;
+        // Nothing links to the duplicate when the merge is asked for; a task linking it comes before the moves run.
+        let groups = w.k.duplicates(&keeper, "RcAccount", 50).await.unwrap_or_default();
+        let _ = groups;
+        w.insert(&keeper, "RcTask", json!({"title": "Late task", "account": x.to_string()})).await;
+        let e = w.k.merge_records(&keeper, "RcAccount", y, x, "same").await.unwrap_err();
+        assert!(matches!(&e, Error::Forbidden(m) if m.contains("administrator")), "the moves themselves are counted: {e:?}");
+    });
+}
+
+#[test]
+fn an_administrator_s_merge_moves_portal_reach_and_says_so() {
+    reach_test(|| async {
+        let w = reach_world().await;
+        let keeper = w.user("keeper@rc.test", &["Keeper"]).await;
+        let client = w.user("x@client.test", &["Client"]).await;
+        let x = w.insert(&keeper, "RcAccount", json!({"account_name": "Move", "contact_email": "x@client.test"})).await;
+        let y = w.insert(&keeper, "RcAccount", json!({"account_name": "Move Co", "contact_email": "y@client.test"})).await;
+        let task = w.insert(&keeper, "RcTask", json!({"title": "Moved", "account": x.to_string()})).await;
+        w.k.get(&client, "RcTask", task, false).await.expect("theirs through the account");
+        let done = w.k.merge_records(&w.admin, "RcAccount", y, x, "same").await.unwrap();
+        assert_eq!(done["reach_moved"], json!(1), "{done}");
+        // The task now reaches the kept account's people, and the client's reach went with the merge.
+        assert!(w.k.get(&client, "RcTask", task, false).await.is_err());
+        let mut tx = w.k.db.tenant_tx(w.admin.tenant).await.unwrap();
+        let said: Value = sqlx::query_scalar("select diff from audit_event where entity = 'RcAccount' and record_id = $1 and action = 'merge'")
+            .bind(y)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(said["reach_moved"], json!(1), "{said}");
+    });
 }

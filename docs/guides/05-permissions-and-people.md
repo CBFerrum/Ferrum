@@ -122,6 +122,17 @@ caller reads; a save or preview fetches nothing from a `reference: restricted` r
 link stands, its fields stay empty, a refusal names none of its values). A query one app asks another
 (`Kernel::call_tx` of a capability that changes nothing) answers as the caller, never as the system.
 
+**Merging, and links that decide reach.** A merge needs Delete on the duplicate and Write on the record that stays,
+each through a rule that reaches that record: reading both is not enough. A merge that moves a link deciding who
+reaches records is an administrator's: a field `ferrum_kernel::reach::fields` names (owner fields, fields a rule's
+`where` reads, links a rule's `via` crosses, links to `Company` and to entities people are scoped by, fields approval
+steps route by, and the links an entity declares in `reach_links`), and any link at all of a `parties` record (a
+customer, a supplier). The moves are counted as they run, in the merge's transaction; for anyone else the merge is
+taken back whole, and an administrator's says how many it moved (`reach_moved`). An app whose code reads records as the
+system by a link to a mergeable entity (a portal's invoices by their customer) declares that link in the entity's
+`reach_links`; `scripts/reach_links.py` finds one it did not declare (`docs/registry/reach-links.md` lists those that
+decide no one's reach, with why).
+
 Never a role named in code to decide what a person may do (`if ctx.has_role("Manager")`) where a rule or an action's
 `roles` would say it: a workspace renames and splits roles. `ctx.has_role` is for a configured action's `roles` and
 the like, which the kernel already checks (`action_gate` in `crates/kernel/src/ctx.rs`). Reviewed, not checked.
