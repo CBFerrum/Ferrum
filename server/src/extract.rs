@@ -59,6 +59,23 @@ impl TokenSession {
     fn device(&self) -> Option<Uuid> {
         self.sid.or(self.bound)
     }
+
+    /// Whether the credential makes a person at a screen (BD-83), by the token's claims alone, never by
+    /// `Sec-Fetch-Site`.
+    fn at_screen(&self) -> bool {
+        screen_by_claims(self.credential, self.bound.is_some())
+    }
+}
+
+/// A screen: the browser's session cookie (`sid`), or the web app's page token bound to that session (`bsid`, neither
+/// `app` nor `client_id`, which make it [`Credential::Token`]). A bare bearer token, an app token, an OAuth token, an
+/// API key, SCIM, DAV and a socket are not.
+fn screen_by_claims(credential: Credential, bound: bool) -> bool {
+    match credential {
+        Credential::Cookie => true,
+        Credential::Token => bound,
+        _ => false,
+    }
 }
 
 /// The session a token (session JWT, cookie token or `fk_` API key) carries. The ticket between
@@ -271,7 +288,7 @@ async fn caller_with_app(
         st.shell.check_directory(headers, t.session.tenant).await?;
     }
     let entry = crate::zone::entry(st, headers, t.credential).await;
-    let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?.proved(t.step_up_at);
+    let ctx = st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, t.at_screen()).await?.proved(t.step_up_at);
     Ok((ctx, t.device(), t.app, t.records))
 }
 
@@ -428,7 +445,8 @@ impl FromRequestParts<AppContext> for SetupAuth {
             return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
         }
         let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
-        let ctx = st.kernel.request_ctx(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry).await?.proved(t.step_up_at);
+        let ctx =
+            st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, t.at_screen()).await?.proved(t.step_up_at);
         only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
         Ok(SetupAuth(ctx, t.setup_only.then_some(t.session)))
     }
@@ -509,6 +527,18 @@ mod tests {
         assert_eq!((client_ip_behind(&cdn, 1), client_ip_behind(&cdn, 2)), ("192.0.2.10".into(), "203.0.113.7".into()));
         assert_eq!(client_ip_behind(&headers(&["203.0.113.7"]), 2), "203.0.113.7", "fewer proxies than configured");
         assert_eq!(client_ip_behind(&headers(&[" , "]), 1), "local");
+    }
+
+    #[test]
+    fn screens_are_decided_by_claims() {
+        // The cookie (`sid`) and the page token bound to it (`bsid`, neither `app` nor `client_id`) are screens.
+        assert!(screen_by_claims(Credential::Cookie, false));
+        assert!(screen_by_claims(Credential::Token, true));
+        // A bare bearer token from an API sign-in, an app token, an OAuth app token, an API key, SCIM, DAV, a socket.
+        assert!(!screen_by_claims(Credential::Token, false));
+        for c in [Credential::AppToken, Credential::OAuth, Credential::ApiKey, Credential::Scim, Credential::Dav, Credential::Socket] {
+            assert!(!screen_by_claims(c, true), "{c:?}");
+        }
     }
 
     #[test]

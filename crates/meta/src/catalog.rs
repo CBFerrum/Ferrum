@@ -1376,8 +1376,8 @@ pub(crate) fn validate_approval(e: &EntityDef, what: &str, wf: Option<(&Workflow
         _ => {}
     }
     let who = |at: &str, a: &crate::types::Approvers| -> Result<(), String> {
-        if [&a.role, &a.field, &a.expr].iter().filter(|x| x.is_some()).count() != 1 {
-            return Err(format!("{at}: names exactly one of role, field and expr"));
+        if [&a.role, &a.field, &a.expr].iter().filter(|x| x.is_some()).count() + usize::from(a.administrators) != 1 {
+            return Err(format!("{at}: names exactly one of role, field and expr, or administrators"));
         }
         if let Some(f) = a.field.as_ref().filter(|f| !e.fields.iter().any(|x| &x.name == *f)) {
             return Err(format!("{at}: {f} is not a field"));
@@ -1390,6 +1390,10 @@ pub(crate) fn validate_approval(e: &EntityDef, what: &str, wf: Option<(&Workflow
             return Err(format!("{at}: a step needs a label"));
         }
         who(&format!("{at} approvers"), &s.approvers)?;
+        // Administrators decide in person (BD-83): nobody else may stand for them, the asker included.
+        if s.approvers.administrators && (s.escalate_to.is_some() || p.allow_requester) {
+            return Err(format!("{at}: administrators approve in person: no escalate_to, and not with allow_requester"));
+        }
         if s.need == crate::types::ApprovalNeed::Count(0) {
             return Err(format!("{at}: needs at least one approval"));
         }

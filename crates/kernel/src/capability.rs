@@ -637,7 +637,8 @@ impl Kernel {
         if ranges.is_empty() {
             return Err(refused(Code::PermissionDenied, format!("{app} does not use {} here: none of its packages installed declares it", inv.capability)));
         }
-        let system = crate::actions::system(ctx);
+        // The calling app, named on the context its operation runs with (BD-83); effects inside it name none.
+        let system = Ctx { app: Some(app.to_string()), ..crate::actions::system(ctx) };
         let cap = self.capability_as(&system, &inv.capability, false)?;
         let installed = semver::Version::parse(&cap.version).ok();
         let within = |range: &&str| semver::VersionReq::parse(range).is_ok_and(|r| installed.as_ref().is_some_and(|v| r.matches(v)));

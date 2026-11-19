@@ -1447,6 +1447,7 @@ pub(crate) mod tests {
             full_name: "U".into(),
             roles: vec![],
             is_admin: false,
+            admin_since: None,
             is_system: false,
             outside: false,
             request_id: "t".into(),
@@ -1462,6 +1463,8 @@ pub(crate) mod tests {
             origin: None,
             zone: None,
             proof: Default::default(),
+            app: None,
+            made: ferrum_kernel::Made::Key,
             reads: Default::default(),
         }
     }

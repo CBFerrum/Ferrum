@@ -121,6 +121,8 @@ pub struct CtxCore {
     pub full_name: String,
     pub roles: Vec<String>,
     pub is_admin: bool,
+    /// Since when (BD-83).
+    pub admin_since: Option<DateTime<Utc>>,
     pub token_version: i32,
     pub scopes: BTreeMap<String, Vec<Uuid>>,
     pub default_company: Option<Uuid>,
@@ -621,15 +623,15 @@ impl Kernel {
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
         let mut tx = self.db.tenant_tx(tenant).await?;
-        let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool)> = sqlx::query_as(
-            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state in ('restricted', 'closed') \
+        let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state in ('restricted', 'closed'), u.admin_since \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(tenant)
         .bind(user)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((email, full_name, is_admin, active, token_version, settings, kind, read_only)) = row else {
+        let Some((email, full_name, is_admin, active, token_version, settings, kind, read_only, admin_since)) = row else {
             return Err(Error::Unauthorized("user no longer exists".into()));
         };
         if !active {
@@ -701,6 +703,7 @@ impl Kernel {
             full_name,
             roles,
             is_admin,
+            admin_since: admin_since.filter(|_| is_admin),
             token_version,
             scopes,
             default_company,
@@ -721,7 +724,7 @@ impl Kernel {
     /// deactivation.
     pub async fn load_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String) -> Result<Ctx> {
         let core = self.core(tenant, user, token_version).await?;
-        self.ctx_of(&core, tenant, user, request_id, None).await
+        self.ctx_of(&core, tenant, user, request_id, None, crate::ctx::Made::Job).await
     }
 
     /// Builds a request's context: [`Kernel::load_ctx`], then admission in the request's zone
@@ -729,12 +732,28 @@ impl Kernel {
     /// person: the same person may arrive in another zone with the next request. The context
     /// carries the entry (`Ctx::zone`).
     pub async fn request_ctx(&self, tenant: Uuid, user: Uuid, token_version: Option<i32>, request_id: String, entry: &Arc<crate::zones::Entry>) -> Result<Ctx> {
+        self.request_ctx_as(tenant, user, token_version, request_id, entry, false).await
+    }
+
+    /// [`Kernel::request_ctx`], made [`Made::Screen`](crate::ctx::Made::Screen) when `screen`: the request's credential
+    /// is an interactive session's (the browser's cookie, or the web app's page token bound to it), as the server decides
+    /// from the token's claims; [`Made::Key`](crate::ctx::Made::Key) otherwise. The only place a screen is made (BD-83).
+    pub async fn request_ctx_as(
+        &self,
+        tenant: Uuid,
+        user: Uuid,
+        token_version: Option<i32>,
+        request_id: String,
+        entry: &Arc<crate::zones::Entry>,
+        screen: bool,
+    ) -> Result<Ctx> {
         // What this request does outside is asked about this workspace (crate::sandbox).
         crate::sandbox::serving(tenant);
         let core = self.core(tenant, user, token_version).await?;
         self.admit(&core.kind, tenant, user, entry).await?;
         admit_network(&core, tenant, user, entry)?;
-        self.ctx_of(&core, tenant, user, request_id, Some(entry.clone())).await
+        let made = if screen { crate::ctx::Made::Screen } else { crate::ctx::Made::Key };
+        self.ctx_of(&core, tenant, user, request_id, Some(entry.clone()), made).await
     }
 
     /// Builds the context of `user` for work a request queued in zone `zone` (`None`: from inside, no
@@ -744,7 +763,7 @@ impl Kernel {
         let Some(name) = zone else { return self.load_ctx(tenant, user, None, request_id).await };
         let entry = self.queued_entry(name)?;
         let core = self.core(tenant, user, None).await?;
-        self.ctx_of(&core, tenant, user, request_id, Some(entry)).await
+        self.ctx_of(&core, tenant, user, request_id, Some(entry), crate::ctx::Made::Job).await
     }
 
     /// The system, for work a request queued in zone `zone`: every right, within what that zone
@@ -853,7 +872,15 @@ impl Kernel {
         Ok(core)
     }
 
-    async fn ctx_of(&self, core: &CtxCore, tenant: Uuid, user: Uuid, request_id: String, zone: Option<Arc<crate::zones::Entry>>) -> Result<Ctx> {
+    async fn ctx_of(
+        &self,
+        core: &CtxCore,
+        tenant: Uuid,
+        user: Uuid,
+        request_id: String,
+        zone: Option<Arc<crate::zones::Entry>>,
+        made: crate::ctx::Made,
+    ) -> Result<Ctx> {
         let schema = self.registry.schema(tenant).await?;
         // What this request queues is done later in this zone (crate::db::Trace): one that narrows staff or asks them to
         // step up.
@@ -890,6 +917,7 @@ impl Kernel {
             full_name: core.full_name.clone(),
             roles,
             is_admin,
+            admin_since: core.admin_since.filter(|_| is_admin),
             is_system: false,
             outside: core.outside,
             request_id,
@@ -903,6 +931,8 @@ impl Kernel {
             origin: None,
             zone,
             proof,
+            app: None,
+            made,
             reads: Default::default(),
         })
     }
@@ -980,6 +1010,9 @@ impl Kernel {
             return Err(Error::invalid("this is the workspace's last administrator; make someone else one first"));
         }
         sqlx::query("update app_user set is_admin = $3 where tenant_id = $1 and id = $2").bind(tenant).bind(user).bind(admin).execute(&mut *tx).await?;
+        if admin && !is_admin {
+            Self::tell_admins_of_new(&mut tx, tenant, user, &email).await?;
+        }
         let system = Ctx::system(tenant, self.registry.schema(tenant).await?);
         let action = if admin { "grant_admin" } else { "revoke_admin" };
         crate::audit::record_admin(&mut tx, &system, "User", user, action, None, serde_json::json!({"email": email, "reason": reason, "by": "operator"}))
@@ -988,6 +1021,38 @@ impl Kernel {
         tx.commit().await?;
         self.users.remove(&(tenant, user));
         Ok(user)
+    }
+
+    /// Tells every other administrator that `user` (`email`) has become one, and the day they first count for approvals by
+    /// administrators (BD-83): seven days after the database set their `admin_since`.
+    async fn tell_admins_of_new(tx: &mut crate::db::Tx, tenant: Uuid, user: Uuid, email: &str) -> Result<()> {
+        let counts: Option<chrono::NaiveDate> =
+            sqlx::query_scalar("select (admin_since + interval '7 days')::date from app_user where tenant_id = $1 and id = $2")
+                .bind(tenant)
+                .bind(user)
+                .fetch_one(&mut **tx)
+                .await?;
+        let others: Vec<Uuid> = sqlx::query_scalar("select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member' and id <> $2")
+            .bind(tenant)
+            .bind(user)
+            .fetch_all(&mut **tx)
+            .await?;
+        let body = counts.map(|d| format!("They count for approvals by administrators from {d}."));
+        for admin in others {
+            crate::notify::send_kind(
+                tx,
+                tenant,
+                admin,
+                "general",
+                "inapp",
+                &format!("{email} is now an administrator"),
+                body.as_deref(),
+                Some("User"),
+                Some(user),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Every replica drops cached users when another replica changes them (roles, scopes,
@@ -1167,6 +1232,9 @@ impl Kernel {
         if !roles.is_empty() {
             let diff = serde_json::json!({"added": roles, "removed": [], "until": {}});
             crate::audit::record_admin(&mut tx, ctx, "User", id, "roles", None, diff).await?;
+        }
+        if is_admin {
+            Self::tell_admins_of_new(&mut tx, ctx.tenant, id, &email.trim().to_lowercase()).await?;
         }
         tx.commit().await?;
         Ok(id)

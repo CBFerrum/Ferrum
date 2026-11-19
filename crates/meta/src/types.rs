@@ -1783,6 +1783,10 @@ pub struct ApprovalPolicy {
     /// Never by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub system_bypass: bool,
+    /// Asking and deciding are each refused unless done by a person at a screen in that request (`Ctx::at_screen`,
+    /// BD-83): two persons, never one person twice, an automation, a key, the assistant or an app. Never by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub people_at_screens: bool,
     /// A message template (BD-20) its notices are sent with instead of the fixed wording: it reads `values.notice`
     /// (`waiting`, `reminder`, `escalated`, `approved`, `rejected`, `not_done`) and `values.title`, the fixed wording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1894,6 +1898,9 @@ pub struct Approvers {
     pub field: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
+    /// The workspace's active administrators (a flag on a person, not a role, so no role can name them; BD-83).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub administrators: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

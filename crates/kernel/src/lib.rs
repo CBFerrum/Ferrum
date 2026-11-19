@@ -101,7 +101,7 @@ pub mod window;
 pub mod workspace_move;
 pub mod zones;
 
-pub use ctx::{Access, Action, Ctx, PermSet, row_scope};
+pub use ctx::{Access, Action, Ctx, Made, PermSet, row_scope};
 pub use db::{Db, DbConfig, Trace, Tx, with_retry};
 pub use error::{Error, FieldError, Result};
 pub use ferrum_logic::calendar::Calendar;
