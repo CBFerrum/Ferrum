@@ -597,6 +597,7 @@ impl Kernel {
         step("closing expired support access", self.expire_support().await);
         step("removing ended role grants", self.expire_roles().await);
         step("starting backfills", self.start_backfills().await.map(|n| n as u64));
+        step("telling administrators of narrowed field groups", self.tell_of_narrowed_groups().await);
         step("the vault's upkeep", vault::upkeep(self).await.map(|_| 0));
         let purged = step("purging events", self.purge_old_events(self.settings.event_retention_days).await)
             + step("purging operation receipts", self.purge_receipts().await)

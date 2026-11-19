@@ -44,7 +44,14 @@ A rule (`PermissionDef`):
 | `actions` | the entity's actions its holders may run on the records it reaches, whatever each action's own `permission` asks |
 | `shared` | for a portal role: `read` or `add`, what of the record's comments and files its holders see |
 
-A role may hold several rules for one entity; a record qualifies through any of them. A role's name may be shared by
+A role may hold several rules for one entity; a record qualifies through any of them. **Field groups follow the rule
+that reaches the record**: a grouped field shows on a record, and may be written there, only when a rule reaching that
+record grants its group (`read_groups`, `write_groups`, and the same role's group-only rows, which grant groups without
+an action). An HR user who also holds self-service reads HR's groups on everyone and their own bank details on their
+own record only. A role's group-only rows on an entity it reads nothing of grant nothing; a line's grouped fields show
+by the groups the line entity's rows give the roles whose rules reach its record. A grouped field some record the
+person reaches would hide is neither filtered nor sorted. The hourly upkeep tells administrators, once, of a role whose
+groups now show less than before. A role's name may be shared by
 several packages, each adding grants. Role names starting with `plugin:` are reserved for plugins' service users
 (`crates/apps/src/lib.rs`, *Third-party namespaces*).
 

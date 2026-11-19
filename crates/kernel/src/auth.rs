@@ -137,6 +137,8 @@ pub struct CtxCore {
     /// An administrator's rights through their roles alone: theirs where a zone admits no administrators
     /// (crate::zones, level 2). `None` for everyone else, whose `perms` are those.
     pub role_perms: Option<Arc<PermSet>>,
+    /// The schema the rights were read against: field groups are the schema's (S9 R13), so a new one reloads them.
+    pub schema: Arc<ferrum_meta::Schema>,
 }
 
 /// A records key's scope (`records:Customer=read+write;SalesInvoice=read`): the entities it may
@@ -620,6 +622,7 @@ impl Kernel {
     }
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
+        let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.tenant_tx(tenant).await?;
         let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool)> = sqlx::query_as(
             "select u.email::text, u.full_name, u.is_admin, u.is_active and t.status = 'active', u.token_version, t.settings, u.kind, t.account_state in ('restricted', 'closed') \
@@ -684,8 +687,8 @@ impl Kernel {
                 default_company = Some(*one);
             }
         }
-        let perms = PermSet::load(&mut tx, tenant, &roles, is_admin).await?;
-        let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false).await?)) } else { None };
+        let perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false, &schema).await?)) } else { None };
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
         let networks = match crate::gate::StaffNetworks::parse(settings.get("staff_networks")) {
@@ -711,6 +714,7 @@ impl Kernel {
             kind,
             networks,
             role_perms,
+            schema,
         })
     }
 
@@ -834,7 +838,13 @@ impl Kernel {
         // ponytail: one cached core per person; the networks ride in it, dropped with it on every replica when a
         // workspace's settings change (USERS_CHANNEL), else after `ctx_ttl`.
         let key = (tenant, user);
-        let cached = self.users.get(&key).filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u)).map(|c| c.0.clone());
+        // Rights read against another schema (a field group added or moved) are read again.
+        let schema = self.registry.schema(tenant).await?;
+        let cached = self
+            .users
+            .get(&key)
+            .filter(|c| c.1.elapsed() < self.settings.ctx_ttl && c.0.until.is_none_or(|u| Utc::now() < u) && Arc::ptr_eq(&c.0.schema, &schema))
+            .map(|c| c.0.clone());
         let core = match cached {
             Some(c) => c,
             None => {
@@ -1513,6 +1523,57 @@ fn holds_personal(ctx: &Ctx, entity: &str) -> bool {
 fn sweep_users<V>(users: &dashmap::DashMap<(Uuid, Uuid), (V, Instant)>, over: usize, ttl: Duration) {
     if users.len() > over {
         users.retain(|_, v| v.1.elapsed() < ttl);
+    }
+}
+
+impl Kernel {
+    /// Tells each workspace's administrators, once per role and entity, of a role whose field groups now show less
+    /// than before (S9 R13): its group-only rows on an entity it reads nothing of grant nothing, and on one it reads only
+    /// some records of they show only on those. Run with the hourly upkeep; how many notices went out.
+    pub async fn tell_of_narrowed_groups(&self) -> Result<u64> {
+        let mut tx = self.db.system_tx().await?;
+        type Row = (Uuid, String, String, Option<bool>);
+        // Each group-only row, and whether its role reads the entity: none, or only some of it (`false`), or all (`true`).
+        let rows: Vec<Row> = sqlx::query_as(
+            "select g.tenant_id, g.role, g.entity, \
+               (select bool_and(not r.if_owner and r.match_rule is null and r.via is null) from role_permission r \
+                 where r.tenant_id = g.tenant_id and r.role = g.role and r.entity = g.entity and r.can_read) \
+             from role_permission g join tenant t on t.id = g.tenant_id and t.status = 'active' \
+             where not (g.can_read or g.can_write or g.can_create or g.can_delete or g.can_submit or g.can_cancel or g.can_export or g.can_import) \
+               and cardinality(g.actions) = 0 and (cardinality(g.read_groups) > 0 or cardinality(g.write_groups) > 0)",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut told = 0;
+        for (tenant, role, entity, whole) in rows {
+            // A line entity's groups are its record's rules' (they are read with the record), never a rule of their own.
+            let schema = self.registry.schema(tenant).await?;
+            if schema.entity(&entity).is_none_or(|e| e.def.kind == ferrum_meta::EntityKind::Child) {
+                continue;
+            }
+            let why = match whole {
+                Some(true) => continue,
+                None => format!(
+                    "Its field groups on {entity} given without reading {entity} now show nothing: give the role a rule reading {entity}, or move the groups onto the rule that does."
+                ),
+                Some(false) => format!(
+                    "Its field groups on {entity} now show only on the {entity} records its own rules reach, not on records another role of the same person reaches."
+                ),
+            };
+            let title = format!("Field groups of the role {role} show less than before");
+            let seen: bool = sqlx::query_scalar("select exists (select 1 from notification where tenant_id = $1 and title = $2 and body = $3)")
+                .bind(tenant)
+                .bind(&title)
+                .bind(&why)
+                .fetch_one(&mut *tx)
+                .await?;
+            if !seen {
+                self.tell_admins(&mut tx, tenant, &title, &why).await?;
+                told += 1;
+            }
+        }
+        tx.commit().await?;
+        Ok(told)
     }
 }
 

@@ -29,7 +29,7 @@ impl Kernel {
         let simulated = roles.is_some();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if let Some(roles) = roles {
-            who.perms = Arc::new(PermSet::load(&mut tx, ctx.tenant, &roles, false).await?);
+            who.perms = Arc::new(PermSet::load(&mut tx, ctx.tenant, &roles, false, &ctx.schema).await?);
             who.is_admin = false;
             who.roles = roles;
         }
