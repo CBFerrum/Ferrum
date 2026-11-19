@@ -14,6 +14,10 @@
 #             a fraction of the disk, for a machine short of it
 # The test binaries it makes are removed when it is done. Exit 0 when every step passed.
 set -uo pipefail
+# Whether a test database may be emptied: only one of this machine's own runs (`…_localci`), never the development or the
+# platform's test database, nor a walk's. `--may-reset NAME` answers by the exit code (scripts/test_app_ci.py).
+may_reset() { case "$1" in ferrum_dev | ferrum_test | *walk*) return 1 ;; *_localci) return 0 ;; *) return 1 ;; esac; }
+if [ "${1:-}" = --may-reset ]; then may_reset "${2:?a database name}"; exit; fi
 APP_DIR=$(cd "${1:?an app checkout}" && pwd)
 PLATFORM=${PLATFORM:-$(cd "$(dirname "$0")/.." && pwd)}
 FRONTEND=${FRONTEND:-$PLATFORM/web}
@@ -40,7 +44,7 @@ WS=$(grep -q "cargo test --workspace" "$APP_DIR/.github/workflows/ci.yml" 2>/dev
 # The stack its workflow gives its tests' threads (RUST_MIN_STACK), as GitHub runs them.
 STACK=$(sed -n 's/^ *RUST_MIN_STACK: *"*\([0-9][0-9]*\)"* *$/\1/p' "$APP_DIR/.github/workflows/ci.yml" 2>/dev/null | head -1)
 [ -n "$STACK" ] && export RUST_MIN_STACK=$STACK
-for kv in "${DBS[@]}"; do case "${kv##*/}" in *ferrum_dev*|*walk*|ferrum_test) echo "refusing to reset ${kv##*/}"; exit 2;; esac; done
+for kv in "${DBS[@]}"; do may_reset "${kv##*/}" || { echo "refusing to reset ${kv##*/}"; exit 2; }; done
 TARGET=${CARGO_TARGET_DIR:-$PLATFORM/target}
 export CARGO_INCREMENTAL=0
 fail=0

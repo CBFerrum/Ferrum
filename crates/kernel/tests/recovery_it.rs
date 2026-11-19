@@ -404,7 +404,7 @@ async fn a_restored_database_does_not_act_on_its_past() {
     assert_eq!(sent.count.load(Ordering::SeqCst), 2);
     // Nor does it know that the key was stolen and revoked since, and the session signed out.
     k.revoke_api_key(&admin, key_id).await.unwrap();
-    k.revoke_session(&admin, browser).await.unwrap();
+    k.revoke_session(&ferrum_testkit::at_screen(&k, &admin).await, browser).await.unwrap();
     assert!(k.verify_api_key(&key).await.is_err() && k.check_session(admin.tenant, admin.user, browser).await.is_err());
 
     // The database is lost, and comes back from that backup.
@@ -483,7 +483,7 @@ async fn one_workspace_goes_back_alone() {
     assert_eq!(sent.count.load(Ordering::SeqCst), 1);
     k.create_user(&acme, "later@acme.test", "Later", Some(PASSWORD), &[], false).await.unwrap();
     k.create_user(&bravo, "later@bravo.test", "Later", Some(PASSWORD), &[], false).await.unwrap();
-    k.set_password(&acme, stays, None, "Another-Horse-7").await.unwrap();
+    k.set_password(&ferrum_testkit::at_screen(&k, &acme).await, stays, None, "Another-Horse-7").await.unwrap();
     k.set_user_active(&acme, leaves, false).await.unwrap();
     // Since the backup: a hold, a restriction and a withdrawn consent, which going back does not undo (FEO-078).
     k.place_legal_hold(&acme, Some("subject@acme.test"), None, "Matter 12").await.unwrap();

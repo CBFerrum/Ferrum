@@ -820,6 +820,7 @@ impl Kernel {
     /// handed to someone else); their next single sign-on links them again.
     pub async fn unlink_sso(&self, ctx: &Ctx, user: Uuid) -> Result<()> {
         admin_only(ctx)?;
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let done = sqlx::query("update app_user set sso_subject = null, updated_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)

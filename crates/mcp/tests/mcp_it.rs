@@ -236,7 +236,14 @@ async fn scenario() {
     // consent (under the new token version) works again.
     let code4 = k.oauth_issue_code(&a.ctx, &client.id, redirect, challenge, "S256").await.unwrap();
     let g5 = k.oauth_redeem_code(&client.id, &code4, redirect, verifier).await.unwrap();
-    k.logout_everywhere(&a.ctx).await.unwrap();
+    // Signing out everywhere is the person's own doing, at a screen (docs/builder/decisions.md BD-85).
+    let entry = Arc::new(ferrum_kernel::zones::Entry {
+        zones: Default::default(),
+        placed: ferrum_kernel::zones::Placed::Nowhere,
+        address: "10.1.2.3".into(),
+        credential: ferrum_kernel::zones::Credential::Cookie,
+    });
+    k.logout_everywhere(&k.request_ctx_as(a.ctx.tenant, a.ctx.user, None, "mcp-it".into(), &entry, true).await.unwrap()).await.unwrap();
     assert!(k.oauth_refresh(&client.id, &g5.refresh_token).await.is_err(), "issued before signing out everywhere");
     let fresh = k.load_ctx(tenant, session.user, None, "mcp-it".into()).await.unwrap();
     let code5 = k.oauth_issue_code(&fresh, &client.id, redirect, challenge, "S256").await.unwrap();

@@ -249,10 +249,10 @@ async fn populate(r: &Replica) -> Fixture {
     let lead: Uuid = lead["id"].as_str().unwrap().parse().unwrap();
     let bank = k.insert(&admin, "Bank", obj(json!({"title": "B1", "pin": "hr-pin-1"}))).await.unwrap();
     let bank: Uuid = bank["id"].as_str().unwrap().parse().unwrap();
-    let begun = k.begin_two_factor(&admin).await.unwrap();
+    let begun = k.begin_two_factor(&ferrum_testkit::at_screen(k, &admin).await).await.unwrap();
     let totp = begun["secret"].as_str().unwrap().to_string();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    k.enable_two_factor(&admin, &ferrum_kernel::twofactor::code(&totp, now).unwrap()).await.unwrap();
+    k.enable_two_factor(&ferrum_testkit::at_screen(k, &admin).await, &ferrum_kernel::twofactor::code(&totp, now).unwrap()).await.unwrap();
     let conn = k.save_connection_def(&admin, None, &connection_input("conn-secret-1")).await.unwrap();
     let channel = k.save_message_channel(&admin, None, &channel_input("chan-secret-1")).await.unwrap();
     let hook = webhook(k, tenant, "whsec-1").await;
@@ -486,10 +486,10 @@ async fn moves_and_sandboxes() {
     let (t, admin) = workspace(&a.k, "mover").await;
     let lead = a.k.insert(&admin, "Lead", obj(json!({"title": "M", "api_key": "crm-mv-1", "hr_token": "hr-mv-1"}))).await.unwrap();
     let lead: Uuid = lead["id"].as_str().unwrap().parse().unwrap();
-    let begun = a.k.begin_two_factor(&admin).await.unwrap();
+    let begun = a.k.begin_two_factor(&ferrum_testkit::at_screen(&a.k, &admin).await).await.unwrap();
     let totp = begun["secret"].as_str().unwrap().to_string();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    a.k.enable_two_factor(&admin, &ferrum_kernel::twofactor::code(&totp, now).unwrap()).await.unwrap();
+    a.k.enable_two_factor(&ferrum_testkit::at_screen(&a.k, &admin).await, &ferrum_kernel::twofactor::code(&totp, now).unwrap()).await.unwrap();
     let channel = a.k.save_message_channel(&admin, None, &channel_input("chan-mv-1")).await.unwrap();
     let conn = a.k.save_connection_def(&admin, None, &connection_input("conn-mv-1")).await.unwrap();
     webhook(&a.k, t, "whsec-mv-1").await;

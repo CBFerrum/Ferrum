@@ -252,6 +252,8 @@ job_audit() {
   run "audit the reference stacks" bash reference/test.sh
   run "audit offline bundles" python3 deploy/offline/test_offline.py
   run "audit the bar runtime's pure helpers" node --test server/shell/runtime.test.mjs
+  run "audit public pages' embedding" node --test server/shell/embed.test.mjs
+  run "audit app CI's database guard" python3 scripts/test_app_ci.py
   run "audit licenses" python3 scripts/licenses.py check
   run "audit settings' registry against what reads them" sh -c 'python3 scripts/test_settings.py && python3 scripts/settings.py'
   run "audit app contract" python3 scripts/check_apps.py

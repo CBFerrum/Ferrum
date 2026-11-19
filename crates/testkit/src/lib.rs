@@ -278,6 +278,17 @@ fn fitting(mut packages: Vec<Package>) -> Vec<Package> {
     }
 }
 
+/// `ctx`'s person at a screen in a request, as the server makes one for the browser's session cookie
+/// (`Kernel::request_ctx_as`): what every change to how a person signs in asks for (BD-85), and what a decision only a
+/// person makes asks for (BD-83).
+pub async fn at_screen(k: &Kernel, ctx: &Ctx) -> Ctx {
+    use ferrum_kernel::zones::{Credential, Entry, Placed, Zones};
+    let entry = Arc::new(Entry { zones: Arc::new(Zones::default()), placed: Placed::Nowhere, address: "10.1.2.3".into(), credential: Credential::Cookie });
+    k.request_ctx_as(ctx.tenant, ctx.user, None, ctx.request_id.clone(), &entry, true)
+        .await
+        .unwrap_or_else(|e| panic!("{} at a screen: {}", ctx.email, describe(&e)))
+}
+
 async fn sign_in(k: &Kernel, tenant: Uuid, slug: &str, email: &str) -> Ctx {
     let s = k.login(slug, email, PASSWORD).await.unwrap_or_else(|e| panic!("{email} signs in: {}", describe(&e)));
     k.load_ctx(tenant, s.user, Some(s.token_version), "it".into()).await.unwrap_or_else(|e| panic!("{email}'s context: {}", describe(&e)))

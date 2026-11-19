@@ -95,13 +95,13 @@ async fn scenario() {
     assert!(matches!(k.list_sessions(&ana, s.user).await, Err(Error::Forbidden(_))));
     assert_eq!(k.list_sessions(&admin, ana_id).await.unwrap().len(), 2, "administrators see everyone's devices");
 
-    k.revoke_session(&ana, phone).await.unwrap();
+    k.revoke_session(&ferrum_testkit::at_screen(&k, &ana).await, phone).await.unwrap();
     assert!(matches!(k.check_session(acme, ana_id, phone).await, Err(Error::Unauthorized(_))), "revoked: at once on this replica");
     assert!(k.check_session(acme, ana_id, laptop).await.is_ok(), "the other device stays signed in");
-    assert!(matches!(k.revoke_session(&ana, phone).await, Err(Error::NotFound(_))), "already revoked");
+    assert!(matches!(k.revoke_session(&ferrum_testkit::at_screen(&k, &ana).await, phone).await, Err(Error::NotFound(_))), "already revoked");
     let theirs = k.open_session(&s, Duration::from_secs(3600), "Chrome", "198.51.100.1", None).await.unwrap();
-    assert!(matches!(k.revoke_session(&ana, theirs).await, Err(Error::NotFound(_))), "not hers to revoke");
-    k.revoke_session(&admin, laptop).await.unwrap();
+    assert!(matches!(k.revoke_session(&ferrum_testkit::at_screen(&k, &ana).await, theirs).await, Err(Error::NotFound(_))), "not hers to revoke");
+    k.revoke_session(&ferrum_testkit::at_screen(&k, &admin).await, laptop).await.unwrap();
     assert!(k.check_session(acme, ana_id, laptop).await.is_err(), "an administrator signs her device out");
 
     // Step-up ages; proving oneself again renews it.

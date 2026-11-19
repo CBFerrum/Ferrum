@@ -82,8 +82,8 @@ async fn ctx(k: &Kernel, s: &Session) -> Ctx {
 
 /// Turns on an authenticator app for a person: its secret and recovery codes.
 async fn two_factor(k: &Kernel, person: &Ctx) -> (String, Vec<String>) {
-    let secret = k.begin_two_factor(person).await.unwrap()["secret"].as_str().unwrap().to_string();
-    let recovery = k.enable_two_factor(person, &code(&secret, now()).unwrap()).await.unwrap();
+    let secret = k.begin_two_factor(&ferrum_testkit::at_screen(k, person).await).await.unwrap()["secret"].as_str().unwrap().to_string();
+    let recovery = k.enable_two_factor(&ferrum_testkit::at_screen(k, person).await, &code(&secret, now()).unwrap()).await.unwrap();
     (secret, recovery)
 }
 

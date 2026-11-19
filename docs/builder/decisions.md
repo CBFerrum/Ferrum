@@ -2097,3 +2097,26 @@ Decided 19 November 2026 (S1-P0a-2, `gapclose/design/S1-payments.md` 2.5.4, 2.20
   status and words); the caller reads the object back by its id and applies what it finds. `call`, the `call` effect
   and the gate still treat it as a refusal: only a money caller that reads back uses the class.
 
+
+## BD-85. Who may change how a person signs in, and where a narrowed key works
+
+Decided 19 November 2026 (API-K1, `gapclose/design/A11-app-apis.md` 2.6.1, R11).
+
+* **The gap**: any API key of a person without a second factor could call `POST /api/auth/2fa/begin` and `/enable`,
+  receive the person's authenticator secret and recovery codes, and so lock the person out behind a factor only the
+  key's holder had. Keys and bare tokens also changed passwords, removed passkeys and signed every device out.
+* **Every change to how a person signs in asks for a person at a screen** (`Ctx::changing_sign_in`, which is
+  `Ctx::at_screen()` of BD-83), in the kernel, so that no route, app or job can do it another way: two-factor begin,
+  enable, disable and new recovery codes; a passkey's options, keeping, renaming and removing one; the password (one's
+  own, or an administrator's for someone); signing one device or every device out; an administrator's reset of
+  someone's two-factor sign-in and unlinking their single sign-on. A key, a bare or OAuth token, an app's token, an
+  automation, a job, the system and the assistant are each refused (`403`). What also asked a recent step-up (a new
+  passkey) still does.
+* **The setup routes take no key** (`SetupAuth`: `GET /api/auth/2fa`, `POST /2fa/begin`, `/2fa/enable`): the browser's
+  cookie, the page token bound to it, or the session that may only set up a first second factor, which counts as a
+  person at a screen for that setup and nowhere else. `GET /api/auth/me`, which changes nothing, takes keys as before.
+* **A key narrowed to apps or operations works only at the capability door** (`api_key.apps`, `api_key.operations`;
+  nothing makes one before the keys of A11's API-3b): the server's `session_of` takes the door its caller serves and
+  refuses such a key anywhere but `Door::Capabilities`, so every consumer of credentials refuses it without a check of
+  its own (records, metadata, apps' endpoints, administration, files, the setup routes, sockets, co-editing, the
+  assistant and shell pages, `/mcp`). `Kernel::verify_api_key_from`, which knows no door, refuses one too.

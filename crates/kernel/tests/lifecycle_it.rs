@@ -187,7 +187,7 @@ async fn scenario() {
     k.scim_patch_group(&admin, emea_id, &json!({"Operations": [{"op": "add", "path": "members", "value": [{"value": pat_id}]}]})).await.unwrap();
 
     // ───────────── someone leaves: their access ends everywhere at once ─────────────
-    k.set_password(&admin, pat_id, None, PASSWORD).await.unwrap();
+    k.set_password(&ferrum_testkit::at_screen(&k, &admin).await, pat_id, None, PASSWORD).await.unwrap();
     let pat_session = k.login("acme", "pat@acme.test", PASSWORD).await.unwrap();
     let pat_ctx = k.load_ctx(tenant, pat_id, Some(pat_session.token_version), "it".into()).await.unwrap();
     let (_, pat_key) = k.create_api_key(&pat_ctx, pat_id, "laptop", None, None).await.unwrap();

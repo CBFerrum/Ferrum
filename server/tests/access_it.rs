@@ -664,9 +664,18 @@ async fn scenario() {
     // An administrator ending a session, and a password change.
     let (_, _, cookie) = sign_in(&r, "10.4.0.6", "member@acme.test", PASSWORD, true).await;
     let msid = loco_rs::auth::jwt::JWT::new(&secret).validate(cookie.as_deref().unwrap()).unwrap().claims.claims["sid"].as_str().unwrap().to_string();
-    assert_eq!(call(&r, Method::DELETE, &format!("/api/auth/sessions/{msid}"), INSIDE, Cred::Bearer(&admin_token), None).await.0, StatusCode::NO_CONTENT);
+    // An administrator at a screen signs a device out (docs/builder/decisions.md BD-85).
+    let (_, _, admin_cookie) = sign_in(&r, "10.4.0.7", "admin@acme.test", PASSWORD, true).await;
+    let admin_cookie = admin_cookie.expect("the administrator's cookie");
+    assert_eq!(call(&r, Method::DELETE, &format!("/api/auth/sessions/{msid}"), INSIDE, Cred::Cookie(&admin_cookie), None).await.0, StatusCode::NO_CONTENT);
     assert_eq!(sign_ins("10.4.0.6").await.last().unwrap().1["reason"], "revoked");
-    k.set_password(&admin, flood, None, "Another-Horse-77").await.unwrap();
+    let entry = std::sync::Arc::new(ferrum_kernel::zones::Entry {
+        zones: Default::default(),
+        placed: ferrum_kernel::zones::Placed::Nowhere,
+        address: INSIDE.into(),
+        credential: ferrum_kernel::zones::Credential::Cookie,
+    });
+    k.set_password(&k.request_ctx_as(acme, admin.user, None, "it".into(), &entry, true).await.unwrap(), flood, None, "Another-Horse-77").await.unwrap();
     let mut tx = k.db.tenant_tx(acme).await.unwrap();
     let changed: i64 =
         sqlx::query_scalar("select count(*) from audit_event where entity = 'SignIn' and record_id = $1 and diff->>'reason' = 'password_changed'")

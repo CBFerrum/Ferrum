@@ -319,8 +319,8 @@ async fn a_workspace_moves_to_another_installation_and_back() {
     // Pat's second factor, kept in the vault.
     let pat = a.create_user(&acme, "pat@acme.test", "Pat", Some(PASSWORD), &[], false).await.unwrap();
     let pat_ctx = a.load_ctx(t, pat, None, "it".into()).await.unwrap();
-    let totp = a.begin_two_factor(&pat_ctx).await.unwrap()["secret"].as_str().unwrap().to_string();
-    a.enable_two_factor(&pat_ctx, &ferrum_kernel::twofactor::code(&totp, now()).unwrap()).await.unwrap();
+    let totp = a.begin_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await).await.unwrap()["secret"].as_str().unwrap().to_string();
+    a.enable_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await, &ferrum_kernel::twofactor::code(&totp, now()).unwrap()).await.unwrap();
     a.create_user(&acme, "forget-me@acme.test", "Forget Me", Some(PASSWORD), &[], false).await.unwrap();
     a.erase_personal_data(&acme, "forget-me@acme.test", "Asked to be forgotten").await.unwrap();
     let (_, api_key) = a.create_api_key(&acme, acme.user, "integration", None, None).await.unwrap();
