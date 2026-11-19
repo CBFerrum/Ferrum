@@ -133,6 +133,16 @@ system by a link to a mergeable entity (a portal's invoices by their customer) d
 `reach_links`; `scripts/reach_links.py` finds one it did not declare (`docs/registry/reach-links.md` lists those that
 decide no one's reach, with why).
 
+**Actions any reader presses.** An action needs exactly its declared `permission` on the record, or a rule naming it.
+`permission: read` on an action that may write (one not `read_only`) is allowed only when
+`docs/registry/read-actions.md` says which it is: **A** the presser's own part (their enrolment, feed, acknowledgement
+or vote, or a tally every reader adds to); **B** an outside person's answer, the handler refusing members
+(`ctx.outside`); **C** its record stays as it is (it reads, or makes or changes other records under the presser's own
+rights); **D** the handler checks a narrower right itself and changes its own record only where the presser's Write
+scope reaches it. Anything else declares `write` or stricter. Each row names the test that presses the action as
+someone it must refuse; `scripts/read_actions.py` fails on an action missing from the registry or a row naming a test
+its app lacks.
+
 Never a role named in code to decide what a person may do (`if ctx.has_role("Manager")`) where a rule or an action's
 `roles` would say it: a workspace renames and splits roles. `ctx.has_role` is for a configured action's `roles` and
 the like, which the kernel already checks (`action_gate` in `crates/kernel/src/ctx.rs`). Reviewed, not checked.
