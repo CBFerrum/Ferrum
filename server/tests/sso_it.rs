@@ -278,7 +278,14 @@ async fn single_sign_on() {
 
     // The same address from another identity at the provider: refused until unlinked.
     assert!(matches!(sign_in(&k, &idp, provider, json!({"sub": "okta-imposter"})).await, Err(Error::Forbidden(_))));
-    k.unlink_sso(&admin, pat).await.unwrap();
+    // An administrator at a screen (docs/builder/decisions.md BD-85).
+    let entry = Arc::new(ferrum_kernel::zones::Entry {
+        zones: Default::default(),
+        placed: ferrum_kernel::zones::Placed::Nowhere,
+        address: "10.1.2.3".into(),
+        credential: ferrum_kernel::zones::Credential::Cookie,
+    });
+    k.unlink_sso(&k.request_ctx_as(tenant, admin.user, None, "it".into(), &entry, true).await.unwrap(), pat).await.unwrap();
     assert_eq!(sign_in(&k, &idp, provider, json!({"sub": "okta-pat-2"})).await.unwrap().user, pat);
 
     // ───────────── signing in again to confirm it is you (a step-up) ─────────────

@@ -54,20 +54,24 @@ async fn two_factor_sign_in() {
 
     // Setup: a secret for the app, on only once a code from it confirms it.
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["enabled"], json!(false));
-    let setup = k.begin_two_factor(&pat).await.unwrap();
+    let setup = k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await.unwrap();
     let secret = setup["secret"].as_str().unwrap().to_string();
     assert!(setup["uri"].as_str().unwrap().starts_with("otpauth://totp/"));
     assert!(setup["qr_svg"].as_str().unwrap().contains("<svg"));
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["pending"], json!(true));
-    assert_eq!(k.begin_two_factor(&pat).await.unwrap()["secret"], json!(secret), "asking again while pending gives the same secret");
+    assert_eq!(
+        k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await.unwrap()["secret"],
+        json!(secret),
+        "asking again while pending gives the same secret"
+    );
     assert!(k.login("twofa", "pat@twofa.test", "Correct-Horse-9").await.is_ok(), "not on until confirmed");
     let wrong = if code(&secret, now()).unwrap() == "000000" { "111111" } else { "000000" };
-    assert!(matches!(k.enable_two_factor(&pat, wrong).await, Err(Error::Validation(_))));
-    let recovery = k.enable_two_factor(&pat, &code(&secret, now()).unwrap()).await.unwrap();
+    assert!(matches!(k.enable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, wrong).await, Err(Error::Validation(_))));
+    let recovery = k.enable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, &code(&secret, now()).unwrap()).await.unwrap();
     assert_eq!(recovery.len(), 10);
     let status = k.two_factor_status(&pat).await.unwrap();
     assert_eq!((status["enabled"].clone(), status["recovery_codes_left"].clone()), (json!(true), json!(10)));
-    assert!(matches!(k.begin_two_factor(&pat).await, Err(Error::Invalid(_))), "on already");
+    assert!(matches!(k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await, Err(Error::Invalid(_))), "on already");
 
     // The password alone no longer signs in.
     assert!(matches!(k.login("twofa", "pat@twofa.test", "Correct-Horse-9").await, Err(Error::Unauthorized(_))));
@@ -99,7 +103,7 @@ async fn two_factor_sign_in() {
 
     // Only an administrator resets it: off, unlocked, and every session ended.
     assert!(matches!(k.reset_two_factor(&pat, pat_id).await, Err(Error::Forbidden(_))));
-    k.reset_two_factor(&admin, pat_id).await.unwrap();
+    k.reset_two_factor(&ferrum_testkit::at_screen(&k, &admin).await, pat_id).await.unwrap();
     assert!(k.load_ctx(tenant, pat_id, Some(session.token_version), "it".into()).await.is_err(), "signed out");
     let s = k.login("twofa", "pat@twofa.test", "Correct-Horse-9").await.expect("a password alone again");
     let pat = k.load_ctx(tenant, pat_id, Some(s.token_version), "it".into()).await.unwrap();
@@ -121,12 +125,12 @@ async fn two_factor_sign_in() {
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["required"], json!(true));
 
     // Turning it off takes the password (or a code from the app).
-    let secret = k.begin_two_factor(&pat).await.unwrap()["secret"].as_str().unwrap().to_string();
-    k.enable_two_factor(&pat, &code(&secret, now()).unwrap()).await.unwrap();
-    assert!(matches!(k.new_recovery_codes(&pat, wrong).await, Err(Error::Validation(_))));
-    assert_eq!(k.new_recovery_codes(&pat, &code(&secret, now() + 30).unwrap()).await.unwrap().len(), 10);
-    assert!(matches!(k.disable_two_factor(&pat, Some("not-my-password"), None).await, Err(Error::Validation(_))));
-    k.disable_two_factor(&pat, Some("Correct-Horse-9"), None).await.unwrap();
+    let secret = k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await.unwrap()["secret"].as_str().unwrap().to_string();
+    k.enable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, &code(&secret, now()).unwrap()).await.unwrap();
+    assert!(matches!(k.new_recovery_codes(&ferrum_testkit::at_screen(&k, &pat).await, wrong).await, Err(Error::Validation(_))));
+    assert_eq!(k.new_recovery_codes(&ferrum_testkit::at_screen(&k, &pat).await, &code(&secret, now() + 30).unwrap()).await.unwrap().len(), 10);
+    assert!(matches!(k.disable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, Some("not-my-password"), None).await, Err(Error::Validation(_))));
+    k.disable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, Some("Correct-Horse-9"), None).await.unwrap();
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["enabled"], json!(false));
     assert!(matches!(k.sign_in("twofa", "pat@twofa.test", "Correct-Horse-9").await.unwrap(), SignIn::SetupRequired(_)));
 

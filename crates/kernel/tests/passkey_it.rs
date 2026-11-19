@@ -151,16 +151,30 @@ async fn passkeys_make_and_sign_in() {
 
     // ── Making one ──
     let mut laptop = Device::new();
-    let options = k.passkey_options(&ana, rp, "Acme Co").await.unwrap();
+    let options = k.passkey_options(&ferrum_testkit::at_screen(&k, &ana).await, rp, "Acme Co").await.unwrap();
     assert_eq!((options["publicKey"]["rp"]["id"].clone(), options["publicKey"]["user"]["name"].clone()), (json!(rp), json!("ana@acme.test")));
     assert_eq!(options["publicKey"]["authenticatorSelection"]["userVerification"], json!("required"));
-    let made = k.add_passkey(&ana, request(&options), &origins, &laptop.create(&options, origin), "  Ana's laptop  ").await.unwrap();
+    let made = k
+        .add_passkey(&ferrum_testkit::at_screen(&k, &ana).await, request(&options), &origins, &laptop.create(&options, origin), "  Ana's laptop  ")
+        .await
+        .unwrap();
     assert_eq!((made["name"].clone(), made["rp_id"].clone()), (json!("Ana's laptop"), json!(rp)));
-    assert!(k.add_passkey(&ana, request(&options), &origins, &laptop.create(&options, origin), "again").await.is_err(), "a request is answered once");
-    let other = k.passkey_options(&ana, rp, "Acme Co").await.unwrap();
+    assert!(
+        k.add_passkey(&ferrum_testkit::at_screen(&k, &ana).await, request(&options), &origins, &laptop.create(&options, origin), "again").await.is_err(),
+        "a request is answered once"
+    );
+    let other = k.passkey_options(&ferrum_testkit::at_screen(&k, &ana).await, rp, "Acme Co").await.unwrap();
     assert_eq!(other["publicKey"]["excludeCredentials"][0]["id"], json!(B64.encode(&laptop.id)), "the device does not make a second one");
     assert!(
-        k.add_passkey(&ana, request(&other), &["https://evil.example".into()], &laptop.create(&other, "https://evil.example"), "x").await.is_err(),
+        k.add_passkey(
+            &ferrum_testkit::at_screen(&k, &ana).await,
+            request(&other),
+            &["https://evil.example".into()],
+            &laptop.create(&other, "https://evil.example"),
+            "x"
+        )
+        .await
+        .is_err(),
         "another site"
     );
     let mine = k.passkeys(&ana).await.unwrap();
@@ -202,11 +216,11 @@ async fn passkeys_make_and_sign_in() {
 
     // ── Keeping them ──
     let id: Uuid = mine[0]["id"].as_str().unwrap().parse().unwrap();
-    k.change_passkey(&ana, id, Some("Work laptop")).await.unwrap();
+    k.change_passkey(&ferrum_testkit::at_screen(&k, &ana).await, id, Some("Work laptop")).await.unwrap();
     assert_eq!(k.passkeys(&ana).await.unwrap()[0]["name"], json!("Work laptop"));
     assert!(k.passkeys(&admin).await.unwrap().is_empty(), "each person sees their own");
-    assert!(matches!(k.change_passkey(&admin, id, None).await, Err(Error::NotFound(_))), "nobody else removes it");
-    k.change_passkey(&ana, id, None).await.unwrap();
+    assert!(matches!(k.change_passkey(&ferrum_testkit::at_screen(&k, &admin).await, id, None).await, Err(Error::NotFound(_))), "nobody else removes it");
+    k.change_passkey(&ferrum_testkit::at_screen(&k, &ana).await, id, None).await.unwrap();
     let o = k.passkey_sign_in_options(rp).await.unwrap();
     assert!(k.passkey_sign_in(request(&o), &origins, &laptop.get(&o, rp, origin, ana_id), None).await.is_err(), "removed");
 
@@ -270,11 +284,11 @@ async fn step_up() {
     assert_eq!(k.step_up_ways(&ana_up, host, None).await.unwrap(), vec![json!({"way": "password", "code": false})]);
     assert!(k.passkey_step_up_options(&ana_up, host).await.is_err(), "no passkey: nothing to ask the device for");
     let mut laptop = Device::new();
-    let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
-    k.add_passkey(&ana, request(&o), &origins, &laptop.create(&o, origin), "laptop").await.unwrap();
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &ana).await, host, "Acme").await.unwrap();
+    k.add_passkey(&ferrum_testkit::at_screen(&k, &ana).await, request(&o), &origins, &laptop.create(&o, origin), "laptop").await.unwrap();
     let mut admins = Device::new();
-    let o = k.passkey_options(&admin, host, "Acme").await.unwrap();
-    k.add_passkey(&admin, request(&o), &origins, &admins.create(&o, origin), "admin's").await.unwrap();
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &admin).await, host, "Acme").await.unwrap();
+    k.add_passkey(&ferrum_testkit::at_screen(&k, &admin).await, request(&o), &origins, &admins.create(&o, origin), "admin's").await.unwrap();
     assert_eq!(
         k.step_up_ways(&ana_up, &format!("{host}:443"), None).await.unwrap(),
         vec![json!({"way": "passkey"}), json!({"way": "password", "code": false})],
@@ -306,7 +320,7 @@ async fn step_up() {
     refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "another session's challenge");
     let o = k.passkey_sign_in_options(host).await.unwrap();
     refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "a sign-in's challenge");
-    let o = k.passkey_options(&ana, host, "Acme").await.unwrap();
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &ana).await, host, "Acme").await.unwrap();
     refused(k.passkey_step_up(&ana_up, request(&o), &origins, &laptop.get(&o, host, origin, ana_id), &from).await, "a registration's challenge");
     // …and a step-up's challenge does not sign anyone in.
     let o = k.passkey_step_up_options(&ana_up, host).await.unwrap();
@@ -396,8 +410,8 @@ async fn relying_parties() {
     // Before the setting: the host is the relying party.
     assert_eq!(k.passkey_rp("erp.acme.test:443"), "erp.acme.test");
     let mut old = Device::new();
-    let o = k.passkey_options(&admin, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
-    k.add_passkey(&admin, request(&o), &[erp.into()], &old.create(&o, erp), "old").await.unwrap();
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &admin).await, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
+    k.add_passkey(&ferrum_testkit::at_screen(&k, &admin).await, request(&o), &[erp.into()], &old.create(&o, erp), "old").await.unwrap();
     let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
     assert!(offer.get("also").is_none(), "one relying party, one request");
 
@@ -420,9 +434,9 @@ async fn relying_parties() {
 
     // A new one is made for the configured party, and works on two hosts under it.
     let mut new = Device::new();
-    let o = k.passkey_options(&admin, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &admin).await, &k.passkey_rp("erp.acme.test"), "Acme").await.unwrap();
     assert_eq!(o["publicKey"]["rp"]["id"], json!("acme.test"));
-    k.add_passkey(&admin, request(&o), &[erp.into()], &new.create(&o, erp), "new").await.unwrap();
+    k.add_passkey(&ferrum_testkit::at_screen(&k, &admin).await, request(&o), &[erp.into()], &new.create(&o, erp), "new").await.unwrap();
     for (host, origin) in [("erp.acme.test", erp), ("shop.acme.test", shop)] {
         let offer = k.passkey_sign_in_offer(host).await.unwrap();
         let s = k.passkey_sign_in(request(&offer), &[origin.into()], &new.get(&offer, "acme.test", origin, admin.user), None).await.unwrap();
@@ -437,6 +451,6 @@ async fn relying_parties() {
     let offer = k.passkey_sign_in_offer("erp.acme.test").await.unwrap();
     let evil = "https://evilacme.test";
     assert!(k.passkey_sign_in(request(&offer), &[evil.into()], &new.get(&offer, "acme.test", evil, admin.user), None).await.is_err());
-    let o = k.passkey_options(&admin, "acme.test", "Acme").await.unwrap();
-    assert!(k.add_passkey(&admin, request(&o), &[evil.into()], &Device::new().create(&o, evil), "evil").await.is_err());
+    let o = k.passkey_options(&ferrum_testkit::at_screen(&k, &admin).await, "acme.test", "Acme").await.unwrap();
+    assert!(k.add_passkey(&ferrum_testkit::at_screen(&k, &admin).await, request(&o), &[evil.into()], &Device::new().create(&o, evil), "evil").await.is_err());
 }

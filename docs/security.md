@@ -16,6 +16,11 @@ operator to know. Report a vulnerability privately to the maintainers rather tha
   as do administrators' changes to people's roles (added, removed, until when), kind, keys, two-factor
   sign-in and leaving; switching a person off or on (journalled outside the database instead), the record
   scopes they are held to and what a role grants are not audit events.
+* **Only a person at a screen changes how someone signs in** (the browser's session cookie, or the page token bound to
+  it): two-factor sign-in and its recovery codes, passkeys, the password, signing devices out, and an administrator's
+  resets of these for someone. The kernel refuses it to API keys, other tokens, apps, automations, jobs and the
+  assistant ([decisions](builder/decisions.md) BD-85), so a stolen key cannot turn on a second factor only its holder
+  has. A key narrowed to apps or operations works only at the capability door; every other door refuses it.
 * **What they may do**: roles grant read, write, create, delete, submit, cancel, export and import
   per entity, narrowed to the user's own records, to record scopes (companies) or to records whose
   fields hold given values, and per field group. The kernel enforces them on every path: the

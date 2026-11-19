@@ -1,7 +1,7 @@
 //! Sign-in (with its second step), session info, two-factor setup, password changes, API keys.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, BrowserSession, SetupAuth, client_ip};
+use crate::extract::{Auth, BrowserSession, MeAuth, SetupAuth, client_ip};
 use crate::state::{AppState, app_state};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -508,7 +508,7 @@ async fn sso_backchannel_logout(
     })
 }
 
-async fn me(SetupAuth(ctx, setup_only): SetupAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
+async fn me(MeAuth(ctx, setup_only): MeAuth, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
     // Shapes B and C: a joined account's password, two-step sign-in and passkeys are its Ferrum
     // account's, kept at the accounts host.
@@ -1113,6 +1113,8 @@ pub(crate) fn relying_party(st: &AppState, headers: &HeaderMap) -> Result<(Strin
 /// this host. Changing how one signs in needs a recent sign-in or step-up (§9.2).
 async fn passkey_options(BrowserSession(ctx, device): BrowserSession, State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    // A key or a token is refused as every change to how a person signs in refuses it (BD-85).
+    ctx.changing_sign_in()?;
     let Some(device) = device else { return Err(ApiError(Error::invalid("make passkeys from a page of this site"))) };
     kept_by_identity(&st, &headers, &ctx).await?;
     if !st.kernel.check_session(ctx.tenant, ctx.user, device).await?.stepped_up() {

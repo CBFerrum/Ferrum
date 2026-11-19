@@ -302,8 +302,10 @@ impl Kernel {
     }
 
     /// What the browser needs to make a passkey for the caller on `rp_id` (the host): `{request,
-    /// publicKey}`. Their existing passkeys there are excluded, so a device does not make two.
+    /// publicKey}`. Their existing passkeys there are excluded, so a device does not make two. Only a person at a screen
+    /// (BD-85), as for keeping, renaming and removing one.
     pub async fn passkey_options(&self, ctx: &Ctx, rp_id: &str, rp_name: &str) -> Result<Value> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let mine: Vec<Vec<u8>> = sqlx::query_scalar("select credential_id from passkey where tenant_id = $1 and user_id = $2 and rp_id = $3")
             .bind(ctx.tenant)
@@ -334,6 +336,7 @@ impl Kernel {
     /// binary fields base64url), after checking it answers this request, for this site, and that
     /// the authenticator checked the person.
     pub async fn add_passkey(&self, ctx: &Ctx, request: Uuid, origins: &[String], credential: &Value, name: &str) -> Result<Value> {
+        ctx.changing_sign_in()?;
         let (challenge, tenant, user, rp_id, _) = self.take_challenge(request, "register").await?;
         if tenant != Some(ctx.tenant) || user != Some(ctx.user) {
             return Err(refused("this request was someone else's"));
@@ -617,6 +620,7 @@ impl Kernel {
 
     /// Renames (`Some`) or removes (`None`) one of the caller's passkeys.
     pub async fn change_passkey(&self, ctx: &Ctx, id: Uuid, name: Option<&str>) -> Result<()> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let done = match name {
             Some(n) => {

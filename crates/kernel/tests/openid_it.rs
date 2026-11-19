@@ -549,7 +549,7 @@ async fn scenario() {
     let (dev_ctx, dev_sid) = signed_in(&a, "acme", "dev@acme.test").await;
     let c = code(&a, &dev_ctx, dev_sid, &client, &request(&client.client_id, None)).await;
     a.openid_token(acme, &client.client_id, &secret, &c, BACK, VERIFIER, ISSUER).await.unwrap();
-    a.logout_everywhere(&dev_ctx).await.unwrap();
+    a.logout_everywhere(&ferrum_testkit::at_screen(&a, &dev_ctx).await).await.unwrap();
     let admin2 = a.create_user(&admin, "second@acme.test", "Second", Some(PASSWORD), &[], true).await.unwrap();
     let (second_ctx, second_sid) = signed_in(&a, "acme", "second@acme.test").await;
     let c = code(&a, &second_ctx, second_sid, &client, &request(&client.client_id, None)).await;
@@ -568,7 +568,7 @@ async fn scenario() {
     let g = a.oauth_redeem_code(&api.id, &c, "http://127.0.0.1:9/cb", VERIFIER).await.unwrap();
     a.end_session(acme, api_sid).await.unwrap();
     let g = a.oauth_refresh(&api.id, &g.refresh_token).await.expect("an API client's grant is not the device's session");
-    a.logout_everywhere(&a.load_ctx(acme, dev, None, "it".into()).await.unwrap()).await.unwrap();
+    a.logout_everywhere(&ferrum_testkit::at_screen(&a, &a.load_ctx(acme, dev, None, "it".into()).await.unwrap()).await).await.unwrap();
     assert!(a.oauth_refresh(&api.id, &g.refresh_token).await.is_err(), "signing out everywhere ends it");
 
     // ── rotation: the new version signs, the one before is still published; and an app takes its client away ──

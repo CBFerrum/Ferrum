@@ -370,7 +370,23 @@ async fn scenario() {
     // ── `amr` says every proof given together: a password and a recovery code at sign-in, a password and the app's code at a
     // step-up, each in the kernel's words ──
     let two = k.create_user(&admin_ctx, "two@acme.test", "Two", Some(PASSWORD), &[], true).await.unwrap();
-    let two_ctx = k.load_ctx(acme, two, None, "it".into()).await.unwrap();
+    // Setting up a second factor is the person's own, at a screen (docs/builder/decisions.md BD-85).
+    let two_ctx = k
+        .request_ctx_as(
+            acme,
+            two,
+            None,
+            "it".into(),
+            &Arc::new(ferrum_kernel::zones::Entry {
+                zones: Default::default(),
+                placed: ferrum_kernel::zones::Placed::Nowhere,
+                address: "10.9.8.7".into(),
+                credential: ferrum_kernel::zones::Credential::Cookie,
+            }),
+            true,
+        )
+        .await
+        .unwrap();
     let totp = k.begin_two_factor(&two_ctx).await.unwrap()["secret"].as_str().unwrap().to_string();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let recovery = k.enable_two_factor(&two_ctx, &ferrum_kernel::twofactor::code(&totp, now - 30).unwrap()).await.unwrap();

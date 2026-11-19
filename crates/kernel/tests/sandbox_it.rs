@@ -286,8 +286,8 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     a.create_user(&acme, "clerk@acme.test", "Clerk", Some(PASSWORD), &[], false).await.unwrap();
     let s = a.login("acme", "pat@acme.test", PASSWORD).await.unwrap();
     let pat_ctx = a.load_ctx(t, pat, Some(s.token_version), "it".into()).await.unwrap();
-    let secret = a.begin_two_factor(&pat_ctx).await.unwrap()["secret"].as_str().unwrap().to_string();
-    a.enable_two_factor(&pat_ctx, &code(&secret, now()).unwrap()).await.unwrap();
+    let secret = a.begin_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await).await.unwrap()["secret"].as_str().unwrap().to_string();
+    a.enable_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await, &code(&secret, now()).unwrap()).await.unwrap();
     let (hook, conn, old_conn, channel, provider) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let mut tx = a.db.system_tx().await.unwrap();
     // The webhook's signing secret kept in the vault, as the admin route keeps it; the other stores' rows as the kernel

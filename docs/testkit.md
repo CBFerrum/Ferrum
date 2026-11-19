@@ -57,6 +57,7 @@ async fn scenario() {
 | `kit.files` | the files stored (`FileStore::get` by key) |
 | `ws.admin`, `ws.tenant`, `ws.slug`, `ws.k` | the workspace |
 | `ws.user(email, &roles)` | a person holding those roles, signed in with `PASSWORD` |
+| `at_screen(&k, &ctx)` | that person at a screen in a request, as the server makes one for the browser's cookie: what a decision only a person makes asks for (BD-83), and every change to how a person signs in (BD-85); `ws.user` gives a context loaded outside a request, which is not |
 | `ws.drain()` | dispatches events until none of this workspace's is left, waiting for those another scenario's dispatcher holds; fails after two minutes naming each event left and its last error |
 | `obj(json)`, `uid(&doc)` or `uid(&doc["customer"])`, `dec(&value)` | a record from JSON, a record's id, a decimal (zero for null) |
 | `refused(result, kind, says)` | refused as `invalid` (a validation error too) or as the error's code with spaces (`forbidden`, `not found`, `conflict`, …), its text saying `says` |

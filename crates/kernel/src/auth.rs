@@ -50,6 +50,9 @@ pub fn validate_password(p: &str) -> Result<()> {
 /// Argon2id hashing on the blocking pool (it is deliberately slow).
 pub const USERS_CHANNEL: &str = "ferrum_users";
 
+/// What a key narrowed to apps or operations is told anywhere but the capability door (BD-85).
+pub const NARROWED_KEY: &str = "this key is narrowed to apps or operations and works only at the capability door (/api/capabilities)";
+
 /// Tells every replica, when `tx` commits, to drop its cached copy of a user (or of all the
 /// tenant's users when `user` is `None`).
 /// Ends everything someone is signed in with, on every replica: sessions and refresh tokens. API
@@ -542,23 +545,34 @@ impl Kernel {
 
     /// [`Kernel::verify_api_key`] from `address` (as `client_ip` derives it): a key with networks of its
     /// own works only from inside one of them, and is refused elsewhere (403, `network`) once its secret
-    /// is known good.
+    /// is known good. A key narrowed to apps or operations is refused (BD-85): only a door that says it is the
+    /// capability door takes one, through [`Kernel::api_key_session`].
     pub async fn verify_api_key_from(&self, raw: &str, address: &str) -> Result<(Session, Option<String>)> {
+        match self.api_key_session(raw, address).await? {
+            (_, _, true) => Err(Error::Forbidden(NARROWED_KEY.into())),
+            (session, scope, false) => Ok((session, scope)),
+        }
+    }
+
+    /// [`Kernel::verify_api_key_from`], with whether the key is narrowed to apps or operations (BD-85), for a caller
+    /// that decides where such a key may be used: the server's doors, which refuse it but at the capability door.
+    pub async fn api_key_session(&self, raw: &str, address: &str) -> Result<(Session, Option<String>, bool)> {
         let denied = || Error::Unauthorized("invalid API key".into());
         let rest = raw.strip_prefix("fk_").ok_or_else(denied)?;
         let (prefix, secret) = rest.split_once('_').ok_or_else(denied)?;
         let mut tx = self.db.system_tx().await?;
         #[allow(clippy::type_complexity)]
-        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>, Option<Vec<String>>)> = sqlx::query_as(
+        let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>, Option<Vec<String>>, bool)> = sqlx::query_as(
             "select k.tenant_id, k.user_id, k.secret_hash, \
-             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope, k.networks \
+             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope, k.networks, \
+             (k.apps is not null or k.operations is not null) \
              from api_key k join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id join tenant t on t.id = k.tenant_id \
              where k.prefix = $1",
         )
         .bind(prefix)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, user, hash, valid, tv, scope, networks)) = row else {
+        let Some((tenant, user, hash, valid, tv, scope, networks, narrowed)) = row else {
             return Err(denied());
         };
         let computed = sha256_hex(secret);
@@ -582,7 +596,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok((Session { tenant, user, token_version: tv }, scope))
+        Ok((Session { tenant, user, token_version: tv }, scope, narrowed))
     }
 
     /// Sets the networks a key works from (none: anywhere): its owner's, or anyone's for an
@@ -1356,11 +1370,12 @@ impl Kernel {
         Ok(())
     }
 
-    /// Changes a password and signs the user out everywhere.
+    /// Changes a password and signs the user out everywhere. Only a person at a screen (BD-85).
     pub async fn set_password(&self, ctx: &Ctx, user: Uuid, current: Option<&str>, new_password: &str) -> Result<()> {
         if user != ctx.user {
             Self::require_admin(ctx)?;
         }
+        ctx.changing_sign_in()?;
         validate_password(new_password)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         if user == ctx.user {
@@ -1397,8 +1412,9 @@ impl Kernel {
         Ok(())
     }
 
-    /// Invalidates every session of a user.
+    /// Invalidates every session of a user. Only a person at a screen (BD-85).
     pub async fn logout_everywhere(&self, ctx: &Ctx) -> Result<()> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query("update app_user set token_version = token_version + 1 where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)

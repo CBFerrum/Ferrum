@@ -3,7 +3,9 @@
 //! a code is accepted within one step either side of now and only once (its step is remembered);
 //! ten single-use recovery codes, kept as hashes, stand in for a lost device. Failed codes count
 //! against the same lockout as failed passwords. A workspace can require it of everyone
-//! (`require_two_factor`); an administrator resets it for someone who lost their device.
+//! (`require_two_factor`); an administrator resets it for someone who lost their device. Every change here is made by
+//! a person at a screen (`Ctx::changing_sign_in`, docs/builder/decisions.md BD-85): never a key, a token, an app, a
+//! job or the assistant.
 
 use crate::auth::Session;
 use crate::ctx::Ctx;
@@ -130,6 +132,7 @@ impl Kernel {
     /// an `otpauth://` link and a QR code (SVG). It takes effect once a code confirms it; until then
     /// asking again gives the same secret (a page shown twice must not show two).
     pub async fn begin_two_factor(&self, ctx: &Ctx) -> Result<Value> {
+        ctx.changing_sign_in()?;
         self.totp_kept()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (email, enabled, pending, workspace): (String, bool, bool, String) = sqlx::query_as(
@@ -171,6 +174,7 @@ impl Kernel {
     /// Turns two-factor sign-in on once `code` comes from the new secret; returns the recovery codes
     /// (shown once).
     pub async fn enable_two_factor(&self, ctx: &Ctx, code: &str) -> Result<Vec<String>> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (set, enabled): (bool, bool) =
             sqlx::query_as("select totp_set, totp_enabled_at is not null from app_user where tenant_id = $1 and id = $2 for update")
@@ -213,6 +217,7 @@ impl Kernel {
 
     /// New recovery codes in place of the old ones, confirmed with a code from the app.
     pub async fn new_recovery_codes(&self, ctx: &Ctx, code: &str) -> Result<Vec<String>> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let last: Option<i64> =
             sqlx::query_scalar("select totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update")
@@ -239,6 +244,7 @@ impl Kernel {
     /// Turns the caller's two-factor sign-in off, confirmed with their password or a code from the
     /// app (someone who signs in through single sign-on has no password).
     pub async fn disable_two_factor(&self, ctx: &Ctx, password: Option<&str>, code: Option<&str>) -> Result<()> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (hash, last): (Option<String>, Option<i64>) =
             sqlx::query_as("select password_hash, totp_last_step from app_user where tenant_id = $1 and id = $2 and totp_enabled_at is not null for update")
@@ -274,6 +280,7 @@ impl Kernel {
         if !ctx.is_admin {
             return Err(Error::Forbidden("only administrators can reset someone's two-factor sign-in".into()));
         }
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         self.clear_two_factor(&mut tx, ctx.tenant, user).await?;
         // The lost device may have gone with a signed-in session: end them all (and lift a lockout

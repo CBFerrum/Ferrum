@@ -78,14 +78,35 @@ fn screen_by_claims(credential: Credential, bound: bool) -> bool {
     }
 }
 
+/// Where a credential is used (docs/builder/decisions.md BD-85). A key narrowed to apps or operations works only at the
+/// capability door; every other consumer of a credential says it is elsewhere, and so refuses one without a check of
+/// its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Door {
+    /// The gate's catalog and invocations over REST (`/api/capabilities/…`).
+    Capabilities,
+    /// Anywhere else: records, metadata, administration, apps' endpoints, files, the setup routes, sockets, co-editing,
+    /// the assistant and shell pages, `/mcp`.
+    Elsewhere,
+}
+
+/// A key narrowed to apps or operations, used at `door`: refused anywhere but the capability door.
+fn narrowed_key_at(narrowed: bool, door: Door) -> Result<(), ApiError> {
+    match narrowed && door != Door::Capabilities {
+        true => Err(ApiError(Error::Forbidden(ferrum_kernel::auth::NARROWED_KEY.into()))),
+        false => Ok(()),
+    }
+}
+
 /// The session a token (session JWT, cookie token or `fk_` API key) carries. The ticket between
 /// the two steps of signing in is no session at all; a cookie's token names a browser session
 /// that must still be valid.
 /// `active`: whether this use is the person's activity, which keeps a browser session from going idle
-/// (a request is; a socket's recheck is not).
-async fn session_of(st: &crate::state::AppState, token: &str, address: &str, active: bool) -> Result<TokenSession, ApiError> {
+/// (a request is; a socket's recheck is not). `door`: where it is used ([`Door`]).
+async fn session_of(st: &crate::state::AppState, token: &str, address: &str, active: bool, door: Door) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
-        let (s, scope) = st.kernel.verify_api_key_from(token, address).await?;
+        let (s, scope, narrowed) = st.kernel.api_key_session(token, address).await?;
+        narrowed_key_at(narrowed, door)?;
         // Support keys go through like anyone's: the role behind them decides what they reach.
         let records = match scope.as_deref() {
             None | Some("support") => None,
@@ -201,7 +222,7 @@ async fn only_through_the_api(st: &crate::state::AppState, ctx: &Ctx, method: &s
 /// through [`Auth`], which also checks where each kind may come from. A socket is not activity of its
 /// own: `active` only when the person did something through it (a co-editing change).
 pub async fn ctx_from_token(st: &crate::state::AppState, token: &str, request_id: String, entry: &Arc<Entry>, active: bool) -> Result<Ctx, ApiError> {
-    let t = session_of(st, token, &entry.address, active).await?;
+    let t = session_of(st, token, &entry.address, active, Door::Elsewhere).await?;
     no_app_token(&t)?;
     if t.setup_only {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in first; this workspace requires it".into())));
@@ -269,7 +290,7 @@ async fn caller_with_app(
     if from_cookie && !crate::shell::may_change(method, headers) {
         return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
     }
-    let t = session_of(st, &token, &client_ip(headers), true).await?;
+    let t = session_of(st, &token, &client_ip(headers), true, Door::Elsewhere).await?;
     let mismatch = if from_cookie { t.sid.is_none() || t.bound.is_some() } else { t.sid.is_some() };
     if mismatch {
         return Err(ApiError(Error::Unauthorized(
@@ -327,7 +348,7 @@ pub async fn socket_credential(st: &crate::state::AppState, headers: &HeaderMap,
     }
     match crate::shell::session_cookie(headers, st.shell.secure) {
         Some(token) if crate::shell::origin_is_host(headers) => {
-            let t = session_of(st, &token, &entry.address, false).await?;
+            let t = session_of(st, &token, &entry.address, false, Door::Elsewhere).await?;
             no_app_token(&t)?;
             if t.sid.is_none() || t.bound.is_some() || t.setup_only {
                 return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
@@ -424,32 +445,54 @@ async fn screen_ctx(st: &crate::state::AppState, mut ctx: Ctx, app: &HeaderValue
     Ok(ctx)
 }
 
-/// A caller whose session may also be one that can only set up two-factor sign-in (then `.1`
-/// holds that session).
+/// The caller of a setup route (`GET /api/auth/2fa`, `POST /2fa/begin`, `/2fa/enable`): a person at a screen (the
+/// browser's cookie, or the page token bound to it), or the session that may only set up two-factor sign-in (then `.1`
+/// holds it), which counts as a person at a screen for that setup and nowhere else. A key, a bare or OAuth token and an
+/// app's token never change how a person signs in (docs/builder/decisions.md BD-85), and are refused.
 pub struct SetupAuth(pub Ctx, pub Option<ferrum_kernel::auth::Session>);
+
+/// `GET /api/auth/me`, which changes nothing: [`SetupAuth`]'s callers, and every credential [`caller_on`] takes, keys
+/// among them (an API client reads the workspace's time zone and day there).
+pub struct MeAuth(pub Ctx, pub Option<ferrum_kernel::auth::Session>);
 
 impl FromRequestParts<AppContext> for SetupAuth {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
-        let st = app_state(state)?;
-        let rid = request_id(&parts.headers);
-        // A browser session is never setup-only: the cookie is set once sign-in is complete.
-        let Some(token) = bearer(&parts.headers) else {
-            let (ctx, _) = caller(&st, parts).await?;
-            return Ok(SetupAuth(ctx, None));
-        };
-        let t = session_of(&st, &token, &client_ip(&parts.headers), true).await?;
-        no_app_token(&t)?;
-        if t.sid.is_some() {
-            return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
-        }
-        let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
-        let ctx =
-            st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, t.at_screen()).await?.proved(t.step_up_at);
-        only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
-        Ok(SetupAuth(ctx, t.setup_only.then_some(t.session)))
+        setup_caller(parts, state, false).await.map(|(ctx, setup)| SetupAuth(ctx, setup))
     }
+}
+
+impl FromRequestParts<AppContext> for MeAuth {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppContext) -> Result<Self, Self::Rejection> {
+        setup_caller(parts, state, true).await.map(|(ctx, setup)| MeAuth(ctx, setup))
+    }
+}
+
+/// [`SetupAuth`]; with `programs`, [`MeAuth`].
+async fn setup_caller(parts: &Parts, state: &AppContext, programs: bool) -> Result<(Ctx, Option<ferrum_kernel::auth::Session>), ApiError> {
+    let st = app_state(state)?;
+    let rid = request_id(&parts.headers);
+    // A browser session is never setup-only: the cookie is set once sign-in is complete.
+    let Some(token) = bearer(&parts.headers) else {
+        let (ctx, _) = caller(&st, parts).await?;
+        return Ok((ctx, None));
+    };
+    let t = session_of(&st, &token, &client_ip(&parts.headers), true, Door::Elsewhere).await?;
+    no_app_token(&t)?;
+    if t.sid.is_some() {
+        return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
+    }
+    let screen = t.at_screen() || (t.setup_only && !programs);
+    if !screen && !programs {
+        return Err(ApiError(Error::Forbidden("set up two-factor sign-in from a page of this site: a key or a token cannot".into())));
+    }
+    let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
+    let ctx = st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, screen).await?.proved(t.step_up_at);
+    only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
+    Ok((ctx, t.setup_only.then_some(t.session)))
 }
 
 /// Where a records key may send requests: records and their metadata.
@@ -539,6 +582,13 @@ mod tests {
         for c in [Credential::AppToken, Credential::OAuth, Credential::ApiKey, Credential::Scim, Credential::Dav, Credential::Socket] {
             assert!(!screen_by_claims(c, true), "{c:?}");
         }
+    }
+
+    #[test]
+    fn a_narrowed_key_passes_only_the_capability_door() {
+        assert!(narrowed_key_at(true, Door::Capabilities).is_ok());
+        assert!(matches!(narrowed_key_at(true, Door::Elsewhere), Err(ApiError(Error::Forbidden(_)))));
+        assert!(narrowed_key_at(false, Door::Elsewhere).is_ok() && narrowed_key_at(false, Door::Capabilities).is_ok(), "a whole key, as before");
     }
 
     #[test]

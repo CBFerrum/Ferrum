@@ -713,8 +713,10 @@ impl Kernel {
         Ok(rows)
     }
 
-    /// Signs one device out (one's own, or anyone's for an administrator); its pushes stop.
+    /// Signs one device out (one's own, or anyone's for an administrator); its pushes stop. Only a person at a screen
+    /// (BD-85).
     pub async fn revoke_session(&self, ctx: &Ctx, sid: Uuid) -> Result<()> {
+        ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("update user_session set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
             .bind(ctx.tenant)

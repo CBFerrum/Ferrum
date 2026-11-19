@@ -575,6 +575,15 @@ impl Ctx {
         self.made == Made::Screen && !self.is_system && self.app.is_none() && self.egress.is_none()
     }
 
+    /// Refused unless [`Ctx::at_screen`]: every change to how a person signs in (BD-85), so that no key, token, app,
+    /// automation, job or assistant changes it.
+    pub fn changing_sign_in(&self) -> Result<()> {
+        match self.at_screen() {
+            true => Ok(()),
+            false => Err(Error::Forbidden("change how you sign in from a page of this site: a key, a token or an app cannot".into())),
+        }
+    }
+
     /// Whether the person's browser session proved who they are within the last `seconds` (its step-up, read from the
     /// session in the database when the request came in).
     pub fn stepped_up_within(&self, seconds: i64) -> bool {

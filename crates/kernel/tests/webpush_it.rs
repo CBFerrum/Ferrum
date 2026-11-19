@@ -352,13 +352,13 @@ async fn notifications_reach_subscribed_devices() {
     assert_eq!(count(&k, "select count(*) from outbox where topic = 'ferrum.notification.push' and processed_at is null").await, 0);
     let on_phone = Device::new();
     k.subscribe_push(&ana, phone, &at("phone2"), &on_phone.p256dh(), &on_phone.auth()).await.unwrap();
-    k.revoke_session(&ana, phone).await.unwrap();
+    k.revoke_session(&ferrum_testkit::at_screen(&k, &ana).await, phone).await.unwrap();
     assert_eq!(k.push_status(&ana, None).await.unwrap().devices, 0);
     let a2 = k.login("acme", "ana@acme.test", "Correct-Horse-9").await.unwrap();
     let desk = k.open_session(&a2, day, "Edge desk", "203.0.113.11", None).await.unwrap();
     let ana2 = k.load_ctx(acme, ana_id, Some(a2.token_version), "it".into()).await.unwrap();
     k.subscribe_push(&ana2, desk, &at("desk"), &on_phone.p256dh(), &on_phone.auth()).await.unwrap();
-    k.logout_everywhere(&ana2).await.unwrap();
+    k.logout_everywhere(&ferrum_testkit::at_screen(&k, &ana2).await).await.unwrap();
     mention(&k, acme, ana_id, "Gus mentioned you", record).await;
     drain(&k).await;
     assert!(svc.take().is_empty(), "signed out everywhere: the old session's subscription is not used");
