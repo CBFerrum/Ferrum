@@ -1400,9 +1400,13 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 **Only its apps** ([BD-82](builder/decisions.md#bd-82-connections-only-apps-call-an-answer-to-class-a-hold)):
 `exclusive: true` admits only the listed `apps`: never the system, an administrator or a role, and an administrator's
 *try* runs only operations that change nothing. `ferrum_kernel::connections::call_answer(&k, &ctx, app, &call)` answers
-`CallAnswer {sent, status, result, later, wait, error}` (whether a request left the server, the service's status, the
+`CallAnswer {sent, status, result, later, exists, wait, error}` (whether a request left the server, the service's status, the
 mapped result when it answered as described, whether to try later and when, why not; `Err` only for the platform's own
-failures), for a caller that moves money and must tell "refused" from "unknown"; `call` is unchanged.
+failures), for a caller that moves money and must tell "refused" from "unknown"; `call` is unchanged. An operation's
+`exists_if` (an expression over `answer`, `headers`, `status` and `inputs`, checked when saved like `temporary_if`)
+says a refusal means the object asked for already exists (a duplicate of an id the caller chose: Hyperswitch's
+`answer.error.code == 'HE_01'`, at 400 or 422): `call_answer` says `exists: true`, for the caller to read it back by
+id; `call` still refuses ([BD-84](builder/decisions.md#bd-84-a-refusal-that-means-it-already-exists)).
 `connections::hold(tx, tenant, connection, app, reason)` / `release(…)`: while an app holds a connection, deleting it is
 refused (409, naming the app and the reason); turning it off stays possible (its calls wait, not sent).
 

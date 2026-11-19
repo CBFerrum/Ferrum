@@ -2055,3 +2055,45 @@ Decided 19 November 2026 (S1-P0a).
   refused; a refusal by the connection's checks or the address guard says `sent: false`. `call` is unchanged.
 * **A hold**: `connections::hold` / `release` (table `conn_hold`): deleting a connection an app holds is refused,
   naming the app and its reason; turning it off stays possible, and its calls wait as not sent until it is on again.
+
+## BD-83. Who is acting: the calling app, how each context was made, approvals at screens
+
+Decided 19 November 2026 (S1-P0c, `gapclose/design/S1-payments.md` 2.21; shared with A2-A3).
+
+* **The gap**: nothing told a person pressing a button at a screen from an automation, an API key, the assistant, a
+  job, an approval completing later or another app's call: each was a `Ctx`, the system's included, so a "person
+  decides" guard (approving a refund, settling a payment by hand) could be passed by any of them.
+* **`Ctx.made`**: `Screen`, `Key`, `Automation`, `Job`, `Approval`, `Assistant`, `Agent`, `System`, set where each
+  context is made and nowhere else: `Kernel::request_ctx_as` (a screen or a key), the automation runner, `Job::creator`
+  and `Job::system`, `load_ctx`/`load_ctx_in` (queued work), an approved action completing, `Ctx::for_provider`,
+  `Ctx::system`, `actions::system`, `ferrum_domain::util::elevated`, an inbound mapping run as the system. A context
+  derived from another keeps its `made`; code setting `is_system` sets `made = System` with it (`Ctx::elevated`).
+* **A screen, by claims**: the browser's session cookie (`sid`) and the web app's page token bound to it (`bsid`, with
+  neither `app` nor `client_id`). A bare bearer token, an app token, an OAuth token, an API key, SCIM, DAV and a socket
+  are not. `Sec-Fetch-Site` decides nothing. Only `request_ctx_as` makes one (`scripts/check_contexts.py` fails
+  otherwise, over the platform and every app).
+* **`Ctx.app`**: the calling app on the context `Kernel::call_tx` builds; none for a request, a job, the system and
+  every effect inside an app's call (`actions::system`), so an effect never acts as the app.
+* **`Ctx::at_screen()`**: made `Screen`, not the system, no app, not the assistant (and, with A2-A3's AG-6, no agent
+  on `Trace`). The one test of a decision only a person makes. `Ctx::stepped_up_within(seconds)` reads the browser
+  session's step-up for decisions that also need a fresh one.
+* **`people_at_screens: true`** on an approval policy: asking and deciding are each refused unless `at_screen()`; the
+  action it completes runs made `Approval`.
+* **`administrators: true`** on a step's approvers: the workspace's active administrators (members), a flag on a
+  person and not a role, so no role can name them. With `people_at_screens`, "a second administrator approves at a
+  screen" (Payments' processors, routing and reconciling).
+
+## BD-84. A refusal that means "it already exists"
+
+Decided 19 November 2026 (S1-P0a-2, `gapclose/design/S1-payments.md` 2.5.4, 2.20).
+
+* **The gap**: a service that makes objects under an id the caller chooses (Hyperswitch's `payment_id` and
+  `refund_id`) answers a second create with that id as an error (`HE_01`, at 400 or 422), not as the object. Read as a
+  refusal, a payment lost in a timeout and sent again would be taken as never made.
+* **What a description says**: `exists_if` on an operation, an expression over `answer`, `headers`, `status` and
+  `inputs` (compiled when the connection is saved), saying which refusals mean the object exists. It is matched on the
+  answer's code, not its status, since the same code comes at 400 and at 422.
+* **What callers get**: `connections::call_answer` answers such a refusal with `exists: true` (still `sent`, with its
+  status and words); the caller reads the object back by its id and applies what it finds. `call`, the `call` effect
+  and the gate still treat it as a refusal: only a money caller that reads back uses the class.
+

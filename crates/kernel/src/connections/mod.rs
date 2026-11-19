@@ -169,7 +169,7 @@ pub struct Limit {
 const TURN_WAIT: Duration = Duration::from_secs(10);
 
 /// The keys of an operation that are [`More`]'s.
-const MORE: [&str; 14] = [
+const MORE: [&str; 15] = [
     "steps",
     "url",
     "success",
@@ -180,6 +180,7 @@ const MORE: [&str; 14] = [
     "public_files",
     "refused_if",
     "temporary_if",
+    "exists_if",
     "error",
     "auth_scheme",
     "limit",
@@ -264,6 +265,11 @@ pub struct More {
     /// Among refusals (by status or by `refused_if`), an expression saying which are temporary ("later").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_if: Option<String>,
+    /// Among refusals, an expression saying the object asked for already exists (a duplicate of an id the caller chose:
+    /// Hyperswitch's `answer.error.code == 'HE_01'`, at 400 or 422): `call_answer` says `exists`, for the caller to read
+    /// it back; `call` still refuses (BD-84).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exists_if: Option<String>,
     /// An expression giving a refusal's words (`answer.errors[0].message`), in place of `error_at`'s pointer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -300,6 +306,7 @@ static NO_MORE: More = More {
     public_files: BTreeMap::new(),
     refused_if: None,
     temporary_if: None,
+    exists_if: None,
     error: None,
     auth_scheme: None,
     limit: None,
@@ -333,7 +340,7 @@ impl More {
                 return Some(p);
             }
         }
-        if let Some(p) = [&self.refused_if, &self.temporary_if, &self.error]
+        if let Some(p) = [&self.refused_if, &self.temporary_if, &self.exists_if, &self.error]
             .into_iter()
             .flatten()
             .find_map(|e| ferrum_meta::Expr::compile(e).err().map(|m| format!("'{e}': {m}")))
@@ -1446,6 +1453,9 @@ pub struct CallAnswer {
     pub status: Option<u16>,
     pub result: Option<Value>,
     pub later: bool,
+    /// A refusal the description's `exists_if` says means the object already exists: read it back, never take it as
+    /// refused.
+    pub exists: bool,
     pub wait: Option<u64>,
     pub error: Option<String>,
 }
@@ -1498,7 +1508,7 @@ impl Kernel {
 
     async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
         // Boxed: an app's future that awaits a call stays within the compiler's depth for layouts.
-        let (outcome, _, _) = Box::pin(self.call_outcome(ctx, app, c)).await?;
+        let (outcome, ..) = Box::pin(self.call_outcome(ctx, app, c)).await?;
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
             Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
@@ -1508,24 +1518,24 @@ impl Kernel {
     }
 
     async fn call_answered(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<CallAnswer> {
-        let (outcome, status, sent) = match Box::pin(self.call_outcome(ctx, app, c)).await {
+        let (outcome, status, sent, exists) = match Box::pin(self.call_outcome(ctx, app, c)).await {
             Ok(o) => o,
             // Refused before anything was sent: the connection's checks, its inputs, its rights, a key in use.
             Err(e @ (Error::Db(_) | Error::Internal(_))) => return Err(e),
-            Err(Error::RetryAfter(why, secs)) => (Outcome::Later(why, Some(secs)), None, false),
-            Err(Error::Unavailable(why)) => (Outcome::Later(why, None), None, false),
-            Err(e) => (Outcome::No(e.to_string()), None, false),
+            Err(Error::RetryAfter(why, secs)) => (Outcome::Later(why, Some(secs)), None, false, false),
+            Err(Error::Unavailable(why)) => (Outcome::Later(why, None), None, false, false),
+            Err(e) => (Outcome::No(e.to_string()), None, false, false),
         };
         Ok(match outcome {
             Outcome::Ok(result, _) => CallAnswer { sent, status, result: Some(result), ..Default::default() },
             Outcome::Later(why, wait) => CallAnswer { sent, status, later: true, wait, error: Some(why), ..Default::default() },
-            Outcome::No(why) => CallAnswer { sent, status, error: Some(why), ..Default::default() },
+            Outcome::No(why) => CallAnswer { sent, status, exists, error: Some(why), ..Default::default() },
         })
     }
 
     /// One call made, as `call` and `call_answer` both make it: the outcome, the status the service answered, and whether
     /// a request left the server.
-    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<(Outcome, Option<u16>, bool)> {
+    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<(Outcome, Option<u16>, bool, bool)> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
@@ -1559,7 +1569,7 @@ impl Kernel {
             if let Some((was, result)) = self.done_before(&conn, &c.operation, key).await? {
                 return if was == given {
                     // Made before under this key: what it answered then.
-                    Ok((Outcome::Ok(result, Box::new(Answer::none())), None, true))
+                    Ok((Outcome::Ok(result, Box::new(Answer::none())), None, true, false))
                 } else {
                     Err(Error::Conflict(format!("the key {key} was used for {} with other inputs: a new request needs a new key", c.operation)))
                 };
@@ -1573,20 +1583,20 @@ impl Kernel {
         let about = c.entity.clone().zip(c.record);
         let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
         let public = self.public_files(ctx, &conn, &c.operation, (&inputs, key), about, more).await?;
-        let (outcome, status, sent) = if more.steps.is_empty() {
+        let (outcome, status, sent, exists) = if more.steps.is_empty() {
             let extra = Extra { now: Some(clock), public: Some(&public.vars), ..Default::default() };
-            let (o, status, sent) =
+            let (o, status, sent, exists) =
                 Box::pin(self.perform_full(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str()))).await?;
             // No status and a refusal: the guard or the request's making refused it before anything left.
             let sent = sent && !(status.is_none() && matches!(o, Outcome::No(_)));
-            (o, status, sent)
+            (o, status, sent, exists)
         } else {
             let o = Box::pin(self.perform_steps(ctx, &conn, &c.operation, (&inputs, &public.vars), key, clock, about)).await?;
             if let (Outcome::Ok(result, _), Some(key)) = (&o, key) {
                 self.remember(ctx, &conn, &c.operation, key, &given, result).await?;
             }
             // Steps: some may have gone out whatever the end was.
-            (o, None, true)
+            (o, None, true, false)
         };
         if let Some(tx) = held {
             tx.commit().await?;
@@ -1595,7 +1605,7 @@ impl Kernel {
         if matches!(outcome, Outcome::Ok(..) | Outcome::No(_)) {
             self.end_public_files(conn.tenant, &public.ends).await?;
         }
-        Ok((outcome, status, sent))
+        Ok((outcome, status, sent, exists))
     }
 
     /// The `connection` a template reads: its name, id and inbound address (`inbound_url`, with the query secret for a
@@ -1658,7 +1668,7 @@ impl Kernel {
         extra: Extra<'_>,
         about: Option<(&str, Uuid)>,
         keep: Option<&str>,
-    ) -> Result<(Outcome, Option<u16>, bool)> {
+    ) -> Result<(Outcome, Option<u16>, bool, bool)> {
         let op = conn.desc.operations.get(name).ok_or_else(|| Error::invalid(format!("{} has no operation {name}", conn.name)))?;
         let more = conn.desc.more(name);
         if !more.steps.is_empty() {
@@ -1782,6 +1792,8 @@ impl Kernel {
             (other, _) => other,
         };
         let worked = |s: u16| (200..300).contains(&s) || more.success.as_ref().is_some_and(|ok| ok.contains(&s));
+        // A refusal the description says means "it already exists" (BD-84).
+        let exists = matches!(&answered, Ok(a) if (!worked(a.status) || holds(&more.refused_if, a)) && holds(&more.exists_if, a));
         let (outcome, status, row_outcome) = match answered {
             Ok(a) if worked(a.status) && !holds(&more.refused_if, &a) => {
                 let status = a.status;
@@ -1828,7 +1840,7 @@ impl Kernel {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok((outcome, status, sent))
+        Ok((outcome, status, sent, exists))
     }
 
     /// A request's turn under the connection's [`Limit`]: counted in its window (none left: `RetryAfter` until the next

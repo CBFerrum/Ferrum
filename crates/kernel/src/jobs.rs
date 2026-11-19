@@ -139,12 +139,12 @@ impl Job {
         })?;
         // As the request stood: a person who had not stepped up has not, however long the job waited (crate::controls).
         let staff = !ctx.outside && !ctx.is_system;
-        Ok(crate::Ctx { proof: crate::controls::Proof::of_mark(self.step_up.as_deref(), staff), ..ctx })
+        Ok(crate::Ctx { proof: crate::controls::Proof::of_mark(self.step_up.as_deref(), staff), made: crate::ctx::Made::Job, ..ctx })
     }
 
     /// The system, for this job: within the zone of the request that queued it (crate::zones, level 2).
     pub async fn system(&self, k: &Kernel) -> Result<Ctx> {
-        k.system_in(self.tenant_id, self.zone.as_deref()).await
+        Ok(Ctx { made: crate::ctx::Made::Job, ..k.system_in(self.tenant_id, self.zone.as_deref()).await? })
     }
 }
 

@@ -521,6 +521,7 @@ impl Kernel {
         }
         if map.run_as == Some(RunAs::System) {
             given.is_system = true;
+            given.made = crate::ctx::Made::System;
             given.is_admin = true;
             given.perms = std::sync::Arc::new(crate::ctx::PermSet { admin: true, limit: ctx.perms.limit.clone(), ..Default::default() });
         }

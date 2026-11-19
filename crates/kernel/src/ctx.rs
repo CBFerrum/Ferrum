@@ -473,6 +473,9 @@ pub struct Ctx {
     pub full_name: String,
     pub roles: Vec<String>,
     pub is_admin: bool,
+    /// Since when they have been an administrator (BD-83): an `administrators` approval step counts them after seven
+    /// days, and an app can ask the same of an asker. None for everyone else.
+    pub admin_since: Option<chrono::DateTime<chrono::Utc>>,
     pub is_system: bool,
     /// A portal person or a guest (docs/builder/decisions.md BD-02): a record's comments, files,
     /// assignments and tags are the workspace members' business, never theirs.
@@ -499,8 +502,39 @@ pub struct Ctx {
     pub zone: Option<Arc<crate::zones::Entry>>,
     /// What can be said of the person's proof of who they are (crate::controls): step-up rules ask it.
     pub proof: crate::controls::Proof,
+    /// The app whose code acts, when an app's call made this context (`Kernel::call_tx` names the caller); none for a
+    /// request, a job, the system, and every effect inside an app's call (`actions::system`), so an effect never acts as
+    /// the app (S1-P0c, BD-83).
+    pub app: Option<String>,
+    /// How this context was made (BD-83): set where each context is made and nowhere else; [`Made::Screen`] only by
+    /// `Kernel::request_ctx_as` for an interactive session credential.
+    pub made: Made,
     /// The reads this request has recorded already (crate::controls), shared by its clones.
     pub reads: Arc<crate::controls::Seen>,
+}
+
+/// How a context was made (BD-83, `gapclose/design/S1-payments.md` 2.21): what is acting behind it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Made {
+    /// A person at a screen in this request: the browser's session cookie, or the web app's page token bound to it.
+    Screen,
+    /// A program with a person's credential: an API key, a bare bearer token, an app token, an OAuth token, SCIM, DAV, a
+    /// socket.
+    Key,
+    /// An automation, as the administrator who saved it.
+    Automation,
+    /// Work queued earlier, as its creator or the system; also any context loaded outside a request.
+    Job,
+    /// An approved action completing, as its requester.
+    Approval,
+    /// The assistant or an MCP client acting for a person.
+    Assistant,
+    /// An agent (A2-A3, AG-1).
+    Agent,
+    /// The platform or an app's code, a person's context elevated included.
+    #[default]
+    System,
 }
 
 /// What may leave for an AI provider. Being able to read something does not make it yours to send:
@@ -531,7 +565,27 @@ impl Egress {
 impl Ctx {
     /// This context, for reading what goes on to an AI provider.
     pub fn for_provider(&self, egress: Egress) -> Ctx {
-        Ctx { egress: Some(Arc::new(egress)), ..self.clone() }
+        Ctx { egress: Some(Arc::new(egress)), made: Made::Assistant, ..self.clone() }
+    }
+
+    /// The one test of "a decision only a person makes" (BD-83): a context `request_ctx_as` built for this HTTP request
+    /// from an interactive session credential, not the system, carrying no app, not the assistant. An automation, a key,
+    /// a job, an approval completing later, the assistant and an app's call are each refused where this is required.
+    pub fn at_screen(&self) -> bool {
+        self.made == Made::Screen && !self.is_system && self.app.is_none() && self.egress.is_none()
+    }
+
+    /// Whether the person's browser session proved who they are within the last `seconds` (its step-up, read from the
+    /// session in the database when the request came in).
+    pub fn stepped_up_within(&self, seconds: i64) -> bool {
+        matches!(self.proof, crate::controls::Proof::Person { at: Some(at), .. } if chrono::Utc::now() - at <= chrono::Duration::seconds(seconds))
+    }
+
+    /// This context with `is_system` set: made [`Made::System`] with it, never a screen.
+    pub fn elevated(mut self) -> Ctx {
+        self.is_system = true;
+        self.made = Made::System;
+        self
     }
 
     /// Full-power context for engine work (seeding, automations, migrations).
@@ -545,7 +599,9 @@ impl Ctx {
             full_name: "System".into(),
             roles: vec![],
             is_admin: true,
+            admin_since: None,
             is_system: true,
+            made: Made::System,
             outside: false,
             request_id: format!("sys-{}", Uuid::now_v7()),
             scopes: BTreeMap::new(),
@@ -558,6 +614,7 @@ impl Ctx {
             origin: None,
             zone: None,
             proof: crate::controls::Proof::Inside,
+            app: None,
             reads: Default::default(),
         }
     }

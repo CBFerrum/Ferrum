@@ -78,6 +78,9 @@ const MALL_ORDER: &str = r#"
       contract: {completion: "The order's parcel shipped, committed with this receipt"}
 "#;
 
+/// Who each `ship` and each `dispatch` saw acting: the app its context names, and how it was made (BD-83).
+static SEEN: std::sync::Mutex<Vec<(&'static str, Option<String>, ferrum_kernel::Made)>> = std::sync::Mutex::new(Vec::new());
+
 /// The carrier's code: a shipment for `ship`, nothing for `hold` (which waits for the desk's approval), and for `pack` a
 /// shipment written and then a refusal of its own.
 struct Carrier;
@@ -87,6 +90,7 @@ impl DocHook for Carrier {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         Ok(match name {
             "ship" => {
+                SEEN.lock().unwrap().push(("ship", hc.ctx.app.clone(), hc.ctx.made));
                 let made = hc.kernel.insert_tx(hc.ctx, hc.tx, "Shipment", obj(json!({"parcel": doc["id"], "carrier": params["carrier"]}))).await?;
                 Some(json!({"shipment": made["id"]}))
             }
@@ -110,6 +114,7 @@ impl DocHook for Mall {
         if name != "dispatch" {
             return Ok(None);
         }
+        SEEN.lock().unwrap().push(("dispatch", hc.ctx.app.clone(), hc.ctx.made));
         let order = doc["id"].as_str().unwrap_or_default();
         let pack = Invocation::new("carrier.parcel.pack", json!({"id": doc["parcel"], "params": {}})).key(format!("pack:{order}"));
         if hc.kernel.call_tx(&self.0, hc.ctx, hc.tx, &pack).await.is_ok() {
@@ -304,7 +309,14 @@ async fn scenario() {
         Invocation::new("mall.mall_order.dispatch", json!({"id": uid(order), "params": {"then_fail": then}})).key(format!("dispatch:{}", uid(order)))
     };
     let first = k.insert(&ws.admin, "MallOrder", order.clone()).await.unwrap();
+    SEEN.lock().unwrap().clear();
     let done = call(&kit, "shop", &pat, dispatch(&first, "no")).await.expect("dispatched");
+    // call_tx_names_the_calling_app_in_the_context, a_nested_call_names_the_inner_caller,
+    // configured_effects_and_call_tx_are_made_system (BD-83): the mall's code runs as the shop's call, the carrier's as
+    // the mall's, each on a system context, never a screen.
+    let seen = SEEN.lock().unwrap().clone();
+    let made = ferrum_kernel::Made::System;
+    assert_eq!(seen, vec![("dispatch", Some("shop".to_string()), made), ("ship", Some("mall".to_string()), made)], "{seen:?}");
     assert!(!done.result["shipment"].is_null(), "{done:?}");
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 4);
     let callers: Vec<(Option<String>, String)> = receipts(&ws).await.into_iter().skip(3).map(|r| (r.0, r.2)).collect();

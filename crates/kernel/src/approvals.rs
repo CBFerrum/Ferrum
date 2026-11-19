@@ -198,9 +198,23 @@ fn holds(ent: &EffEntity, ctx: &Ctx, doc: &Doc, src: Option<&str>) -> Result<boo
     e.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value() }).map_err(|m| Error::invalid(format!("approval '{src}': {m}")))
 }
 
+/// How long a person has been an administrator before an `administrators` step counts them (BD-83).
+const ADMIN_SETTLED_DAYS: i32 = 7;
+
 /// The people `who` names on `doc`: a role's holders, or the ids or e-mail addresses a field or an expression gives
 /// (one, or a list), each an active member of the workspace.
 async fn resolve(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, who: &Approvers) -> Result<Vec<Uuid>> {
+    if who.administrators {
+        // Administrators acting themselves, each one for a week at least: a person promoted today does not count yet.
+        return Ok(sqlx::query_scalar(
+            "select id from app_user where tenant_id = $1 and is_admin and is_active and kind = 'member' \
+             and admin_since <= now() - make_interval(days => $2) order by 1",
+        )
+        .bind(ctx.tenant)
+        .bind(ADMIN_SETTLED_DAYS)
+        .fetch_all(&mut **tx)
+        .await?);
+    }
     if let Some(role) = &who.role {
         return Ok(sqlx::query_scalar(
             "select r.user_id from user_role r join app_user u on u.tenant_id = r.tenant_id and u.id = r.user_id \
@@ -476,6 +490,10 @@ impl Kernel {
         params: &Value,
         on_action: Option<&ferrum_meta::ActionDef>,
     ) -> Result<Option<Value>> {
+        // Two persons, each at a screen in their own request (BD-83): never an automation, a key, the assistant or an app.
+        if policy.people_at_screens && !ctx.at_screen() {
+            return Err(Error::Forbidden(format!("{} is asked for by a person at a screen", ent.def.label)));
+        }
         if let Some(r) = pending(tx, ctx.tenant, &ent.def.name, id).await? {
             return Err(Error::Conflict(format!(
                 "this {} is awaiting approval of '{}': it is decided or recalled first",
@@ -552,6 +570,9 @@ impl Kernel {
         let doc = self.get_tx(&crate::actions::system(ctx), tx, entity, id, true).await?;
         let req = pending(tx, ctx.tenant, entity, id).await?.ok_or_else(|| Error::NotFound("an approval awaiting a decision on this record".into()))?;
         let (policy, mut steps) = req.parts()?;
+        if policy.people_at_screens && !ctx.at_screen() {
+            return Err(Error::Forbidden("this approval is decided by a person at a screen".into()));
+        }
         let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or_default();
         // An action's request is not tied to where the record stands: the action's own conditions decide when it runs.
         if !req.on_action && state != req.from_state {
@@ -562,12 +583,14 @@ impl Kernel {
         let standing = standing_for(tx, ctx).await?;
         // The open step this decision is for, and whom it counts for: themselves, else someone they stand in for.
         let mine = |i: usize, person: Uuid| !decided.iter().any(|d| d.step as usize == i && !d.void && d.person() == person);
+        // A step of the workspace's administrators is decided in person (BD-83): no stand-in is offered for it.
+        let in_person = |i: usize| policy.steps.get(i).is_some_and(|d| d.approvers.administrators);
         let chosen = steps.iter().enumerate().filter(|(_, s)| s.is("open")).find_map(|(i, s)| {
             let me = (s.may(ctx.user) && mine(i, ctx.user)).then_some((i, ctx.user, None));
-            me.or_else(|| standing.iter().find(|p| s.may(**p) && mine(i, **p)).map(|p| (i, *p, Some(*p))))
+            me.or_else(|| standing.iter().filter(|_| !in_person(i)).find(|p| s.may(**p) && mine(i, **p)).map(|p| (i, *p, Some(*p))))
         });
         let Some((i, person, behalf)) = chosen else {
-            let mine_once = steps.iter().any(|s| s.is("open") && (s.may(ctx.user) || standing.iter().any(|p| s.may(*p))));
+            let mine_once = steps.iter().enumerate().any(|(i, s)| s.is("open") && (s.may(ctx.user) || (!in_person(i) && standing.iter().any(|p| s.may(*p)))));
             return Err(if mine_once {
                 Error::Conflict("you have already decided this step".into())
             } else {
@@ -696,7 +719,9 @@ impl Kernel {
     async fn complete_document(&self, ctx: &Ctx, tx: &mut Tx, entity: &str, id: Uuid, req: &Request, title: &str) -> Result<()> {
         // In the zone the request was made in, not the decider's (crate::zones, level 2).
         let who = match req.requester {
-            Some(u) => self.load_ctx_in(ctx.tenant, u, req.zone.as_deref(), ctx.request_id.clone()).await,
+            Some(u) => {
+                self.load_ctx_in(ctx.tenant, u, req.zone.as_deref(), ctx.request_id.clone()).await.map(|who| Ctx { made: crate::ctx::Made::Approval, ..who })
+            }
             None => self.system_in(ctx.tenant, req.zone.as_deref()).await.map(|s| crate::actions::system(&s)),
         };
         sqlx::query("savepoint approval_completes").execute(&mut **tx).await?;
