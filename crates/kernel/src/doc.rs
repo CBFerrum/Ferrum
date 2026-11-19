@@ -104,13 +104,18 @@ impl Kernel {
     /// [`Kernel::mask`] for one record the caller reached: a field a rule hides (BD-40) is left out unless another
     /// rule reaching this record shows it.
     pub async fn mask_record(&self, ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: Doc) -> Result<Doc> {
-        if ctx.perms.hidden(&ent.def.name).is_none() {
+        if ctx.perms.hidden(&ent.def.name).is_none() && !ctx.perms.hides_lines(&ent.def.name) {
             return Ok(self.mask(ctx, ent, doc));
         }
+        // What this record shows, by the rules reaching it (BD-40, S9 R13): its fields, and its lines' by line entity.
         let hidden = crate::ctx::record_hidden(ctx, tx, ent, &doc).await?;
         let mut perms = (*ctx.perms).clone();
         if let Some(e) = perms.entities.get_mut(&ent.def.name) {
-            e.hidden = hidden;
+            e.hidden = hidden.fields;
+        }
+        let lines: Vec<String> = perms.entities.get(&ent.def.name).map(|e| e.line_hidden.keys().cloned().collect()).unwrap_or_default();
+        for l in lines {
+            perms.entities.entry(l.clone()).or_default().hidden = hidden.lines.get(&l).cloned().unwrap_or_default();
         }
         let ctx = Ctx { perms: std::sync::Arc::new(perms), ..ctx.clone() };
         Ok(self.mask(&ctx, ent, doc))
@@ -582,6 +587,24 @@ impl Kernel {
             return Err(Error::NotFound(ent.def.label.clone()));
         }
         check_version(&old, expected_version)?;
+        // A field, or a line's, this record does not show the writer (no rule reaching it grants its group, S9 R13) is
+        // not written here, whatever their other rules grant elsewhere.
+        if !ctx.is_system && (ctx.perms.hidden(entity).is_some() || ctx.perms.hides_lines(entity)) {
+            let hid = crate::ctx::record_hidden(ctx, tx, &ent, &old).await?;
+            let mut errors: Vec<FieldError> =
+                patch.keys().filter(|k| hid.fields.contains(*k)).map(|k| FieldError::new(k, "you cannot change this on this record")).collect();
+            for (table, info) in &ent.children {
+                let (Some(h), Some(Value::Array(rows))) = (hid.lines.get(&info.entity), patch.get(table)) else { continue };
+                for (i, row) in rows.iter().enumerate() {
+                    for k in row.as_object().into_iter().flat_map(|m| m.keys()).filter(|k| h.contains(*k)) {
+                        errors.push(FieldError::new(k, "you cannot change this on this record").in_row(table, i));
+                    }
+                }
+            }
+            if !errors.is_empty() {
+                return Err(Error::Validation(errors));
+            }
+        }
         if ent.is_submittable() && docstatus_of(&old) != 0 {
             return Err(Error::invalid(format!(
                 "a {} {} cannot be edited; cancel and amend it instead",
@@ -1384,7 +1407,7 @@ impl Kernel {
                 continue;
             }
             // A field a rule hides (BD-40) is refused whatever is sent: "unchanged" would tell its value.
-            if !trusted && ctx.perms.hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {
+            if !trusted && ctx.perms.write_hidden(&ent.def.name).is_some_and(|h| h.contains(k)) {
                 errors.push(FieldError::new(k, "you are not permitted to change this field"));
                 continue;
             }

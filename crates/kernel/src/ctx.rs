@@ -76,6 +76,15 @@ impl Action {
     }
 }
 
+/// A rule reading an entity, as one record's fields are told by it (S9 R13): what it does not show on the records it
+/// reaches, and of their lines, per line entity.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReadRule {
+    pub grant: Grant,
+    pub hide: BTreeSet<String>,
+    pub line_hide: BTreeMap<String, BTreeSet<String>>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EntityAccess {
     pub read: Access,
@@ -95,11 +104,16 @@ pub struct EntityAccess {
     /// What an outside person sees of the conversation on the records they read (BD-22): `Some(false)` the shared
     /// comments and files, `Some(true)` those and their own beside them.
     pub shared: Option<bool>,
-    /// Each rule reading the entity, with the fields it hides (BD-40), to tell what one record shows.
-    pub read_rules: Vec<(Grant, BTreeSet<String>)>,
-    /// Fields some rule hides and no rule reading every record shows: left out wherever a set of records is read
-    /// (lists, filters, sorting, search, reports, exports, history, live updates) and never written.
+    /// Each rule reading the entity, with the fields it does not show (BD-40's `hide`, and the grouped fields whose group
+    /// its role does not grant, S9 R13) and those of its records' lines, to tell what one record shows.
+    pub read_rules: Vec<ReadRule>,
+    /// Fields some reading rule does not show and no rule reading every record shows: left out wherever a set of records
+    /// is read (lists, filters, sorting, search, reports, exports, history, live updates).
     pub hidden: BTreeSet<String>,
+    /// Fields a rule hides (BD-40), which no rule reading every record shows: never written.
+    pub write_hidden: BTreeSet<String>,
+    /// Per line entity, the line fields some reading rule of this entity does not show: left out of lines in sets.
+    pub line_hidden: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn action_index(a: Action) -> usize {
@@ -219,6 +233,7 @@ impl Limit {
 
 #[derive(sqlx::FromRow)]
 struct PermRow {
+    role: String,
     entity: String,
     can_read: bool,
     can_write: bool,
@@ -249,18 +264,39 @@ impl PermSet {
         PermSet { limit, ..self.clone() }
     }
 
-    pub async fn load(tx: &mut Tx, tenant: Uuid, roles: &[String], admin: bool) -> Result<PermSet> {
+    /// The rights `roles` give in `tenant` (all of them for an administrator). Field groups follow the rule that reaches the
+    /// record (S9 R13): a reading rule shows a grouped field of `schema`'s entity only when its own groups, or its role's
+    /// group-only rows on the entity, grant the group; a line's grouped fields, when its role grants their group on the
+    /// line entity. A role's group-only rows on an entity it reads nothing of grant nothing.
+    pub async fn load(tx: &mut Tx, tenant: Uuid, roles: &[String], admin: bool, schema: &Schema) -> Result<PermSet> {
         if admin {
             return Ok(PermSet { admin: true, ..Default::default() });
         }
         let rows: Vec<PermRow> = sqlx::query_as(
-            "select entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
+            "select role, entity, can_read, can_write, can_create, can_delete, can_submit, can_cancel, can_export, can_import, \
              if_owner, read_groups, write_groups, match_rule, via, actions, shared, hide from role_permission where tenant_id = $1 and role = any($2)",
         )
         .bind(tenant)
         .bind(roles)
         .fetch_all(&mut **tx)
         .await?;
+        // Each role's groups on each entity, from all its rows there (a line entity's are its group-only rows), and those
+        // of its rows that grant no action (group-only rows), which join its reading rules on the entity.
+        let mut role_groups: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        let mut group_only: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        for r in &rows {
+            let groups = r.read_groups.iter().chain(&r.write_groups).cloned();
+            role_groups.entry((r.role.clone(), r.entity.clone())).or_default().extend(groups.clone());
+            let acts = [r.can_read, r.can_write, r.can_create, r.can_delete, r.can_submit, r.can_cancel, r.can_export, r.can_import];
+            if !acts.contains(&true) && r.actions.is_empty() {
+                group_only.entry((r.role.clone(), r.entity.clone())).or_default().extend(groups);
+            }
+        }
+        // Grouped fields of an entity whose group `groups` leaves out.
+        let ungranted = |entity: &str, groups: &BTreeSet<String>| -> BTreeSet<String> {
+            let Some(ent) = schema.entity(entity) else { return BTreeSet::new() };
+            ent.def.fields.iter().filter(|f| f.perm_group.as_ref().is_some_and(|g| !groups.contains(g))).map(|f| f.name.clone()).collect()
+        };
         let mut set = PermSet::default();
         for r in rows {
             // A condition that no longer parses (its field was removed) grants nothing.
@@ -276,7 +312,7 @@ impl PermSet {
             let via = r.via.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
             let grant = Grant { owner: r.if_owner || via.is_some(), condition, ranges, via };
             let level = if grant.is_whole() { Access::All } else { Access::Own };
-            let e = set.entities.entry(r.entity).or_default();
+            let e = set.entities.entry(r.entity.clone()).or_default();
             let allowed = [r.can_read, r.can_write, r.can_create, r.can_delete, r.can_submit, r.can_cancel, r.can_export, r.can_import];
             let levels = [&mut e.read, &mut e.write, &mut e.create, &mut e.delete, &mut e.submit, &mut e.cancel, &mut e.export, &mut e.import];
             for (i, (yes, cur)) in allowed.into_iter().zip(levels).enumerate() {
@@ -295,12 +331,33 @@ impl PermSet {
                     named.push(grant.clone());
                 }
             }
-            e.read_groups.extend(r.read_groups);
-            e.write_groups.extend(r.write_groups);
-            let hide: BTreeSet<String> = r.hide.into_iter().collect();
-            e.hidden.extend(hide.iter().cloned());
+            e.read_groups.extend(r.read_groups.iter().cloned());
+            e.write_groups.extend(r.write_groups.iter().cloned());
+            let explicit: BTreeSet<String> = r.hide.into_iter().collect();
+            e.write_hidden.extend(explicit.iter().cloned());
             if r.can_read {
-                e.read_rules.push((grant.clone(), hide));
+                let mut groups: BTreeSet<String> = r.read_groups.into_iter().chain(r.write_groups).collect();
+                groups.extend(group_only.get(&(r.role.clone(), r.entity.clone())).into_iter().flatten().cloned());
+                let mut hide = explicit;
+                hide.extend(ungranted(&r.entity, &groups));
+                // Its records' lines, at every depth: the line entity's groups this rule's role grants.
+                let mut line_hide = BTreeMap::new();
+                let mut lines: Vec<String> = schema.entity(&r.entity).map(|e| e.children.values().map(|c| c.entity.clone()).collect()).unwrap_or_default();
+                while let Some(l) = lines.pop() {
+                    let granted = role_groups.get(&(r.role.clone(), l.clone())).cloned().unwrap_or_default();
+                    let hid = ungranted(&l, &granted);
+                    if !hid.is_empty() {
+                        line_hide.insert(l.clone(), hid);
+                    }
+                    lines.extend(schema.entity(&l).map(|e| e.children.values().map(|c| c.entity.clone()).collect::<Vec<_>>()).unwrap_or_default());
+                }
+                e.hidden.extend(hide.iter().cloned());
+                for (l, hid) in &line_hide {
+                    e.line_hidden.entry(l.clone()).or_default().extend(hid.iter().cloned());
+                }
+                e.read_rules.push(ReadRule { grant: grant.clone(), hide, line_hide });
+            } else {
+                e.hidden.extend(explicit);
             }
             // Only a rule that reads says anything of the conversation; the widest of them holds.
             if r.can_read
@@ -310,13 +367,24 @@ impl PermSet {
             }
         }
         // A field a rule reading every record shows is shown everywhere: such a rule reaches each record.
-        let whole_shows = |e: &EntityAccess, f: &str| e.read_rules.iter().any(|(g, h)| g.is_whole() && !h.contains(f));
         let every = set.entities.get("*").cloned();
+        let whole = |e: &EntityAccess| -> Vec<ReadRule> {
+            e.read_rules.iter().chain(every.iter().flat_map(|w| &w.read_rules)).filter(|r| r.grant.is_whole()).cloned().collect()
+        };
+        let mut lines_hidden: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for e in set.entities.values_mut() {
-            let shown: Vec<String> = e.hidden.iter().filter(|f| whole_shows(e, f) || every.as_ref().is_some_and(|w| whole_shows(w, f))).cloned().collect();
-            for f in shown {
-                e.hidden.remove(&f);
+            let wholes = whole(e);
+            e.hidden.retain(|f| !wholes.iter().any(|r| !r.hide.contains(f)));
+            e.write_hidden.retain(|f| !wholes.iter().any(|r| !r.hide.contains(f)));
+            for (l, hid) in e.line_hidden.iter_mut() {
+                hid.retain(|f| !wholes.iter().any(|r| !r.line_hide.get(l).is_some_and(|h| h.contains(f))));
+                lines_hidden.entry(l.clone()).or_default().extend(hid.iter().cloned());
             }
+            e.line_hidden.retain(|_, h| !h.is_empty());
+        }
+        // A line's fields hidden in sets are its entity's too: filters and sorts through lines read them.
+        for (l, hid) in lines_hidden.into_iter().filter(|(_, h)| !h.is_empty()) {
+            set.entities.entry(l).or_default().hidden.extend(hid);
         }
         Ok(set)
     }
@@ -327,6 +395,19 @@ impl PermSet {
             return None;
         }
         self.entities.get(entity).map(|e| &e.hidden).filter(|h| !h.is_empty())
+    }
+
+    /// Fields of `entity` a rule hides (BD-40), never written by the holder.
+    pub fn write_hidden(&self, entity: &str) -> Option<&BTreeSet<String>> {
+        if self.admin || !self.sees(entity) {
+            return None;
+        }
+        self.entities.get(entity).map(|e| &e.write_hidden).filter(|h| !h.is_empty())
+    }
+
+    /// Whether some line of `entity`'s records hides a field in sets (S9 R13).
+    pub fn hides_lines(&self, entity: &str) -> bool {
+        !self.admin && self.entities.get(entity).is_some_and(|e| !e.line_hidden.is_empty())
     }
 
     pub fn access(&self, entity: &str, action: Action) -> Access {
@@ -402,7 +483,7 @@ impl PermSet {
     }
 
     pub fn can_write_field(&self, entity: &str, f: &FieldDef) -> bool {
-        if !self.sees(entity) || self.hidden(entity).is_some_and(|h| h.contains(&f.name)) {
+        if !self.sees(entity) || self.write_hidden(entity).is_some_and(|h| h.contains(&f.name)) {
             return false;
         }
         match &f.perm_group {
@@ -450,8 +531,11 @@ impl PermSet {
             if let Some(mine) = self.entities.get(name) {
                 e.read_rules = mine.read_rules.clone();
                 e.hidden = mine.hidden.clone();
+                e.write_hidden = mine.write_hidden.clone();
+                e.line_hidden = mine.line_hidden.clone();
             }
-            if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None) || !e.read_groups.is_empty() || !e.write_groups.is_empty() {
+            let hides = !e.hidden.is_empty() || !e.line_hidden.is_empty();
+            if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None) || !e.read_groups.is_empty() || !e.write_groups.is_empty() || hides {
                 out.entities.insert(name.to_string(), e);
             }
         }
@@ -964,21 +1048,38 @@ pub fn transition_gate(ctx: &Ctx, ent: &EffEntity, t: &ferrum_meta::WorkflowTran
 
 /// The fields of one record hidden from `ctx` (BD-40): those every rule reaching the record hides. A field one rule
 /// hides and another reaching the same record shows is shown. Empty when no rule hides anything.
-pub async fn record_hidden(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc) -> Result<BTreeSet<String>> {
-    let Some(hidden) = ctx.perms.hidden(&ent.def.name) else { return Ok(BTreeSet::new()) };
-    let mut out = hidden.clone();
-    for (grant, hide) in ctx.perms.entities.get(&ent.def.name).map(|e| e.read_rules.as_slice()).unwrap_or_default() {
-        if out.is_empty() {
+pub async fn record_hidden(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc) -> Result<RecordHidden> {
+    if ctx.perms.admin {
+        return Ok(RecordHidden::default());
+    }
+    let Some(e) = ctx.perms.entities.get(&ent.def.name) else { return Ok(RecordHidden::default()) };
+    let mut out = RecordHidden { fields: ctx.perms.hidden(&ent.def.name).cloned().unwrap_or_default(), lines: e.line_hidden.clone() };
+    // Each rule reaching the record by its own arms shows what it does not hide; a share or the line would lift nothing.
+    for rule in &e.read_rules {
+        if out.fields.is_empty() && out.lines.values().all(BTreeSet::is_empty) {
             break;
         }
-        if out.iter().all(|f| hide.contains(f)) {
+        let narrows = !out.fields.iter().all(|f| rule.hide.contains(f))
+            || out.lines.iter().any(|(l, hid)| !hid.iter().all(|f| rule.line_hide.get(l).is_some_and(|h| h.contains(f))));
+        if !narrows {
             continue;
         }
-        if scope_of(ctx, ent, Some(vec![grant.clone()]))?.admits(tx, ctx.tenant, doc).await? {
-            out.retain(|f| hide.contains(f));
+        if scope_of(ctx, ent, Some(vec![rule.grant.clone()]))?.admits(tx, ctx.tenant, doc).await? {
+            out.fields.retain(|f| rule.hide.contains(f));
+            for (l, hid) in out.lines.iter_mut() {
+                hid.retain(|f| rule.line_hide.get(l).is_some_and(|h| h.contains(f)));
+            }
         }
     }
+    out.lines.retain(|_, h| !h.is_empty());
     Ok(out)
+}
+
+/// What one record does not show its reader ([`record_hidden`]): its fields, and its lines' per line entity.
+#[derive(Debug, Clone, Default)]
+pub struct RecordHidden {
+    pub fields: BTreeSet<String>,
+    pub lines: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// The scope `grants` give on `ent` (`None`: every record), with the user's scopes on top.
