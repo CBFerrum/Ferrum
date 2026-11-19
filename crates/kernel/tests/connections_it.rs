@@ -145,6 +145,8 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/hop-private" => (302, "location: http://10.0.0.1/v1/ok\r\n".into(), String::new()),
                     "/v1/hop-localhost" => (302, format!("location: http://localhost:{}/v1/ok\r\n", s.local_addr().unwrap().port()), String::new()),
                     "/v1/ok" => (200, String::new(), json!({"ok": true}).to_string()),
+                    "/v1/dup400" => (400, String::new(), json!({"error": {"code": "HE_01", "message": "Duplicate payment_id"}}).to_string()),
+                    "/v1/dup422" => (422, String::new(), json!({"error": {"code": "HE_01", "message": "Duplicate refund_id"}}).to_string()),
                     "/v1/conflict" => (409, String::new(), json!({"error": {"message": "idempotency_key_in_use"}}).to_string()),
                     "/v1/gateway-down" => (502, String::new(), json!({"error": {"message": "bad gateway"}}).to_string()),
                     "/v1/orders" => match path.split_once("cursor=").map(|c| c.1.to_string()).as_deref() {
@@ -503,6 +505,23 @@ async fn payment_providers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     assert!(!a.sent && a.status.is_none() && a.error.is_some(), "the guard refused it before it left: {a:?}");
     let a = connections::call_answer(k, admin, Some("other"), &call("answers_like", "ok", json!({}), None)).await.unwrap();
     assert!(!a.sent && a.error.is_some(), "a caller the connection does not list: {a:?}");
+    // ── exists_if_answers_exists_and_call_still_refuses (S1-P0a-2): a duplicate answered with Hyperswitch's code ──
+    let ops = json!({
+        "open": {"path": "/dup400", "method": "POST", "body": "{}", "exists_if": "has(answer.error) && answer.error.code == 'HE_01'"},
+        "refund": {"path": "/dup422", "method": "POST", "body": "{}", "exists_if": "has(answer.error) && answer.error.code == 'HE_01'"},
+        "refuse": {"path": "/refuse", "method": "POST", "body": "{}", "exists_if": "has(answer.error) && has(answer.error.code) && answer.error.code == 'HE_01'"}});
+    save("dup_like", json!({"base": base, "apps": ["depot"], "operations": ops})).await;
+    for (op, status) in [("open", 400), ("refund", 422)] {
+        let a = answer("dup_like", op, Some("dup-1")).await;
+        assert!(a.exists && a.sent && a.status == Some(status) && a.result.is_none() && !a.later, "{op}: exists, to read back: {a:?}");
+        let e = connections::call(k, admin, Some("depot"), &call("dup_like", op, json!({}), Some("dup-2"))).await.unwrap_err();
+        assert!(matches!(e, Error::Invalid(_)), "{op}: call still refuses: {e}");
+    }
+    let a = answer("dup_like", "refuse", Some("dup-3")).await;
+    assert!(!a.exists && a.status == Some(422), "another refusal is not one: {a:?}");
+    let bad = input("dup_bad", json!({"base": base, "operations": {"x": {"path": "/ok", "exists_if": "answer.error.code =="}}}), None);
+    assert!(k.save_connection_def(admin, None, &bad).await.is_err(), "an expression that does not compile is refused");
+
     // ── call_is_unchanged ──
     assert_eq!(connections::call(k, admin, Some("depot"), &call("answers_like", "ok", json!({}), None)).await.unwrap(), json!({"ok": true}));
     assert!(matches!(

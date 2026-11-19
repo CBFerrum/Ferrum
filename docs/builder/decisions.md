@@ -2083,3 +2083,17 @@ Decided 19 November 2026 (S1-P0c, `gapclose/design/S1-payments.md` 2.21; shared 
   person and not a role, so no role can name them. With `people_at_screens`, "a second administrator approves at a
   screen" (Payments' processors, routing and reconciling).
 
+## BD-84. A refusal that means "it already exists"
+
+Decided 19 November 2026 (S1-P0a-2, `gapclose/design/S1-payments.md` 2.5.4, 2.20).
+
+* **The gap**: a service that makes objects under an id the caller chooses (Hyperswitch's `payment_id` and
+  `refund_id`) answers a second create with that id as an error (`HE_01`, at 400 or 422), not as the object. Read as a
+  refusal, a payment lost in a timeout and sent again would be taken as never made.
+* **What a description says**: `exists_if` on an operation, an expression over `answer`, `headers`, `status` and
+  `inputs` (compiled when the connection is saved), saying which refusals mean the object exists. It is matched on the
+  answer's code, not its status, since the same code comes at 400 and at 422.
+* **What callers get**: `connections::call_answer` answers such a refusal with `exists: true` (still `sent`, with its
+  status and words); the caller reads the object back by its id and applies what it finds. `call`, the `call` effect
+  and the gate still treat it as a refusal: only a money caller that reads back uses the class.
+
