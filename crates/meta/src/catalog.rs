@@ -862,6 +862,11 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, cu
     {
         return Err(format!("title_field '{t}' is not a field"));
     }
+    for r in &e.reach_links {
+        if !field(r).is_some_and(|f| f.ftype == FieldType::Link) {
+            return Err(format!("reach_links: '{r}' is not a link field of {}", e.name));
+        }
+    }
     let emailish = |f: &FieldDef| matches!(f.ftype, FieldType::Data | FieldType::Email);
     for o in &e.owner_fields {
         let ok = match o.split_once('.') {

@@ -21,6 +21,7 @@ use crate::{Doc, Kernel, audit, outbox};
 use ferrum_meta::{ChildInfo, EffEntity, FieldType, Schema, Storage};
 use serde_json::{Value, json};
 use sqlx::AssertSqlSafe;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 /// What became of `id`, if it was merged into another record.
@@ -47,20 +48,43 @@ pub(crate) async fn resolve_links(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: 
 }
 
 /// Every place a link to `entity` is kept: table, how to read it, and for the same entity's own rows.
-fn link_columns(schema: &Schema, entity: &str) -> Vec<(String, String, bool, bool)> {
+/// A column holding links to the merged entity: its table, its column, whether it is kept in `ext`, whether it is the
+/// merged entity's own, and the entity and field whose value it is for who reaches records (a line's: its record's
+/// entity and the table field the line is in).
+struct LinkColumn {
+    table: String,
+    column: String,
+    in_ext: bool,
+    own: bool,
+    reach: (String, String),
+}
+
+fn link_columns(schema: &Schema, entity: &str) -> Vec<LinkColumn> {
     let mut out = Vec::new();
     for e in schema.entities.values().filter(|e| !e.table.is_empty()) {
         for f in e.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(entity)) {
-            out.push((e.table.clone(), f.name.clone(), e.storage_of(&f.name) == Some(Storage::Ext), e.def.name == entity));
+            out.push(LinkColumn {
+                table: e.table.clone(),
+                column: f.name.clone(),
+                in_ext: e.storage_of(&f.name) == Some(Storage::Ext),
+                own: e.def.name == entity,
+                reach: (e.def.name.clone(), f.name.clone()),
+            });
         }
         // Its lines, and a line's own lines (BD-06).
-        let mut rows: Vec<&ChildInfo> = e.children.values().collect();
-        while let Some(info) = rows.pop() {
+        let mut rows: Vec<(&String, &ChildInfo)> = e.children.iter().collect();
+        while let Some((top, info)) = rows.pop() {
             let Some(c) = schema.entity(&info.entity) else { continue };
             for f in c.value_fields().filter(|f| f.ftype == FieldType::Link && f.to.as_deref() == Some(entity)) {
-                out.push((info.table.clone(), f.name.clone(), c.storage_of(&f.name) == Some(Storage::Ext), false));
+                out.push(LinkColumn {
+                    table: info.table.clone(),
+                    column: f.name.clone(),
+                    in_ext: c.storage_of(&f.name) == Some(Storage::Ext),
+                    own: false,
+                    reach: (e.def.name.clone(), top.clone()),
+                });
             }
-            rows.extend(c.children.values());
+            rows.extend(c.children.values().map(|i| (top, i)));
         }
     }
     out
@@ -82,7 +106,9 @@ pub async fn merged_ids(tx: &mut Tx, tenant: Uuid, entity: &str, id: Uuid) -> Re
 }
 
 impl Kernel {
-    /// Merges `duplicate` into `keep`, for someone who could read both and delete the duplicate.
+    /// Merges `duplicate` into `keep`, for someone whose rules let them delete the duplicate and change the record that
+    /// stays; one that moves a link deciding who reaches records (`crate::reach::fields`, any link of a party) is an
+    /// administrator's.
     pub async fn merge_records(&self, ctx: &Ctx, entity: &str, keep: Uuid, duplicate: Uuid, reason: &str) -> Result<Value> {
         self.merge_records_with(ctx, entity, keep, duplicate, reason, None).await
     }
@@ -123,6 +149,23 @@ impl Kernel {
         if ent.def.company_scoped && stays.get("company") != goes.get("company") {
             return Err(Error::invalid("these records belong to different companies"));
         }
+        // Delete on the duplicate and write on the record that stays, each as the caller's rules reach that record:
+        // reading both is not enough (a lead read through a territory is not theirs to fold into their own).
+        {
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            let may_delete = row_scope(ctx, &ent, Action::Delete)?.admits(&mut tx, ctx.tenant, &goes).await?;
+            let may_write = match row_scope(ctx, &ent, Action::Write) {
+                Ok(scope) => scope.admits(&mut tx, ctx.tenant, &stays).await?,
+                Err(_) => false,
+            };
+            tx.commit().await?;
+            if !may_delete || !may_write {
+                return Err(Error::Forbidden(format!(
+                    "you may merge only a {label} you may delete into one you may change",
+                    label = ent.def.label.to_lowercase()
+                )));
+            }
+        }
 
         let mut tx = self.db.system_tenant_tx(ctx.tenant).await?;
         // Two merges of the same records take their turns, in the same order whichever way round.
@@ -150,7 +193,21 @@ impl Kernel {
         // The schema as it is now: a link left behind by an older view would point at nothing.
         let schema = self.registry.schema(ctx.tenant).await?;
         let (mut links, keep_text, dup_text) = (0u64, keep.to_string(), duplicate.to_string());
-        for (table, column, in_ext, own) in link_columns(&schema, entity) {
+        // Links that decide who reaches records (R19), counted by the moves themselves: whatever links the duplicate
+        // when the moves run counts, a link written a moment ago too. A party's every link decides someone's reach.
+        let parties = ent.package == "parties";
+        let mut reach_moved = 0u64;
+        let mut deciding: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for LinkColumn { table, column, in_ext, own, reach } in link_columns(&schema, entity) {
+            let decides = parties || {
+                if !deciding.contains_key(&reach.0)
+                    && let Some(e) = schema.entity(&reach.0)
+                {
+                    let fields = crate::reach::fields(ctx, &mut tx, e).await?;
+                    deciding.insert(reach.0.clone(), fields);
+                }
+                deciding.get(&reach.0).is_some_and(|f| f.contains(&reach.1))
+            };
             let t = q(&table);
             let sql = if in_ext {
                 format!("update {t} set ext = jsonb_set(ext, array[$4], to_jsonb($1::text)) where tenant_id = $2 and ext->>$4 = $3")
@@ -162,11 +219,24 @@ impl Kernel {
                 let c = q(&column);
                 format!("update {t} set {c} = $1::uuid where tenant_id = $2 and {c} = $3::uuid and $4 = $4")
             };
-            links += sqlx::query(AssertSqlSafe(sql)).bind(&keep_text).bind(ctx.tenant).bind(&dup_text).bind(&column).execute(&mut *tx).await?.rows_affected();
+            let moved =
+                sqlx::query(AssertSqlSafe(sql)).bind(&keep_text).bind(ctx.tenant).bind(&dup_text).bind(&column).execute(&mut *tx).await?.rows_affected();
+            links += moved;
+            if decides {
+                reach_moved += moved;
+            }
         }
         for link in schema.merge_links.iter().filter(|l| l.to == entity) {
             let sql = format!("update {t} set {c} = $1 where tenant_id = $2 and {c} = $3", t = q(&link.table), c = q(&link.column));
-            links += sqlx::query(AssertSqlSafe(sql)).bind(keep).bind(ctx.tenant).bind(duplicate).execute(&mut *tx).await?.rows_affected();
+            let moved = sqlx::query(AssertSqlSafe(sql)).bind(keep).bind(ctx.tenant).bind(duplicate).execute(&mut *tx).await?.rows_affected();
+            links += moved;
+            if parties {
+                reach_moved += moved;
+            }
+        }
+        // Moving who reaches records is an administrator's: for anyone else the merge is taken back whole.
+        if reach_moved > 0 && !ctx.is_admin {
+            return Err(Error::Forbidden(format!("merging these moves {reach_moved} link(s) that decide who reaches records: an administrator merges them")));
         }
 
         // What hangs off the record comes along; a tag or follower both had stays once.
@@ -238,12 +308,21 @@ impl Kernel {
             .bind((!ctx.user.is_nil()).then_some(ctx.user))
             .execute(&mut *tx)
             .await?;
-        audit::record(&mut tx, ctx, entity, keep, "merge", None, json!({"absorbed": duplicate, "links_moved": links, "reason": reason})).await?;
+        audit::record(
+            &mut tx,
+            ctx,
+            entity,
+            keep,
+            "merge",
+            None,
+            json!({"absorbed": duplicate, "links_moved": links, "reach_moved": reach_moved, "reason": reason}),
+        )
+        .await?;
         audit::record(&mut tx, ctx, entity, duplicate, "merged_into", None, json!({"into": keep, "reason": reason})).await?;
         // Apps that keep copies of a record's name or address hear of it here.
         outbox::enqueue(&mut tx, ctx.tenant, &format!("{entity}.merged"), Some(entity), Some(keep), json!({"keep": keep, "duplicate": duplicate})).await?;
         tx.commit().await?;
-        Ok(json!({"keep": keep, "merged": duplicate, "links_moved": links}))
+        Ok(json!({"keep": keep, "merged": duplicate, "links_moved": links, "reach_moved": reach_moved}))
     }
 
     /// Records that look like one another: equal, apart from case and spaces, in a field the entity

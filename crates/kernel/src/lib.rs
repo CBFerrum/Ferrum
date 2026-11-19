@@ -68,6 +68,7 @@ pub mod privacy;
 pub mod process;
 pub mod published;
 pub mod query;
+pub mod reach;
 pub mod receipt;
 pub mod recovery;
 pub mod registry;

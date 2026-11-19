@@ -758,6 +758,11 @@ pub struct EntityDef {
     /// Duplicates can be merged into one record (crates/kernel/src/merge.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mergeable: bool,
+    /// Link fields its app's code reads records by as the system, for others than the rules' holders (an invoice a
+    /// portal shows by its customer): they decide who reaches its records though no rule names them, so a merge that
+    /// moves them is an administrator's (docs/guides/05; crates/kernel/src/reach.rs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reach_links: Vec<String>,
     /// Fields that, equal apart from case and spaces, suggest two records are one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub duplicate_fields: Vec<String>,

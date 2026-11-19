@@ -147,22 +147,22 @@ impl Host<'_, '_> {
                 };
                 let limit = a.get("limit").and_then(Value::as_u64).map(|l| l.clamp(1, MAX_QUERY_ROWS as u64) as u32).unwrap_or(100);
                 let sort = a.get("sort").and_then(Value::as_str).map(str::to_string);
+                // A plugin's query is a caller's list, in a hook as anywhere: the one path, which refuses a filter or
+                // sort on a field the plugin's caller cannot read.
+                let q = ListQuery {
+                    filters,
+                    fields: a.get("fields").and_then(Value::as_array).map(|f| f.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+                    sort,
+                    limit: Some(limit),
+                    cursor: a.get("cursor").and_then(Value::as_str).map(str::to_string),
+                    ..Default::default()
+                };
                 match &mut self.scope {
                     Scope::Hook(hc) => {
-                        let rows = hc.kernel.find_tx(&c, hc.tx, e, &filters, sort.as_deref(), limit).await?;
-                        Ok(json!({"rows": rows}))
+                        let page = hc.kernel.list_tx(&c, hc.tx, e, &q, Action::Read).await?;
+                        Ok(json!({"rows": page.rows}))
                     }
-                    Scope::Own { k, .. } => {
-                        let q = ListQuery {
-                            filters,
-                            fields: a.get("fields").and_then(Value::as_array).map(|f| f.iter().filter_map(Value::as_str).map(str::to_string).collect()),
-                            sort,
-                            limit: Some(limit),
-                            cursor: a.get("cursor").and_then(Value::as_str).map(str::to_string),
-                            ..Default::default()
-                        };
-                        Ok(serde_json::to_value(k.list(&c, e, &q).await?).map_err(Error::internal)?)
-                    }
+                    Scope::Own { k, .. } => Ok(serde_json::to_value(k.list(&c, e, &q).await?).map_err(Error::internal)?),
                 }
             }
             "data.insert" => {

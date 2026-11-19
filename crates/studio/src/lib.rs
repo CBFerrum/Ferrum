@@ -46,11 +46,14 @@ struct StudioRows;
 
 #[async_trait]
 impl ferrum_kernel::documents::QueryRows for StudioRows {
-    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value) -> Result<Value> {
+    async fn rows(&self, k: &Kernel, ctx: &Ctx, report: &str, params: &Value, export: bool) -> Result<Value> {
         let mut tx = k.db.tenant_tx(ctx.tenant).await?;
         let id = ferrum_kernel::store::doc_id(&builder::report_labelled(k, &mut tx, ctx, report).await?)?;
         tx.commit().await?;
-        Ok(builder::run_report(k, ctx, id, &builder::Runtime::parse(params)?).await?["data"].take())
+        let runtime = builder::Runtime::parse(params)?;
+        let mut out =
+            if export { query::as_export(builder::run_report(k, ctx, id, &runtime)).await? } else { builder::run_report(k, ctx, id, &runtime).await? };
+        Ok(out["data"].take())
     }
 
     async fn shape(&self, k: &Kernel, tx: &mut ferrum_kernel::Tx, ctx: &Ctx, report: &str) -> Result<Value> {

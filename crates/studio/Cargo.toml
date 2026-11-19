@@ -21,6 +21,8 @@ rust_xlsxwriter = "0.102"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+# A task-local says what a query's rows are for (query::as_export).
+tokio = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

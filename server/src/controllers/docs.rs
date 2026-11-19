@@ -400,7 +400,8 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
         return Err(ApiError(Error::Unavailable("no mailer is configured on this server".into())));
     }
     st.mail_limiter.check(&format!("{}|{}", ctx.tenant, ctx.user)).await.map_err(ApiError)?;
-    let doc = k.get(&ctx, &entity, id, false).await?;
+    // Mailing a record sends it out of the workspace: it must be reached by a rule that grants export.
+    let doc = k.get_for_export(&ctx, &entity, id).await?;
     let label = k.entity(&ctx, &entity)?.def.label.clone();
     let number = doc.get("number").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| id.to_string());
     let title = format!("{label} {number}");
@@ -482,7 +483,8 @@ async fn export(Auth(ctx): Auth, State(app): State<AppContext>, Path(entity): Pa
             let (k, ctx, entity, mut q) = (k.clone(), ctx.clone(), entity.clone(), q.clone());
             async move {
                 q.cursor = cursor;
-                let page = k.list_with_timeout(&ctx, &entity, &q, k.db.config.report_timeout_ms).await?;
+                // Only records reached by rules that grant export leave the workspace.
+                let page = k.list_as(&ctx, &entity, &q, k.db.config.report_timeout_ms, Action::Export).await?;
                 Ok((page.rows, page.next_cursor))
             }
         }

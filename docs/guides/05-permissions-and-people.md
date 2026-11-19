@@ -109,6 +109,40 @@ permission checks, within the zone the person is limited to; `Ctx::system` is th
 elevate to do for a person what they may not do themselves: decide first, with their context, then elevate only
 the engine's part.
 
+**One read path for a caller's list.** Filters, sort and grouping a caller chose reveal the values of the fields they
+read, so whoever asks (the list route, the `{entity}.list` capability, MCP, a plugin's `data.query`, an export) goes
+through `Kernel::list_tx(ctx, tx, entity, q, action)`: a filter or sort on a field the caller cannot read is refused, a
+filter through a link reaches only the linked records the caller reads, each row is masked. `Kernel::find_tx` is code's
+own lookup: its filters and sort are the code's, never a caller's. An app report's caller-chosen grouping or filter
+passes `ferrum_domain::reports::readable_choice`; a default the caller cannot read falls back through
+`readable_default`; output columns go through `readable_columns`. What leaves the workspace (an export, a mailed
+record, a document's data file) holds only records reached by rules that grant **export** (`list_tx(…, Action::Export)`,
+`Kernel::get_for_export`), not every record the person reads. A form preview of a stored record reads only one the
+caller reads; a save or preview fetches nothing from a `reference: restricted` record the caller does not read (the
+link stands, its fields stay empty, a refusal names none of its values). A query one app asks another
+(`Kernel::call_tx` of a capability that changes nothing) answers as the caller, never as the system.
+
+**Merging, and links that decide reach.** A merge needs Delete on the duplicate and Write on the record that stays,
+each through a rule that reaches that record: reading both is not enough. A merge that moves a link deciding who
+reaches records is an administrator's: a field `ferrum_kernel::reach::fields` names (owner fields, fields a rule's
+`where` reads, links a rule's `via` crosses, links to `Company` and to entities people are scoped by, fields approval
+steps route by, and the links an entity declares in `reach_links`), and any link at all of a `parties` record (a
+customer, a supplier). The moves are counted as they run, in the merge's transaction; for anyone else the merge is
+taken back whole, and an administrator's says how many it moved (`reach_moved`). An app whose code reads records as the
+system by a link to a mergeable entity (a portal's invoices by their customer) declares that link in the entity's
+`reach_links`; `scripts/reach_links.py` finds one it did not declare (`docs/registry/reach-links.md` lists those that
+decide no one's reach, with why).
+
+**Actions any reader presses.** An action needs exactly its declared `permission` on the record, or a rule naming it.
+`permission: read` on an action that may write (one not `read_only`) is allowed only when
+`docs/registry/read-actions.md` says which it is: **A** the presser's own part (their enrolment, feed, acknowledgement
+or vote, or a tally every reader adds to); **B** an outside person's answer, the handler refusing members
+(`ctx.outside`); **C** its record stays as it is (it reads, or makes or changes other records under the presser's own
+rights); **D** the handler checks a narrower right itself and changes its own record only where the presser's Write
+scope reaches it. Anything else declares `write` or stricter. Each row names the test that presses the action as
+someone it must refuse; `scripts/read_actions.py` fails on an action missing from the registry or a row naming a test
+its app lacks.
+
 Never a role named in code to decide what a person may do (`if ctx.has_role("Manager")`) where a rule or an action's
 `roles` would say it: a workspace renames and splits roles. `ctx.has_role` is for a configured action's `roles` and
 the like, which the kernel already checks (`action_gate` in `crates/kernel/src/ctx.rs`). Reviewed, not checked.
