@@ -1497,6 +1497,14 @@ impl Kernel {
             }
         }
         let p = &PermissionDef { if_owner: p.if_owner || via.is_some(), via, ..p.clone() };
+        // A rule naming a collection action reaches no record, so it narrows to none (API-2, as packages are checked).
+        let scoped = !p.condition.is_empty() || p.via.is_some() || p.if_owner || p.shared.is_some();
+        if scoped
+            && let Some(ent) = ctx.schema.entity(&p.entity)
+            && let Some(a) = ent.def.actions.iter().find(|a| a.collection && p.actions.contains(&a.name))
+        {
+            return Err(Error::field("actions", format!("{} is bound to no record: a rule naming it takes no where, via, owner or sharing", a.name)));
+        }
         let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
         sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut **tx).await?;
         let portal: bool =

@@ -341,7 +341,11 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         let version = if origin == owner { version.clone() } else { version_of(k, ctx, origin) };
         let contract = a.contract.clone().unwrap_or_default();
         let effect = contract.effect.unwrap_or(if a.read_only { Effect::Query } else { Effect::TransactionalAction });
-        let input = by_id(&[("params", params_schema(&a.params))]);
+        // A collection action is bound to no record: `{params}` only (API-2).
+        let input = match a.collection {
+            true => object_schema(Map::from_iter([("params".to_string(), params_schema(&a.params))]), vec![]),
+            false => by_id(&[("params", params_schema(&a.params))]),
+        };
         let completion = contract
             .completion
             .clone()
@@ -878,6 +882,9 @@ impl Kernel {
             }
             Operation::Submit => record(self.submit_tx(ctx, tx, entity, id()?, version).await?),
             Operation::Cancel => record(self.cancel_tx(ctx, tx, entity, id()?, version).await?),
+            Operation::Action(name) if crate::receipt::action_def(ctx, entity, name).is_some_and(|a| a.collection) => {
+                self.run_collection_tx(ctx, tx, entity, name, &Value::Object(object("params")?)).await?
+            }
             Operation::Action(name) => self.run_action_tx(ctx, tx, entity, id()?, name, &Value::Object(object("params")?)).await?,
             Operation::Transition(name) => record(self.transition_tx(ctx, tx, entity, id()?, name, version).await?),
             Operation::Notify => {

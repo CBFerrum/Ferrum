@@ -141,6 +141,15 @@ pub fn spec(ctx: &Ctx) -> Value {
             }
         }
         for a in actions {
+            if a.collection {
+                paths.insert(
+                    format!("/api/v1/{n}/_actions/{}", a.name),
+                    json!({"post": {"tags": [n], "summary": a.label,
+                    "requestBody": {"content": {"application/json": {"schema": ferrum_kernel::capability::params_schema(&a.params)}}},
+                    "responses": {"200": {"description": "Action result"}, "default": err}}}),
+                );
+                continue;
+            }
             paths.insert(
                 format!("/api/v1/{n}/{{id}}/actions/{}", a.name),
                 json!({"post": {"tags": [n], "summary": a.label, "parameters": [

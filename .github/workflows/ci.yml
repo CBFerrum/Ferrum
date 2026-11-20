@@ -233,7 +233,7 @@ jobs:
       - name: Offline bundles
         run: python3 deploy/offline/test_offline.py
       - name: The bar runtime's pure helpers
-        run: node --test server/shell/runtime.test.mjs server/shell/embed.test.mjs
+        run: node --test server/shell/runtime.test.mjs server/shell/embed.test.mjs server/shell/login.test.mjs
       - name: Licenses of everything compiled in
         run: python3 scripts/licenses.py check
       # What every app gives that a program can see (docs/app-contract.md), in the apps the lock takes.

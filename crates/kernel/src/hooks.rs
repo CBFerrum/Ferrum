@@ -75,6 +75,11 @@ pub trait DocHook: Send + Sync {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         Ok(None)
     }
+    /// Collection action `name` of this entity (A11 2.4): bound to no record, with its declared `params` only. Return
+    /// `Some` when handled. What it writes goes through the kernel's record pipeline, in `hc.tx`.
+    async fn collection(&self, hc: &mut HookCtx<'_>, name: &str, params: &Value) -> Result<Option<Value>> {
+        Ok(None)
+    }
     /// After any hook handled action `name`, in the same transaction, with the document as the
     /// action left it: lets an app extend a platform action (re-costing a BOM's operations when
     /// "Update Cost" re-costs its materials) and add to its `result`.

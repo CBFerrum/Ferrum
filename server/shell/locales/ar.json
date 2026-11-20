@@ -374,5 +374,7 @@
   "This browser cannot use a passkey. Use another browser, or close this window.": "لا يستطيع هذا المتصفح استخدام مفتاح مرور. استخدم متصفحًا آخر، أو أغلق هذه النافذة.",
   "Confirm it is you in the window that opened.": "أكّد أنه أنت في النافذة التي فُتحت.",
   "If you closed the window before confirming it is you, try again.": "إذا أغلقت النافذة قبل التأكيد أنه أنت، فحاول مرة أخرى.",
-  "Confirming it is you did not finish. Try again.": "لم يكتمل التأكيد أنه أنت. حاول مرة أخرى."
+  "Confirming it is you did not finish. Try again.": "لم يكتمل التأكيد أنه أنت. حاول مرة أخرى.",
+  "We also emailed you a code, to show the address is yours.": "أرسلنا إليك أيضًا رمزًا بالبريد الإلكتروني، لإثبات أن العنوان لك.",
+  "Setting up took too long, so signing in stopped. Sign in again.": "استغرق الإعداد وقتًا طويلًا، فتوقف تسجيل الدخول. سجّل الدخول مرة أخرى."
 }

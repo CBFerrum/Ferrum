@@ -403,6 +403,7 @@ Actions without a contract allowed: 595
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}` | `create` | operation: *.create |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_bulk` | `bulk` | debt |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_bulk/jobs` | `bulk_job` | debt |
+| `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_actions/{action}` | `collection` | operation: *.{action} |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_calc` | `calc` | operation: preview_record |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_import` | `import` | debt |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/{id}/actions/{action}` | `action` | operation: *.{action} |
