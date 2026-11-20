@@ -16,9 +16,11 @@
 //! * **Holds and moves.** While the database is held after a restore, or is the fenced source of a planned move
 //!   (`Kernel::holding`), nothing is sent, as with all outward work. A copy that adopted a move carries on from the
 //!   cursor it copied. A copy made by dump and restore has a transaction counter of its own, lower than the
-//!   source's: once every event after the cursor is sent and the counter is found behind the cursor, the cursor
+//!   source's: while none of the copy's own transactions has reached the cursor's, the events after the cursor are
+//!   the source's, committed before the dump, and go first in order whatever the copy's counter says; then the cursor
 //!   starts again at the counter's beginning, above the highest event id it sent (ids go on from the copy), so
-//!   nothing is skipped and nothing is sent twice.
+//!   nothing is skipped and nothing is sent twice. (A copy whose counter passed the cursor's xid before a first turn
+//!   could keep its own events behind the cursor: a restore takes far fewer transactions than a live source has had.)
 //! * **The window.** A build that finds a newer build's schema (a guest, crate::window) sends nothing: the
 //!   newer build's events may be ones it cannot read, and the newer build's replicas send them.
 
@@ -81,6 +83,40 @@ pub enum Turn {
     Held,
 }
 
+#[allow(clippy::type_complexity)]
+type Row = (
+    uuid::Uuid,
+    i64,
+    chrono::DateTime<chrono::Utc>,
+    Option<uuid::Uuid>,
+    String,
+    uuid::Uuid,
+    String,
+    Option<serde_json::Value>,
+    Option<String>,
+    Vec<u8>,
+    Option<String>,
+    String,
+);
+
+/// The next batch after the cursor: only events of transactions older than every one still running, so that none can
+/// appear behind the cursor later; or, on a copy whose own transactions have not reached the cursor (`source`), every
+/// event after it, all the source's and final.
+async fn batch(tx: &mut crate::db::Tx, cur: &Cursor, source: bool) -> Result<Vec<Row>> {
+    let settled = if source { "" } else { "and e.xid < pg_snapshot_xmin(pg_current_snapshot())" };
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {EVENT_COLUMNS}, e.xid::text from audit_event e \
+             where e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) and e.id > $4 {settled} \
+             order by e.xid, e.id limit $3"
+    )))
+    .bind(&cur.xid)
+    .bind(cur.id)
+    .bind(BATCH)
+    .bind(cur.floor)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
 /// The cursor: `xid/id/floor/high`. Events after (`xid`, `id`) whose id is above `floor` go next; `high` is the
 /// highest id sent so far (the next `floor` if the transaction counter turns out behind the cursor).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,40 +176,28 @@ impl Kernel {
         }
         let Some(at) = at else { return Ok(Turn::Busy) };
         let mut cur = cursor_parts(&at)?;
-        #[allow(clippy::type_complexity)]
-        let rows: Vec<(
-            uuid::Uuid,
-            i64,
-            chrono::DateTime<chrono::Utc>,
-            Option<uuid::Uuid>,
-            String,
-            uuid::Uuid,
-            String,
-            Option<serde_json::Value>,
-            Option<String>,
-            Vec<u8>,
-            Option<String>,
-            String,
-        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {EVENT_COLUMNS}, e.xid::text from audit_event e \
-                 where e.xid is not null and (e.xid, e.id) > ($1::text::xid8, $2) and e.id > $4 and e.xid < pg_snapshot_xmin(pg_current_snapshot()) \
-                 order by e.xid, e.id limit $3"
-        )))
-        .bind(&cur.xid)
-        .bind(cur.id)
-        .bind(BATCH)
-        .bind(cur.floor)
-        .fetch_all(&mut *tx)
-        .await?;
-        let Some(last) = rows.last() else {
-            // Everything after the cursor is sent. A counter behind the cursor (a copy restored from a dump) would
-            // hold every new event back: start again from its beginning, above every id sent.
-            let behind: bool = sqlx::query_scalar("select pg_snapshot_xmin(pg_current_snapshot()) < $1::text::xid8").bind(&cur.xid).fetch_one(&mut *tx).await?;
-            if behind {
+        let mut rows = batch(&mut tx, &cur, false).await?;
+        if rows.is_empty() {
+            // A counter behind the cursor: a copy restored from a dump. While none of the copy's own transactions has
+            // reached the cursor's, every event after the cursor is the source's, committed before the dump and final:
+            // those go first, in order, whatever the copy's counter says.
+            let (behind, source): (bool, bool) =
+                sqlx::query_as("select pg_snapshot_xmin(pg_current_snapshot()) < $1::text::xid8, pg_snapshot_xmax(pg_current_snapshot()) <= $1::text::xid8")
+                    .bind(&cur.xid)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if behind && source {
+                rows = batch(&mut tx, &cur, true).await?;
+            }
+            if rows.is_empty() && behind {
+                // Everything after the cursor is sent, and the counter behind it would hold every new event back:
+                // start again from its beginning, above every id sent (the copy's own ids go on above the source's).
                 let from = Cursor { xid: "0".into(), id: 0, floor: cur.high, high: cur.high };
                 tracing::warn!(cursor = %cur.text(), now = %from.text(), "the audit sink's cursor is ahead of this database's transactions (a copy): it goes on above the events it sent");
                 sqlx::query("update cluster_state set value = $2, updated_at = now() where key = $1").bind(CURSOR).bind(from.text()).execute(&mut *tx).await?;
             }
+        }
+        let Some(last) = rows.last() else {
             tx.commit().await?;
             return Ok(Turn::Sent(0));
         };
