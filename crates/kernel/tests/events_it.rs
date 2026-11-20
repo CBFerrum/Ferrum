@@ -455,4 +455,35 @@ async fn scenario() {
     drain(&k).await;
     assert_eq!(pending(&k, quiet, "flaky").await, 0, "handled once replayed");
     assert_eq!(tally.times(dead), 1, "a sink that handled it before it died is not called again");
+
+    // ── webhook-error-url: a delivery to a hook that hangs up keeps no part of its address in `last_error` (a chat's
+    // incoming hook carries its credential in the path) ──
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/services/T0K3N-PATH-SECRET", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            drop(socket);
+        }
+    });
+    let mut tx = k.db.tenant_tx(quiet).await.unwrap();
+    let hook = Uuid::now_v7();
+    k.keep_webhook_secret(&mut tx, quiet, hook, "s3cret").await.unwrap();
+    sqlx::query("insert into webhook (tenant_id, id, name, url, topics) values ($1, $2, 'hangs up', $3, '{hungup}')")
+        .bind(quiet)
+        .bind(hook)
+        .bind(&endpoint)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    emit(&k, quiet, "hungup", 1).await;
+    drain(&k).await;
+    assert!(k.deliver_webhooks_once().await.unwrap() >= 1, "the hook's delivery was tried");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let error: Option<String> = sqlx::query_scalar("select last_error from webhook_delivery where topic = 'hungup'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let error = error.expect("the failure is kept");
+    assert!(!error.contains("T0K3N") && !error.contains("/services") && !error.contains("127.0.0.1"), "{error}");
 }
