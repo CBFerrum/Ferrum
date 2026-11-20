@@ -1242,18 +1242,23 @@ pub(crate) fn digest(v: &Value) -> String {
 
 // ── connections as stored ──
 
-/// A connection's secrets, open, its row locked for the rest of `tx` (to change them).
+/// A connection's secrets, open, its row locked for the rest of `tx` (to change them). Only those kept for the hosts
+/// its description reaches now: secrets kept for other hosts are never re-kept for these (they are given again).
 pub(crate) async fn lock_secrets(tx: &mut Tx, k: &Kernel, tenant: Uuid, id: Uuid) -> Result<BTreeMap<String, String>> {
-    let has_secrets: Option<bool> =
+    let row: Option<(bool, Value)> =
         // Not a key's lock: a call logged meanwhile (its row refers to this one) is not held up by it.
-        sqlx::query_scalar("select has_secrets from conn where tenant_id = $1 and id = $2 for no key update")
+        sqlx::query_as("select has_secrets, description from conn where tenant_id = $1 and id = $2 for no key update")
             .bind(tenant)
             .bind(id)
             .fetch_optional(&mut **tx)
             .await?;
-    match has_secrets.ok_or_else(|| Error::NotFound("connection".into()))? {
-        true => serde_json::from_str(&k.kept(tx, &place(tenant, id)).await?).map_err(Error::internal),
-        false => Ok(BTreeMap::new()),
+    match row.ok_or_else(|| Error::NotFound("connection".into()))? {
+        (true, desc) => {
+            let desc: Description = serde_json::from_value(desc).map_err(Error::internal)?;
+            let (open, rule) = k.kept_with_rule(tx, &place(tenant, id)).await?;
+            if given_for(&rule, &desc) { serde_json::from_str(&open).map_err(Error::internal) } else { Ok(BTreeMap::new()) }
+        }
+        (false, _) => Ok(BTreeMap::new()),
     }
 }
 
@@ -2365,15 +2370,22 @@ impl Kernel {
                 return Err(Error::field("description", "any_host: a description that reads any host has no secrets (remove them first)"));
             }
         }
+        let before: Option<(bool, Value)> = sqlx::query_as("select has_secrets, description from conn where tenant_id = $1 and id = $2 for update")
+            .bind(ctx.tenant)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
         if let Some(s) = &input.secrets {
-            // What the platform keeps among them (a registered client, a DPoP key) stays.
-            let held = match sqlx::query_scalar::<_, bool>("select has_secrets from conn where tenant_id = $1 and id = $2 for update")
-                .bind(ctx.tenant)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?
-            {
-                Some(true) => serde_json::from_str::<BTreeMap<String, String>>(&self.kept(&mut tx, &place(ctx.tenant, id)).await?).map_err(Error::internal)?,
+            // What the platform keeps among them (a registered client, a DPoP key) stays, while the hosts it was kept
+            // for are the ones the description reaches.
+            let held = match before {
+                Some((true, _)) => {
+                    let (open, rule) = self.kept_with_rule(&mut tx, &place(ctx.tenant, id)).await?;
+                    match given_for(&rule, &input.description) {
+                        true => serde_json::from_str::<BTreeMap<String, String>>(&open).map_err(Error::internal)?,
+                        false => BTreeMap::new(),
+                    }
+                }
                 _ => BTreeMap::new(),
             };
             let mut all: BTreeMap<String, String> = held.into_iter().filter(|(n, _)| kept_by_platform(n)).collect();
@@ -2400,6 +2412,16 @@ impl Kernel {
             other => other?,
         };
         self.after_save(&mut tx, ctx.tenant, id, &input.description).await?;
+        // Each operation that changed, by a digest of what it is now (none: removed): secrets kept for unchanged hosts
+        // stay, so what is sent with them is on the record.
+        let old = before.map(|(_, d)| d["operations"].clone()).unwrap_or_default();
+        let new = serde_json::to_value(&input.description).map_err(Error::internal)?["operations"].take();
+        let names: std::collections::BTreeSet<&String> = old.as_object().into_iter().chain(new.as_object()).flat_map(|o| o.keys()).collect();
+        let operations: serde_json::Map<String, Value> = names
+            .into_iter()
+            .filter(|n| old.get(n.as_str()) != new.get(n.as_str()))
+            .map(|n| (n.clone(), new.get(n.as_str()).map_or(Value::Null, |o| json!(digest(o)))))
+            .collect();
         audit::record_admin(
             &mut tx,
             ctx,
@@ -2407,7 +2429,7 @@ impl Kernel {
             id,
             "save",
             None,
-            json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some()}),
+            json!({"name": input.name, "enabled": input.enabled, "secrets": input.secrets.is_some(), "operations": operations}),
         )
         .await?;
         tx.commit().await?;
