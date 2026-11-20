@@ -347,19 +347,33 @@ async fn scenario() {
     let listed: Vec<String> = k.user_directory(&admin).await.unwrap().iter().map(|p| p["email"].as_str().unwrap_or_default().to_string()).collect();
     assert!(listed.iter().any(|e| e == "admin@acme.test"), "{listed:?}");
     assert!(!listed.iter().any(|e| e == "pia@customer.test" || e == "ana@acme.test"), "portal people are not listed: {listed:?}");
+    // At most five codes an hour; past that, silence.
+    for _ in 0..3 {
+        k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
+    }
+    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5);
+    k.send_sign_in_code("acme", "pia@customer.test").await.expect("the same answer");
+    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5, "a sixth code in the hour is not mailed");
     // Five wrong tries end a code.
-    k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
     let code = codes_for(&k, "pia@customer.test").await[0].clone();
     let wrong = if code == "000000" { "111111" } else { "000000" };
     for _ in 0..5 {
         assert!(k.sign_in_with_code("acme", "pia@customer.test", wrong).await.is_err());
     }
     assert!(matches!(k.sign_in_with_code("acme", "pia@customer.test", &code).await, Err(Error::Unauthorized(_))), "spent by wrong tries");
-    // At most five codes an hour; past that, silence.
-    for _ in 0..4 {
-        k.send_sign_in_code("acme", "pia@customer.test").await.unwrap();
-    }
-    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5);
+    // After five wrong codes in the hour no code is mailed, even with the hour's count of codes free again (APIQ-1;
+    // S4-P5's guard is the way past it); the person is never locked by them.
+    sql(&k, "update sign_in_code set created_at = now() - interval '2 hours' where attempts = 0").await;
+    k.send_sign_in_code("acme", "pia@customer.test").await.expect("the same answer");
+    assert_eq!(codes_for(&k, "pia@customer.test").await.len(), 5, "no mail after five wrong codes in the hour");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let locked: bool = sqlx::query_scalar("select coalesce(locked_until > now(), false) or failed_logins > 0 from app_user where id = $1")
+        .bind(pia_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(!locked, "wrong codes never lock the person");
     // A disabled portal person gets none.
     sql(&k, &format!("update app_user set is_active = false where id = '{pia_id}'")).await;
     sql(&k, "delete from sign_in_code").await;
