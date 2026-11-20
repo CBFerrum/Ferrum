@@ -2,7 +2,7 @@
 //! and providers' webhooks arrive here.
 
 use crate::error::ApiResult;
-use crate::extract::{Auth, client_ip};
+use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
 use axum::body::Bytes;
@@ -81,7 +81,7 @@ async fn resolve(Auth(ctx): Auth, State(app): State<AppContext>, Path(id): Path<
 /// `POST /api/connect/{connection}/webhook`: no session; the connector authenticates what arrives.
 async fn webhook(State(app): State<AppContext>, Path(id): Path<Uuid>, headers: HeaderMap, body: Bytes) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.public_limiter.check(&format!("{}|connect", client_ip(&headers))).await?;
+    st.public_limiter.check_from(&headers, "connect").await?;
     let names: BTreeMap<String, String> = headers.iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
     let queued = st.kernel.connection_webhook(id, &names, &body).await?;
     Ok((StatusCode::ACCEPTED, Json(json!({"queued": queued}))).into_response())

@@ -78,7 +78,7 @@ Checked: the platform's suites for its own routes. An app's own routes: its test
 ## 5. Rate limits
 
 The server already limits every client address (6000 a minute per pool by default) and every user (3000 a minute), and
-public site routes (300 a minute per address) ([docs/security.md](../security.md), *Availability*; [docs/api.md](../api.md),
+public site routes (300 a minute per network) ([docs/security.md](../security.md), *Availability*; [docs/api.md](../api.md),
 *App endpoints*). An app adds its own where an action costs something or can be abused (a booking, a sign-up, a message
 sent, a code checked):
 

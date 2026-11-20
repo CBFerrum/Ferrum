@@ -15,6 +15,13 @@ const DATA_MAX: usize = 1_000;
 const TEXT_MAX: usize = 1_000_000;
 const JSON_MAX: usize = 1_000_000;
 
+/// An address someone sent, lower-cased, when it has an address's form and length (the email field's rule): what a
+/// limiter may count by (BD-86). None otherwise.
+pub fn email_address(s: &str) -> Option<String> {
+    let s = s.trim();
+    (s.len() <= 254 && !s.chars().any(char::is_control) && EMAIL.is_match(s)).then(|| s.to_lowercase())
+}
+
 static EMAIL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]+$").unwrap());
 static PHONE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[+0-9 ()\-./]{3,40}$").unwrap());
 static COLOR: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$").unwrap());
@@ -248,6 +255,14 @@ mod tests {
 
     fn field(t: &str) -> FieldDef {
         serde_json::from_value(json!({"name": "f", "type": t, "options": ["A", "B"], "min": "0"})).unwrap()
+    }
+
+    #[test]
+    fn an_address_counts_only_in_an_addresses_form() {
+        assert_eq!(email_address(" Pat@Acme.Test ").as_deref(), Some("pat@acme.test"));
+        for not in ["", "pat", "pat@acme", "pat @acme.test", "pat@acme.test\u{0}", &format!("{}@acme.test", "p".repeat(250))] {
+            assert_eq!(email_address(not), None, "{not:?}");
+        }
     }
 
     #[test]

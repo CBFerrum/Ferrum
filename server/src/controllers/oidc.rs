@@ -5,7 +5,6 @@
 //! workspace's own ([`issuer`]); everywhere else, nothing.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::client_ip;
 use crate::shell::{Place, request_host};
 use crate::state::{AppState, app_state};
 use axum::Json;
@@ -98,7 +97,7 @@ async fn jwks(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Re
 /// A refusal of the token or user-info endpoint, counted against the caller's address like a failed sign-in: past the
 /// limit, `429` in its place.
 async fn counted(st: &AppState, headers: &HeaderMap, what: &str, answer: Response) -> Response {
-    if st.login_limiter.check(&format!("oidc-{what}|{}", client_ip(headers))).await.is_err() {
+    if st.login_limiter.check_from(headers, &format!("oidc-{what}")).await.is_err() {
         return oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down", "too many failed requests from here; try again in a minute");
     }
     answer
@@ -158,7 +157,7 @@ pub(crate) async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, cli
     }
     let told =
         |error: &str, description: &str| back(&r.redirect_uri, &[("error", error), ("error_description", description), ("state", &r.state), ("iss", &iss)]);
-    if st.login_limiter.check(&format!("oidc-authorize|{}", client_ip(headers))).await.is_err() {
+    if st.login_limiter.check_from(headers, "oidc-authorize").await.is_err() {
         return Ok(told("temporarily_unavailable", "too many sign-ins from here; try again in a minute"));
     }
     let signed = match crate::shell::session_cookie(headers, st.shell.secure) {

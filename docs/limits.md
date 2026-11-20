@@ -55,9 +55,10 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
   erases it again itself). A restriction of processing stops
   mail queued to any of the person's addresses; apps that deliver on their own ask
   `Kernel::may_contact`.
-- **Rate limits** (sign-ins, documents emailed, 300 requests a minute per address on public
+- **Rate limits** (sign-ins, documents emailed, 300 requests a minute per network on public
   endpoints) are counted in the database, so they hold across replicas; apps use the same
-  (`Kernel::rate_limit`). They are per address: Campaigns' tracking pixels and links opened
+  (`Kernel::rate_limit`). They are per network (an IPv4 /24, an IPv6 /64; [decisions](builder/decisions.md) BD-86), and
+  each replica's own count, kept first, is bounded whatever callers send: Campaigns' tracking pixels and links opened
   through a mail provider's image proxy share that proxy's budget. Each user's own request budget
   (`FERRUM_USER_REQUESTS_PER_MINUTE`) and each address's (`FERRUM_ADDRESS_REQUESTS_PER_MINUTE`)
   are a pool's: each replica counts its own requests against its share, the budget divided by the pool's live
@@ -229,7 +230,7 @@ is deliberate for now, not a bug; when one matters to you, it is the place to st
 - **Device keys** do not rotate in place: quarantine and enroll a new one.
 - **Signed site updates** check the signature, version, expiry and hash, and roll back a build that keeps dying. They are tested in pieces, and have not been run through systemd on a gateway. Ferrum publishes no signing keys or releases: a site makes its own.
 - **Console PINs** are short by nature, and the gateway holds their salted hashes: someone with its disk could recover them. Keep its storage encrypted; a site's list follows the platform's at each exchange, and the lease bounds how stale it gets.
-- **Site traffic** shares the 300 requests a minute per address and workspace of `/api/site`. At the default of an exchange every 5 seconds, that is about 25 gateways behind one address. Past it a site backs off and catches up.
+- **Site traffic** shares the 300 requests a minute per network and workspace of `/api/site`. At the default of an exchange every 5 seconds, that is about 25 gateways behind one network (an IPv4 /24, an IPv6 /64). Past it a site backs off and catches up.
 - **Telemetry** lives in PostgreSQL. It has not been measured against the strategy's 20,000 samples a second, which would be 345 GB a day: aggregate at the edge first.
 - **A floor report** names a run by its number and is applied when it arrives. One the run cannot take stays in `op_fact` and the run says so; one naming no run stays in `op_fact` alone.
 

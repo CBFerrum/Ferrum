@@ -193,8 +193,8 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 
 **Signing in**
 * Passwords: Argon2id; at least 10 characters with three character classes; 5 failures lock the
-  account for 15 minutes; sign-in attempts are rate limited per address and workspace across
-  replicas; an unknown email costs the same time as a known one.
+  account for 15 minutes; sign-in attempts are rate limited per network (an IPv4 /24, an IPv6 /64) and workspace across
+  replicas, a workspace or an address a caller names counting only once found or well formed (BD-86); an unknown email costs the same time as a known one.
 * Sessions: a browser's is a session kept on the server, named by a signed cookie, lasting
   `session_days` (14 by default) and ended one by one; other clients get signed tokens (HMAC-SHA512,
   `jwt_expiration_seconds`, 8 hours by default). Both carry a token version: changing the password,
@@ -385,7 +385,7 @@ operator is you ([platform/customer-controlled.md](platform/customer-controlled.
 * No such workspace, an inactive one, no such list and a list taken down give one identical 404, so the
   address does not say which lists exist (the answer's timing still differs a little between a workspace
   that does not exist and one that does; that a workspace exists is not secret elsewhere either).
-* Each request counts against the public limiter (per address and workspace) before any lookup; the
+* Each request counts against the public limiter (per network and workspace) before any list is read; the
   query is capped at the list's limit (1000 rows at most) and a 5-second statement timeout; answers are
   cacheable for a minute, so a list taken down may be seen for up to a minute where it was cached.
 * The page runs no script, fetches nothing (`default-src 'none'`, its own style by hash), escapes every

@@ -415,7 +415,7 @@ same whether the workspace exists), whatever the reason. The first `POST` to a w
 `opened_at` once and raises the record's `opened` event (`link: {id, recipient}`; automations take `event: "opened"`);
 reading the page does not, so a link preview or a mail scanner opens nothing
 ([BD-38](builder/decisions.md#bd-38-signed-links-ended-by-an-app-dated-by-the-record-opened-with-lines)). Pages are never cached and send no referrer. Every request counts against the
-public limiter (per address and workspace, kept in the database).
+public limiter (per network and workspace, kept in the database).
 
 The effect `{"type": "link", "actions": [...], "show"?: [...], "columns"?: {...}, "params"?: {name: expression}, "days"?:
 n, "until"?: expression, "uses"?: n, "code_to"?: expression, "recipient"?: expression, "frame_origins"?: [...]}` issues one
@@ -512,7 +512,7 @@ answer is a Basic challenge, and wrong ones count against the address as failed 
 ## App endpoints
 
 Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method) and
-`/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
+`/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per network, an IPv4 /24 or an IPv6 /64, and workspace, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
 limited per app and route (1 MB unless the app allows more, `Site::max_body_for`; at most 1 GiB,
 `server/src/controllers/sites.rs`); a larger one is refused with `413` (`too_large`) before it is read whole, as a
@@ -1110,7 +1110,7 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
   * `GET /api/public/{workspace}/lists/{name}.csv` when `csv` is true: a header of the labels, then the rows (CRLF); every cell passes the platform's guard against spreadsheet formulas (`ferrum_kernel::published::csv_cell`: text beginning `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, a number stays one; quotes doubled, quoted when it holds a comma, a quote or a line break).
   * `/public/{workspace}/lists/{name}`: a plain page with the workspace's name, the list's label and description, a table and a link to the CSV when offered. Every value is escaped; no script; `Content-Security-Policy: default-src 'none'; style-src 'sha256-…'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`; `noindex` (a meta tag and `X-Robots-Tag`).
   * No such workspace, an inactive one, no such list, one taken down, and `.csv` of a list without CSV all answer the same `404 {"error": "not_found", "message": "there is no such list"}` (the page: the same 404 page).
-  * Every request counts against the public limiter (300 a minute per address and workspace, shared across replicas) before anything is looked up: past it, 429. An answer may be kept for a minute (`Cache-Control: public, max-age=60`); the query waits at most 5 seconds.
+  * Every request counts against the public limiter (300 a minute per network and workspace, shared across replicas) before the list is read: past it, 429. An answer may be kept for a minute (`Cache-Control: public, max-age=60`); the query waits at most 5 seconds.
 * `GET /api/meta/{Entity}` lists the entity's `published_lists` (`name`, `label`, `fields`, `csv`) to administrators only. Change sets and packs carry a list as any customization; a pack's plan says, as a warning to read before installing, `This pack publishes a list of Permits to anyone, without signing in (permits): Number, Holder, Type, Category, Issued on.`
 * `lists` is not a plugin's name: plugins' public routes are `/api/public/{workspace}/{plugin}/…`, and `public` is not an app's route.
 

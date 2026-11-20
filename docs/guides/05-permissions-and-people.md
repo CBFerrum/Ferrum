@@ -108,7 +108,7 @@ In an app's own code:
 |---|---|---|
 | A document hook (`DocHook`) | `hc.ctx`: the person saving | The kernel checked the right to save before the hook ran. Calls the hook makes with `hc.ctx` are checked again; with `elevated(hc.ctx)` they are not, so do that only for values the engine owns (GRC sets `status` and `revision` that way) |
 | A signed-in endpoint (`Site::handle`, `/api/app/{package}/…`) | `req.user: Some(Ctx)` | Call the kernel with that context; or `ctx.require(entity, Action::Read)?` before the app's own query, which also asks for a step-up where the workspace wants one |
-| A public endpoint (`/api/site/{tenant}/{package}/…`) | `req.user: None` | The app decides what an anonymous caller may do, then acts as `Ctx::system` or a service context of its own; rate limit by `req.client_ip` (the server limits public routes to 300 a minute per address) |
+| A public endpoint (`/api/site/{tenant}/{package}/…`) | `req.user: None` | The app decides what an anonymous caller may do, then acts as `Ctx::system` or a service context of its own; rate limit by `req.client_ip` (the server limits public routes to 300 a minute per network: an IPv4 /24, an IPv6 /64) |
 | An event sink, a job, upkeep | none of a person's | `Ctx::system(tenant, schema)`; a job done for a person runs as that person, loaded when it runs (`Job::creator`), so someone who left gets nothing done |
 
 `ferrum_domain::util::elevated(ctx)` keeps the person's name on what is written (`created_by`, the audit) and skips

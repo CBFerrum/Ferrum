@@ -2120,3 +2120,24 @@ Decided 19 November 2026 (API-K1, `gapclose/design/A11-app-apis.md` 2.6.1, R11).
   refuses such a key anywhere but `Door::Capabilities`, so every consumer of credentials refuses it without a check of
   its own (records, metadata, apps' endpoints, administration, files, the setup routes, sockets, co-editing, the
   assistant and shell pages, `/mcp`). `Kernel::verify_api_key_from`, which knows no door, refuses one too.
+
+## BD-86. What the limiters count by, and how much they keep
+
+Decided 19 November 2026 (RL-1, `gapclose/design/A11-app-apis.md` 2.8, finding T1).
+
+* **The gap**: each replica's own count of a limiter kept an entry per key and, past 100,000 entries, scanned them all on
+  every request; and several keys were strings the caller sent (the workspace in a public path or a sign-in body, the
+  address in the accounts routes, the raw client address). One machine sending a new key per request grew the table
+  without bound, made every request on the replica pay the scan, and wrote a `rate_window` row per request.
+* **Bounded, constant time** (`server/src/state.rs`): two generations of counts, this window's and the one before, each
+  holding at most 20,000 keys and 5,000 networks' buckets; at each window's end the older is dropped whole. A key's own
+  window moves into the new generation when next counted, so every limit is as long as before. With a generation full,
+  a new key counts in its network's bucket, and past those in one bucket for everyone, each limited as one key: a flood
+  is refused as one caller, never let through and never grows the table. No request scans anything.
+* **Keys only from what was checked**: a request counts by its network (`extract::net`: an IPv4 /24, an IPv6 /64), never
+  its address; a workspace it names once found (`named_workspace`; an unknown one counts on the network alone); an
+  address once it has an address's form and length, lower-cased (`named_address`); a person signed in as themselves.
+  Portal sign-up requests count per network too.
+* **The database after memory**: the shared count (`rate_window`) is written only for a request this replica admitted,
+  so a refused flood writes nothing. Each row says when its window ends (`ends_at`) and is swept then, so a window longer
+  than an hour is kept for its whole length.
