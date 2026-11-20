@@ -128,6 +128,30 @@ async fn sign_in(host: &str, ip: &str, slug: &str, email: &str, password: &str, 
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), cookie)
 }
 
+/// A POST from a page of `host` (`sec-fetch-site: same-origin`), with the session cookie when given: the answer, and the
+/// session cookie it sets.
+async fn post_page(host: &str, ip: &str, path: &str, cookie: Option<&str>, body: Value) -> (StatusCode, Value, Option<String>) {
+    let mut req = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(header::HOST, host)
+        .header("x-forwarded-for", ip)
+        .header(header::USER_AGENT, "Mozilla/5.0 (X11; Linux x86_64) Firefox/131.0")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("sec-fetch-site", "same-origin")
+        .header(header::ORIGIN, format!("http://{host}"));
+    if let Some(c) = cookie {
+        req = req.header(header::COOKIE, format!("{}={c}", ferrum_server::shell::cookie_name(false)));
+    }
+    let res = server().await.router.clone().oneshot(req.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+    let status = res.status();
+    let set = res.headers().get_all(header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(|c| {
+        c.strip_prefix(&format!("{}=", ferrum_server::shell::cookie_name(false))).map(|rest| rest.split(';').next().unwrap_or_default().to_string())
+    });
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), set.filter(|c| !c.is_empty()))
+}
+
 fn refused(status: StatusCode) -> bool {
     status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED
 }
@@ -435,29 +459,86 @@ fn every_sign_in_change_asks_a_person_at_a_screen() {
             assert_eq!(status, StatusCode::NO_CONTENT, "the administrator at a screen: {path}: {answer}");
         }
 
-        // ── the session that may only set up a first second factor sets it up, and does nothing else ──
+        // ── the session that may only set up a first second factor sets it up, and does nothing else (API-K2: the
+        // page's cookie, a_setup_only_session_is_the_sign_in_pages_cookie) ──
         let w = world("setup2fa", 3).await;
         w.k.update_tenant_settings(&w.admin_ctx, json!({"require_two_factor": true}).as_object().unwrap()).await.unwrap();
-        let (status, body, _) = sign_in(&w.host, "10.3.9.9", &w.slug, &w.sam.email, PASSWORD, false).await;
+        let (status, body, setup) = sign_in(&w.host, "10.3.9.9", &w.slug, &w.sam.email, PASSWORD, true).await;
         assert!(status == StatusCode::OK && body["two_factor_setup"] == json!(true), "{body}");
-        let setup = body["token"].as_str().unwrap().to_string();
+        let setup = setup.expect("the setup session is the page's cookie");
         let (status, answer) = call(
             &w.host,
             "10.3.9.9",
             Method::POST,
             "/api/auth/password",
-            Cred::Bearer(&setup),
+            Cred::Cookie(&setup),
             Some(json!({"current_password": PASSWORD, "new_password": NEW_PASSWORD})),
         )
         .await;
         assert!(refused(status), "a setup-only session changes no password: {status} {answer}");
-        let (status, answer) = call(&w.host, "10.3.9.9", Method::POST, "/api/auth/2fa/begin", Cred::Bearer(&setup), None).await;
+    });
+}
+
+/// API-K2 (A11 T7): the session that may only set up a first second factor is the sign-in page's cookie: no bearer, no
+/// API client; it begins and finishes the setup and reaches nothing else; finishing gives a full session cookie.
+#[test]
+fn a_setup_only_session_is_the_sign_in_pages_cookie() {
+    run(async {
+        let w = world("setupcookie", 7).await;
+        w.k.update_tenant_settings(&w.admin_ctx, json!({"require_two_factor": true}).as_object().unwrap()).await.unwrap();
+        let ip = "10.7.9.9";
+        let (status, body, cookie) = sign_in(&w.host, ip, &w.slug, &w.sam.email, PASSWORD, false).await;
+        assert!(refused(status) && body.get("token").is_none() && cookie.is_none(), "an API client gets no setup session: {status} {body}");
+        let (status, body, cookie) = sign_in(&w.host, ip, &w.slug, &w.sam.email, PASSWORD, true).await;
+        assert!(status == StatusCode::OK && body["two_factor_setup"] == json!(true) && body.get("token").is_none(), "no bearer: {body}");
+        let setup = cookie.expect("the setup session is the page's cookie");
+        assert_eq!(call(&w.host, ip, Method::GET, "/api/auth/2fa", Cred::Cookie(&setup), None).await.0, StatusCode::OK, "its own status");
+        assert!(refused(call(&w.host, ip, Method::POST, "/api/auth/2fa/begin", Cred::Bearer(&setup), None).await.0), "its token as a bearer");
+        assert!(refused(call(&w.host, ip, Method::GET, "/api/auth/sessions", Cred::Cookie(&setup), None).await.0), "nothing but the setup");
+        let (status, answer) = call(&w.host, ip, Method::POST, "/api/auth/2fa/begin", Cred::Cookie(&setup), None).await;
         assert_eq!(status, StatusCode::OK, "it begins the setup: {answer}");
         let secret = serde_json::from_str::<Value>(&answer).unwrap()["secret"].as_str().unwrap().to_string();
         let code = ferrum_kernel::twofactor::code(&secret, now()).unwrap();
-        let (status, answer) = call(&w.host, "10.3.9.9", Method::POST, "/api/auth/2fa/enable", Cred::Bearer(&setup), Some(json!({"code": code}))).await;
-        assert_eq!(status, StatusCode::OK, "and finishes it: {answer}");
-        assert!(serde_json::from_str::<Value>(&answer).unwrap()["token"].is_string(), "with a full session in exchange");
+        let (status, body, full) = post_page(&w.host, ip, "/api/auth/2fa/enable", Some(&setup), json!({"code": code})).await;
+        assert!(status == StatusCode::OK && body["recovery_codes"].is_array() && body.get("token").is_none(), "{status} {body}");
+        let full = full.expect("a full session cookie in exchange");
+        assert_eq!(call(&w.host, ip, Method::GET, "/api/auth/sessions", Cred::Cookie(&full), None).await.0, StatusCode::OK, "the full session");
+    });
+}
+
+/// API-K2: a code sign-in that must set up a second factor gets the same setup-only cookie, not a full session (the
+/// accounts host's part: identity_it).
+#[test]
+fn code_sign_in_and_the_accounts_host_ask_for_setup_the_same_way() {
+    run(async {
+        let w = world("setupcode", 8).await;
+        w.k.update_tenant_settings(&w.admin_ctx, json!({"require_two_factor": true}).as_object().unwrap()).await.unwrap();
+        let ann = w.k.create_user(&w.admin_ctx, "ann@setupcode.test", "Ann", None, &[], false).await.unwrap();
+        w.k.set_user_kind(&w.admin_ctx, ann, "portal").await.unwrap();
+        let ip = "10.8.9.9";
+        // This test server mails nothing: the code is kept as `send_sign_in_code` keeps one (salted with its row's id).
+        let (id, code) = (uuid::Uuid::new_v4(), "482913");
+        let hash = {
+            use sha2::Digest;
+            hex::encode(sha2::Sha256::digest(format!("{id}:{code}").as_bytes()))
+        };
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        sqlx::query("insert into sign_in_code (id, tenant_id, user_id, code_hash, expires_at) values ($1, $2, $3, $4, now() + interval '10 minutes')")
+            .bind(id)
+            .bind(w.tenant)
+            .bind(ann)
+            .bind(hash)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let (status, body, cookie) =
+            post_page(&w.host, ip, "/api/auth/code/sign-in", None, json!({"tenant": w.slug, "email": "ann@setupcode.test", "code": code, "session": "cookie"}))
+                .await;
+        assert!(status == StatusCode::OK && body["two_factor_setup"] == json!(true) && body.get("token").is_none(), "{status} {body}");
+        let setup = cookie.expect("the setup session cookie");
+        assert!(refused(call(&w.host, ip, Method::GET, "/api/auth/sessions", Cred::Cookie(&setup), None).await.0), "a setup session, not a full one");
+        assert_eq!(call(&w.host, ip, Method::GET, "/api/auth/2fa", Cred::Cookie(&setup), None).await.0, StatusCode::OK);
     });
 }
 

@@ -475,8 +475,26 @@ impl FromRequestParts<AppContext> for MeAuth {
 async fn setup_caller(parts: &Parts, state: &AppContext, programs: bool) -> Result<(Ctx, Option<ferrum_kernel::auth::Session>), ApiError> {
     let st = app_state(state)?;
     let rid = request_id(&parts.headers);
-    // A browser session is never setup-only: the cookie is set once sign-in is complete.
     let Some(token) = bearer(&parts.headers) else {
+        // The session that may only set up a second factor is the sign-in page's cookie (API-K2): a person at a screen for
+        // that setup and nowhere else; any other cookie is a full browser session.
+        if let Some(cookie) = crate::shell::session_cookie(&parts.headers, st.shell.secure)
+            && st.sessions.validate(&cookie).await.is_some_and(|d| d.claims.get("setup_2fa").and_then(|v| v.as_bool()) == Some(true))
+        {
+            if !crate::shell::may_change(&parts.method, &parts.headers) {
+                return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
+            }
+            let t = session_of(&st, &cookie, &client_ip(&parts.headers), true, Door::Elsewhere).await?;
+            no_app_token(&t)?;
+            if !t.setup_only || t.sid.is_none() || t.bound.is_some() {
+                return Err(ApiError(Error::Unauthorized("invalid session cookie".into())));
+            }
+            st.shell.check_host(&parts.headers, t.session.tenant).await?;
+            let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
+            let ctx =
+                st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, !programs).await?.proved(t.step_up_at);
+            return Ok((ctx, Some(t.session)));
+        }
         let (ctx, _) = caller(&st, parts).await?;
         return Ok((ctx, None));
     };
@@ -485,14 +503,17 @@ async fn setup_caller(parts: &Parts, state: &AppContext, programs: bool) -> Resu
     if t.sid.is_some() {
         return Err(ApiError(Error::Unauthorized("this token works only as the browser's session cookie".into())));
     }
-    let screen = t.at_screen() || (t.setup_only && !programs);
+    if t.setup_only {
+        return Err(ApiError(Error::Unauthorized("the session that sets up a second factor is the sign-in page's cookie, never a bearer".into())));
+    }
+    let screen = t.at_screen();
     if !screen && !programs {
         return Err(ApiError(Error::Forbidden("set up two-factor sign-in from a page of this site: a key or a token cannot".into())));
     }
     let entry = crate::zone::entry(&st, &parts.headers, t.credential).await;
     let ctx = st.kernel.request_ctx_as(t.session.tenant, t.session.user, Some(t.session.token_version), rid, &entry, screen).await?.proved(t.step_up_at);
     only_through_the_api(&st, &ctx, parts.method.as_str()).await?;
-    Ok((ctx, t.setup_only.then_some(t.session)))
+    Ok((ctx, None))
 }
 
 /// Where a records key may send requests: records and their metadata.
