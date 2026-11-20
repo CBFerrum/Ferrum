@@ -113,7 +113,7 @@ impl Kernel {
                     _ => Err(Error::Conflict("this Idempotency-Key was already used for a different request".into())),
                 };
             }
-            let doc = self.update_tx(ctx, &mut tx, entity, id, patch.clone(), expected_version).await?;
+            let doc = self.update_tx(&ctx.keyed(key), &mut tx, entity, id, patch.clone(), expected_version).await?;
             keep(&mut tx, ctx, key, 200, &Value::Object(doc.clone())).await?;
             tx.commit().await?;
             Ok((doc, false))
@@ -142,7 +142,7 @@ impl Kernel {
                 }
                 return Ok((answer, true));
             }
-            let out = self.run_action_tx(ctx, &mut tx, entity, id, action, &params).await?;
+            let out = self.run_action_tx(&ctx.keyed(key), &mut tx, entity, id, action, &params).await?;
             // What it gives once goes to this caller and is not kept for a repeat.
             keep(&mut tx, ctx, key, 200, &def.map_or_else(|| out.clone(), |d| d.kept_result(&out))).await?;
             tx.commit().await?;

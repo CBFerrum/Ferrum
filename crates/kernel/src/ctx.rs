@@ -593,6 +593,10 @@ pub struct Ctx {
     /// How this context was made (BD-83): set where each context is made and nowhere else; [`Made::Screen`] only by
     /// `Kernel::request_ctx_as` for an interactive session credential.
     pub made: Made,
+    /// The effect key the write in hand was claimed under (TP-K): set only by the gate when it claims a key (`{app}:{key}`
+    /// for [`Kernel::call_tx`](crate::Kernel::call_tx)) and by the records door when it claims `Idempotency-Key`; none
+    /// elsewhere, and none for the effects a write sets going ([`crate::actions`]). A hook may refuse a write without one.
+    pub effect_key: Option<Arc<str>>,
     /// The reads this request has recorded already (crate::controls), shared by its clones.
     pub reads: Arc<crate::controls::Seen>,
 }
@@ -674,6 +678,11 @@ impl Ctx {
         matches!(self.proof, crate::controls::Proof::Person { at: Some(at), .. } if chrono::Utc::now() - at <= chrono::Duration::seconds(seconds))
     }
 
+    /// This context for the write claimed under `key` (TP-K): the gate's and the records door's, nobody else's.
+    pub(crate) fn keyed(&self, key: &str) -> Ctx {
+        Ctx { effect_key: Some(key.into()), ..self.clone() }
+    }
+
     /// This context with `is_system` set: made [`Made::System`] with it, never a screen.
     pub fn elevated(mut self) -> Ctx {
         self.is_system = true;
@@ -708,6 +717,7 @@ impl Ctx {
             zone: None,
             proof: crate::controls::Proof::Inside,
             app: None,
+            effect_key: None,
             reads: Default::default(),
         }
     }

@@ -1249,7 +1249,8 @@ impl Kernel {
             .body(body)
             .send()
             .await
-            .map_err(|e| (None, e.to_string()))?;
+            // Never the address: a chat's incoming hook carries its credential in it (webhook-error-url).
+            .map_err(|e| (None, e.without_url().to_string()))?;
         let code = resp.status().as_u16();
         if resp.status().is_success() { Ok(code) } else { Err((Some(code), format!("HTTP {code}"))) }
     }

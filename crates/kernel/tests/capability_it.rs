@@ -57,6 +57,8 @@ struct Stock {
     placed: AtomicUsize,
     /// While set, `restock` writes and then fails: a crash between the change and the commit.
     failing: std::sync::atomic::AtomicBool,
+    /// The effect key each `place` saw on its context (TP-K).
+    keys: std::sync::Mutex<Vec<Option<String>>>,
 }
 
 #[async_trait]
@@ -65,6 +67,7 @@ impl DocHook for Stock {
         Ok(match name {
             "place" => {
                 self.placed.fetch_add(1, Ordering::SeqCst);
+                self.keys.lock().unwrap().push(hc.ctx.effect_key.as_deref().map(str::to_string));
                 Some(json!({"held": doc["qty"]}))
             }
             "release" => Some(json!({"released": true})),
@@ -372,4 +375,12 @@ async fn scenario() {
     // ── the_same_secret_again_is_repeated_and_another_is_input_changed ──
     assert!(k.invoke(&clerk, safe("4821")).await.unwrap().repeated, "the same pin again is the same request");
     assert_eq!(code(&k.invoke(&clerk, safe("4822")).await.unwrap_err()), "input_changed", "another pin under the key is other input");
+
+    // ── a_hook_sees_the_key_of_its_write (TP-K): through the gate the key it claimed; the same action run directly, none ──
+    let hold = k.invoke(&clerk, create("TP-K", 1).key("tp-k/hold")).await.unwrap().result["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let place = Invocation::new("stockcap.hold.place", json!({"id": hold, "params": {}})).key("tp-k/place");
+    k.invoke(&clerk, place).await.expect("placed through the gate");
+    assert_eq!(stock.keys.lock().unwrap().last().cloned(), Some(Some("tp-k/place".to_string())), "the gate's key");
+    k.run_action(&clerk, "Hold", hold, "place", json!({})).await.expect("placed directly");
+    assert_eq!(stock.keys.lock().unwrap().last().cloned(), Some(None), "no key claimed, none seen");
 }

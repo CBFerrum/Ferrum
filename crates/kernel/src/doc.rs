@@ -465,9 +465,10 @@ impl Kernel {
                     _ => Err(Error::Conflict("this Idempotency-Key was already used for a different request".into())),
                 };
             }
-            let mut doc = self.insert_tx(ctx, &mut tx, entity, input.clone()).await?;
+            let keyed = ctx.keyed(key);
+            let mut doc = self.insert_tx(&keyed, &mut tx, entity, input.clone()).await?;
             if submit {
-                doc = self.submit_tx(ctx, &mut tx, entity, store::doc_id(&doc)?, None).await?;
+                doc = self.submit_tx(&keyed, &mut tx, entity, store::doc_id(&doc)?, None).await?;
             }
             crate::receipt::keep(&mut tx, ctx, key, 201, &Value::Object(doc.clone())).await?;
             tx.commit().await?;

@@ -730,7 +730,7 @@ impl Kernel {
         if !claimed {
             return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest, caller).await;
         }
-        let result = self.carry_out(ctx, tx, &cap, &inv.input, Some(key)).await?;
+        let result = self.carry_out(&ctx.keyed(key), tx, &cap, &inv.input, Some(key)).await?;
         let record = result.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
         sqlx::query(
             "update logic_effect set result = $5, record_entity = $6, record_id = $7 \
