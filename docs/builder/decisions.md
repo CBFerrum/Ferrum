@@ -2182,3 +2182,19 @@ Decided 19 November 2026.
   collection or read-only actions; a rule naming a collection action carries no record condition.
 * **Not yet served.** Nothing here opens a door; the declarations are checked so that the doors (API-2 onward) only
   honour what passed. Roles saved in a workspace carry no `visitor` flag yet (the role table has no column for it).
+
+## BD-90. A connection's inbound call answered by its app
+
+**Decision.** A connection's inbound call is verified and recorded as before (one row per delivery, its job queued in
+the same transaction). If the connection's `handler` app registered an `InboundResponder`
+(`HookRegistry::add_inbound_responder`), the platform then locks the call's row (`state = 'accepted'`, skipping a row the
+job already holds) and runs the app's `respond` in the transaction that marks the call done, within the app's deadline
+(at most ten seconds). An answer is stored with the call and given again to any repeat of the delivery; `None` leaves
+the call to the job, answered `{accepted: true}` as before. Past the deadline, or on an error, what `respond` wrote is
+undone with its transaction, the app's `fallback` is answered, and the job hands the call to the app's handler later.
+Handlers get the inbound address's query through `InboundHandler::handle_call` (defaulting to `handle`), never the
+parameter that carries the connection's secret; it is dropped with the payload once the call is processed.
+
+**Why.** Telecom providers ask for a call's next instructions in the answer to their webhook (TP-3). The answer is
+the app's, not the description's, so that descriptions and apps building an `Inbound` keep compiling.
+
