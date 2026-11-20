@@ -357,6 +357,9 @@ impl Catalog {
                 if role.portal_default && !role.portal {
                     return invalid(format!("{name}: role {}: only a portal role is held by every portal person (portal_default needs portal)", role.name));
                 }
+                if role.visitor && role.portal {
+                    return invalid(format!("{name}: role {}: a role is visitor or portal, never both", role.name));
+                }
                 for perm in &role.permissions {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));
@@ -379,6 +382,8 @@ impl Catalog {
                     }
                 }
             }
+            crate::api::check_package(&crate::api::Loaded { entities: &self.entities, packages: &self.packages }, name, p)
+                .map_err(|m| MetaError::Invalid(format!("{name}: {m}")))?;
             for wf in &p.manifest.workflows {
                 validate_workflow(wf, &self.entities).map_err(|m| MetaError::Invalid(format!("{name}: workflow {}: {m}", wf.name)))?;
             }
@@ -827,7 +832,57 @@ pub(crate) fn compile(on: &EntityDef, what: &str, src: Option<&str>, reads: bool
 /// Structural validation of one (possibly overlaid) entity against all known entities.
 /// `custom`: a workspace's own entity, whose line entity may hold lines of its own (`effective::validate_custom_lines`
 /// bounds them at two levels); a package's child entity holds no table.
+/// What a list or row parameter declares (param-lists): a list's items by `of` (one value each) or by `fields` (rows), a
+/// row's by `fields`, each field one value of [`crate::ITEM_TYPES`], never secret, declared once; nothing free-form.
+fn shaped(p: &crate::ActionParam) -> Result<(), String> {
+    let one = |t: &str| crate::ITEM_TYPES.contains(&t);
+    let kinds = crate::ITEM_TYPES.join(", ");
+    match p.ptype.as_str() {
+        "list" => {
+            if p.of.is_some() != p.fields.is_empty() {
+                return Err("a list's items are declared by of or fields, one of them".into());
+            }
+            if p.of.as_deref().is_some_and(|t| !one(t)) {
+                return Err(format!("a list's items are one value each: of is one of {kinds}"));
+            }
+            if p.max_items.is_some_and(|n| n == 0 || n > crate::MAX_LIST_ITEMS) {
+                return Err(format!("max_items is 1 to {}", crate::MAX_LIST_ITEMS));
+            }
+        }
+        "row" if p.fields.is_empty() => return Err("a row declares its fields".into()),
+        "row" if p.of.is_some() || p.max_items.is_some() => return Err("a row takes no of or max_items".into()),
+        "row" => {}
+        _ if p.of.is_some() || p.max_items.is_some() => return Err("of and max_items are a list's".into()),
+        _ if !p.fields.is_empty() => return Err("fields are a list's or a row's".into()),
+        _ => {}
+    }
+    let mut seen = std::collections::HashSet::new();
+    for f in &p.fields {
+        if !one(&f.ptype)
+            || f.of.is_some()
+            || !f.fields.is_empty()
+            || f.max_items.is_some()
+            || f.max_files.is_some()
+            || f.max_bytes.is_some()
+            || !f.accept.is_empty()
+        {
+            return Err(format!("field '{}' is one value: one of {kinds}", f.name));
+        }
+        if f.secret {
+            return Err(format!("field '{}': a secret is a parameter of its own, never a field of a list or a row", f.name));
+        }
+        if !is_ident(&f.name) || !seen.insert(f.name.as_str()) {
+            return Err(format!("field '{}' is declared twice or is no name", f.name));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, custom: bool) -> Result<(), String> {
+    // A workspace's own entity faces its staff only (A11 2.3.1): no api, no outside calls, no audience on its actions.
+    if custom && (e.api.is_some() || e.called_for_outside.is_some() || e.actions.iter().any(|a| crate::api::audience_of(a) != crate::api::Audience::Staff)) {
+        return Err("a workspace's own entity faces its staff only: no api, called_for_outside or audience".into());
+    }
     if e.label.trim().is_empty() {
         return Err("label is required".into());
     }
@@ -967,6 +1022,9 @@ pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, cu
         }
         if let Some(p) = a.params.iter().find(|p| p.secret && !["data", "text"].contains(&p.ptype.as_str())) {
             return Err(format!("action {}: secret parameter '{}' is data or text", a.name, p.name));
+        }
+        for p in &a.params {
+            shaped(p).map_err(|why| format!("action {}: parameter '{}': {why}", a.name, p.name))?;
         }
         if let Some(c) = &a.contract {
             validate_contract(e, a, c)?;
@@ -1636,6 +1694,33 @@ mod tests {
         assert!(refused(&format!("[{{name: issue, label: Issue, {}}}]", once.replace("[code]", "[pin]"))).contains("answer_once"));
         let unknown = serde_yaml::from_str::<ActionDef>("{name: place, label: Place, contract: {effect: query, sideways: true}}");
         assert!(unknown.unwrap_err().to_string().contains("sideways"), "unknown keys are refused when the package is read");
+    }
+
+    /// param-lists: a list of one declared type or of rows with declared fields, and a row; nothing free-form.
+    #[test]
+    fn a_list_or_a_row_parameter_declares_every_value_it_takes() {
+        let ok = |params: &str| with_actions(&format!("[{{name: plan, label: Plan, params: {params}}}]")).map(|_| ()).map_err(|e| e.to_string());
+        assert_eq!(ok("[{name: days, label: Days, type: list, of: select, options: [Monday, Sunday]}]"), Ok(()));
+        assert_eq!(ok("[{name: lines, label: Lines, type: list, max_items: 50, fields: [{name: qty, label: Qty, type: decimal, required: true}]}]"), Ok(()));
+        assert_eq!(ok("[{name: address, label: Address, type: row, fields: [{name: city, label: City}]}]"), Ok(()));
+        let refused = |params: &str, why: &str| {
+            let e = ok(params).expect_err(params);
+            assert!(e.contains(why), "{params}: {e}");
+        };
+        refused("[{name: days, label: Days, type: list}]", "of or fields");
+        refused("[{name: days, label: Days, type: list, of: int, fields: [{name: n, label: N}]}]", "of or fields");
+        refused("[{name: days, label: Days, type: list, of: files}]", "one value");
+        refused("[{name: days, label: Days, type: list, of: row}]", "one value");
+        refused("[{name: lines, label: Lines, type: list, fields: [{name: inner, label: Inner, type: list, of: int}]}]", "one value");
+        refused("[{name: address, label: Address, type: row}]", "fields");
+        refused("[{name: address, label: Address, type: row, of: data, fields: [{name: city, label: City}]}]", "of");
+        refused("[{name: code, label: Code, of: data}]", "a list's");
+        refused("[{name: code, label: Code, fields: [{name: city, label: City}]}]", "a list's or a row's");
+        refused("[{name: days, label: Days, type: list, of: int, max_items: 501}]", "1 to 500");
+        refused("[{name: days, label: Days, type: list, of: int, max_items: 0}]", "1 to 500");
+        refused("[{name: code, label: Code, max_items: 5}]", "a list's");
+        refused("[{name: lines, label: Lines, type: list, fields: [{name: pin, label: PIN, secret: true}]}]", "secret");
+        refused("[{name: lines, label: Lines, type: list, fields: [{name: qty, label: Qty}, {name: qty, label: Again}]}]", "twice");
     }
 
     #[test]

@@ -81,6 +81,9 @@ const MALL_ORDER: &str = r#"
 /// Who each `ship` and each `dispatch` saw acting: the app its context names, and how it was made (BD-83).
 static SEEN: std::sync::Mutex<Vec<(&'static str, Option<String>, ferrum_kernel::Made)>> = std::sync::Mutex::new(Vec::new());
 
+/// The effect key each `ship` saw on its context (TP-K).
+static KEYS: std::sync::Mutex<Vec<Option<String>>> = std::sync::Mutex::new(Vec::new());
+
 /// The carrier's code: a shipment for `ship`, nothing for `hold` (which waits for the desk's approval), and for `pack` a
 /// shipment written and then a refusal of its own.
 struct Carrier;
@@ -91,6 +94,7 @@ impl DocHook for Carrier {
         Ok(match name {
             "ship" => {
                 SEEN.lock().unwrap().push(("ship", hc.ctx.app.clone(), hc.ctx.made));
+                KEYS.lock().unwrap().push(hc.ctx.effect_key.as_deref().map(str::to_string));
                 let made = hc.kernel.insert_tx(hc.ctx, hc.tx, "Shipment", obj(json!({"parcel": doc["id"], "carrier": params["carrier"]}))).await?;
                 Some(json!({"shipment": made["id"]}))
             }
@@ -206,6 +210,8 @@ async fn scenario() {
     let first = call(&kit, "shop", &pat, ship("DHL").key("order-1")).await.expect("granted");
     assert!(!first.repeated);
     assert_eq!(first.effect_key.as_deref(), Some("shop:order-1"), "the key is the shop's own");
+    // a_hook_sees_the_key_of_its_write (TP-K), through call_tx: the carrier's code sees the shop's prefixed key.
+    assert_eq!(KEYS.lock().unwrap().last().cloned(), Some(Some("shop:order-1".to_string())), "the key its write was claimed under");
     let shipment = k.get(&ws.admin, "Shipment", uid(&first.result["shipment"]), false).await.expect("the shipment");
     assert_eq!((shipment["carrier"].as_str(), uid(&shipment["parcel"])), (Some("DHL"), uid(&parcel)));
     assert_eq!(count(&ws, "select count(*) from e_shipment").await, 1);

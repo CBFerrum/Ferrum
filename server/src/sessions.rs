@@ -61,9 +61,35 @@ pub struct Sessions {
     held: RwLock<Arc<Ring>>,
     /// The kernel and the platform's handle, to read the keys again; `None` without the vault.
     vault: Option<(Arc<Kernel>, Vault)>,
-    /// When the keys were last read on a token's account, so that tokens naming keys nobody has read them at most once a
-    /// second.
-    read_at: tokio::sync::Mutex<Option<Instant>>,
+    /// The vault read again on tokens' account in the current second ([`Reads`]).
+    reads: tokio::sync::Mutex<Reads>,
+}
+
+/// The most different key ids the vault is read again for in one second: a token naming a made-up id forces no read per
+/// request, and a key another replica has just made is still read for at once.
+const UNKNOWN_IDS_A_SECOND: usize = 4;
+
+/// The vault read again for tokens naming keys this replica does not hold, in the current second.
+#[derive(Default)]
+struct Reads {
+    since: Option<Instant>,
+    /// The key ids read for since then (`None`: a token naming none, with no secret here to check it).
+    ids: Vec<Option<u32>>,
+}
+
+impl Reads {
+    /// Whether a token naming `kid`, which is not held, has the vault read again at `now`: at once for an id not read for
+    /// in this second, while fewer than [`UNKNOWN_IDS_A_SECOND`] ids were; counted before any read.
+    fn admit(&mut self, kid: Option<u32>, now: Instant) -> bool {
+        if self.since.is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_secs(1)) {
+            *self = Reads { since: Some(now), ids: Vec::new() };
+        }
+        if self.ids.contains(&kid) || self.ids.len() >= UNKNOWN_IDS_A_SECOND {
+            return false;
+        }
+        self.ids.push(kid);
+        true
+    }
 }
 
 fn now() -> u64 {
@@ -79,7 +105,7 @@ impl Sessions {
             configured: Some(Zeroizing::new(configured.trim().to_string())).filter(|c| !c.is_empty()),
             held: RwLock::default(),
             vault,
-            read_at: tokio::sync::Mutex::new(None),
+            reads: Default::default(),
         };
         if let Some((k, v)) = &s.vault {
             s.reload().await.map_err(|e| format!("the keys that sign sessions cannot be read from the vault: {e}"))?;
@@ -159,12 +185,12 @@ impl Sessions {
     }
 
     /// What `token` says, when a key this server holds signed it and it has not run out. A token that names a key this
-    /// replica does not hold has the vault read again first (at most once a second), so that one signed a moment ago by
-    /// another replica's new key is taken.
+    /// replica does not hold has the vault read again first (once a second for each id, a few ids a second at most:
+    /// [`Reads`]), so that one signed a moment ago by another replica's new key is taken at once.
     pub async fn validate(&self, token: &str) -> Option<UserClaims> {
         match self.check(token) {
             Checked::Unknown => {
-                self.read_again().await;
+                self.read_again(key_id(token).flatten()).await;
                 match self.check(token) {
                     Checked::Good(c) => Some(c),
                     _ => None,
@@ -183,15 +209,14 @@ impl Sessions {
         }
     }
 
-    async fn read_again(&self) {
-        let mut at = self.read_at.lock().await;
-        if at.is_some_and(|t| t.elapsed() < Duration::from_secs(1)) {
+    async fn read_again(&self, kid: Option<u32>) {
+        let mut reads = self.reads.lock().await;
+        if !reads.admit(kid, Instant::now()) {
             return;
         }
         if let Err(e) = self.reload().await {
             tracing::warn!("reading the keys that sign sessions again: {e}");
         }
-        *at = Some(Instant::now());
     }
 
     fn check(&self, token: &str) -> Checked {
@@ -291,11 +316,26 @@ mod tests {
 
     fn ring(keys: &[(u32, &[u8], Option<DateTime<Utc>>)]) -> Sessions {
         let ring = Ring(keys.iter().map(|(n, k, until)| (*n, Held { version: 1, key: Zeroizing::new(k.to_vec()), until: *until })).collect());
-        Sessions { configured: None, held: RwLock::new(Arc::new(ring)), vault: None, read_at: tokio::sync::Mutex::new(None) }
+        Sessions { configured: None, held: RwLock::new(Arc::new(ring)), vault: None, reads: Default::default() }
     }
 
     fn claims() -> Map<String, Value> {
         json!({"tenant": "t"}).as_object().cloned().unwrap()
+    }
+
+    /// session-key-race: each key id not held has the vault read at once, once a second; a made-up id forces no read per
+    /// request, and only a few different ids are read for in one second.
+    #[test]
+    fn an_unknown_key_is_read_for_at_once_and_a_made_up_one_cannot_force_reads() {
+        let mut reads = Reads::default();
+        let t = Instant::now();
+        assert!(reads.admit(Some(4000), t), "a first unknown id");
+        assert!(!reads.admit(Some(4000), t), "the same id again, in the same second");
+        assert!(reads.admit(Some(4), t + Duration::from_millis(10)), "a new key another replica just made: read at once");
+        assert!(reads.admit(Some(5), t) && reads.admit(None, t), "up to the cap of different ids");
+        let read = (6..100).filter(|n| reads.admit(Some(*n), t + Duration::from_millis(500))).count();
+        assert_eq!(read, 0, "past the cap, no read in that second, however many ids are made up");
+        assert!(reads.admit(Some(4000), t + Duration::from_secs(1)), "the next second, again");
     }
 
     #[test]

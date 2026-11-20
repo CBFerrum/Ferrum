@@ -52,7 +52,7 @@ struct TokenSession {
     credential: Credential,
     /// When the browser session behind it last proved who its person is (crates/kernel/src/controls.rs).
     step_up_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// The site host a site session works on alone (BD-88).
+    /// The site host a site session works on alone (BD-89).
     host: Option<String>,
 }
 
@@ -90,7 +90,7 @@ pub enum Door {
     /// Anywhere else: records, metadata, administration, apps' endpoints, files, the setup routes, sockets, co-editing,
     /// the assistant and shell pages, `/mcp`.
     Elsewhere,
-    /// A site host's own pages and its app's site routes (docs/builder/decisions.md BD-88): a site session alone works
+    /// A site host's own pages and its app's site routes (docs/builder/decisions.md BD-89): a site session alone works
     /// there, and a site session works nowhere else.
     Site,
 }
@@ -159,7 +159,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
         let state = st.kernel.check_session_as(tenant, user, device, active).await?;
         (step_up_at, host) = (state.step_up_at, state.host);
     }
-    // A site session works on its site host alone, and nothing else works there (BD-88).
+    // A site session works on its site host alone, and nothing else works there (BD-89).
     if (door == Door::Site) != host.is_some() {
         return Err(ApiError(Error::Unauthorized(NOT_A_SITE_SESSION.into())));
     }
@@ -190,10 +190,10 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     })
 }
 
-/// Why a session is refused at a door that is not its own (BD-88).
+/// Why a session is refused at a door that is not its own (BD-89).
 const NOT_A_SITE_SESSION: &str = "this sign-in works only where it was made; sign in here";
 
-/// The customer a site host's own request comes from (docs/builder/decisions.md BD-88): the browser's site session, on the
+/// The customer a site host's own request comes from (docs/builder/decisions.md BD-89): the browser's site session, on the
 /// host it was opened for and of `tenant`, as its person's customer self. `None` for anyone else (no session, another
 /// kind of session, another host or workspace): a site's pages are public, so this is never an error. `.1`: the session.
 pub async fn site_person(st: &crate::state::AppState, headers: &HeaderMap, tenant: Uuid) -> Option<(Ctx, Uuid)> {

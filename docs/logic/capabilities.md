@@ -64,6 +64,13 @@ Events a process can start on or wait for are listed beside them: each entity's 
 Every use goes through one gate, `Kernel::invoke`, which runs the owning app's operation along the path a
 person's request takes, so every hook, rule, row scope, field permission and audit entry applies.
 
+- **Staff unless declared.** An operation faces only the workspace's staff unless its package declares an `audience`
+  (A11, BD-88; `docs/guides/21-apis-and-docs.md`, "Declaring who outside may call an operation"), checked at load.
+- **The same rights as the records path.** An action is the caller's when they hold its `permission` on the entity
+  or a rule names it (BD-02: `actions: [cancel_booking]`), and then its roles; such a holder finds it in the catalog
+  and in MCP's tools even with no other right on the entity, and runs it on the records the rule reaches. The OpenAPI
+  document (`/api/openapi.json`) shows the caller only what it reads and may call: entities, fields, operations.
+
 - **A change needs a key.** A capability that changes something takes a logical effect key: the same for every
   attempt at one effect, never an attempt's own. Its receipt commits in the transaction of the change.
 - **A repeat is answered, not repeated.** The same key with the same input returns what was done

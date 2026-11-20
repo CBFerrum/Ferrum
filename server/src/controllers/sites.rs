@@ -206,7 +206,7 @@ async fn public(
     Ok(res)
 }
 
-/// The customer a site session makes of this request (docs/builder/decisions.md BD-88): only on a site host of `tenant`,
+/// The customer a site session makes of this request (docs/builder/decisions.md BD-89): only on a site host of `tenant`,
 /// and only for `package` when it is one of that host's app's packages (another app's routes on the same host see
 /// nobody); a request that changes something must come from the site's own pages.
 pub(crate) async fn site_user(

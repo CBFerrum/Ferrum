@@ -107,7 +107,7 @@ pub struct SessionState {
     /// Who really acts, when someone acts as the session's person.
     pub actor: Option<Uuid>,
     pub step_up_at: Option<DateTime<Utc>>,
-    /// The site host a site session works on alone (docs/builder/decisions.md BD-88); none for any other session.
+    /// The site host a site session works on alone (docs/builder/decisions.md BD-89); none for any other session.
     pub host: Option<String>,
 }
 
@@ -508,7 +508,7 @@ impl Kernel {
         self.open_session_on(s, ttl, user_agent, ip, actor, zone, saml, proof, None).await
     }
 
-    /// A session on the site host `host` (docs/builder/decisions.md BD-88): it works there alone, as its person's
+    /// A session on the site host `host` (docs/builder/decisions.md BD-89): it works there alone, as its person's
     /// customer self, and nowhere else.
     pub async fn open_site_session(&self, s: &Session, ttl: Duration, user_agent: &str, ip: &str, host: &str) -> Result<Uuid> {
         let host = normalize_host(host).ok_or_else(|| Error::invalid("not a host name"))?;

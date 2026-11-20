@@ -1,4 +1,4 @@
-//! A customer's session on a site host (docs/builder/decisions.md BD-88, supersedes BD-26), against a real PostgreSQL
+//! A customer's session on a site host (docs/builder/decisions.md BD-89, supersedes BD-26), against a real PostgreSQL
 //! (`FERRUM_TEST_DATABASE_URL`; the database is reset by each test, which take their turn): the server as the binary boots
 //! it, with two site apps of this test's compiled in. A sign-in on the portal is handed to a site host of the same
 //! workspace by a one-use code bound to that host and to the browser that set off; the session it opens works on that

@@ -125,7 +125,7 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     Ok(res)
 }
 
-/// `/_auth/sign-in?next=…` on a site host (docs/builder/decisions.md BD-88): on to the workspace's portal host, which
+/// `/_auth/sign-in?next=…` on a site host (docs/builder/decisions.md BD-89): on to the workspace's portal host, which
 /// hands the sign-in back to this host; the state this browser keeps here makes sure the one that comes back is it.
 async fn site_sign_in(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(String, String)]) -> ApiResult<Response> {
     use base64::Engine;
@@ -142,7 +142,7 @@ async fn site_sign_in(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(St
     Ok(res)
 }
 
-/// `/_auth/handoff?host=…&state=…` on the portal (or workspace) host (BD-88): signed in, the person is sent to `host` with
+/// `/_auth/handoff?host=…&state=…` on the portal (or workspace) host (BD-89): signed in, the person is sent to `host` with
 /// a one-use code for it, when `host` is a live site address of this workspace; anything else mints nothing.
 async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, String)]) -> ApiResult<Response> {
     let refused = || {
@@ -175,7 +175,7 @@ async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, St
     Ok(res)
 }
 
-/// `/_auth/callback?code=…&state=…` on a site host (BD-88): the code the portal minted for this host, taken once, by the
+/// `/_auth/callback?code=…&state=…` on a site host (BD-89): the code the portal minted for this host, taken once, by the
 /// browser that set off from here, becomes a session that works on this host alone, as its person's customer self.
 async fn site_callback(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(String, String)]) -> ApiResult<Response> {
     use base64::Engine;
@@ -216,7 +216,7 @@ async fn site_callback(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(S
     Ok(res)
 }
 
-/// `POST /_auth/sign-out` on a site host (BD-88): ends this browser's site session there and clears its cookie.
+/// `POST /_auth/sign-out` on a site host (BD-89): ends this browser's site session there and clears its cookie.
 async fn site_sign_out(st: &AppState, headers: &HeaderMap) -> ApiResult<Response> {
     let Place::Site(tenant, _) = st.shell.place(headers).await? else { return Ok(StatusCode::NOT_FOUND.into_response()) };
     if !shell::may_change(&Method::POST, headers) {
@@ -609,7 +609,7 @@ async fn page(
         "sw.js" if rest.is_none() => return Ok(core_worker()),
         "manifest.webmanifest" if rest.is_none() => return manifest(&st, &headers, &q).await,
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
-        // A site's sign-in, handed from the portal (BD-88).
+        // A site's sign-in, handed from the portal (BD-89).
         "_auth" if matches!(place, Place::Site(..)) => {
             let Place::Site(tenant, _) = &place else { return Ok(not_found(uri.path())) };
             return match rest {
@@ -1115,7 +1115,7 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     let Some((package, site)) = site else {
         return Ok(unavailable(StatusCode::NOT_FOUND, "Nothing is here", "This address has no site yet."));
     };
-    // A customer signed in on this host (BD-88), as their customer self.
+    // A customer signed in on this host (BD-89), as their customer self.
     let user = super::sites::site_user(st, headers, &Method::GET, tenant, None).await?;
     let mut req = super::sites::request(tenant, user, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
     let scheme = if st.shell.secure { "https" } else { "http" };

@@ -52,10 +52,10 @@ packages: [doors]
 /// Its package: a person's record whose pay is in the `payroll` field group.
 fn packages() -> Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
     let files: BTreeMap<String, String> = [
-        ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\n"),
+        ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Staff\n    permissions:\n      - {entity: DoorsEmployee, read: true}\n"),
         (
             "entities/employee.yaml",
-            "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\n",
+            "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\nactions:\n  - {name: stamp, label: Stamp, permission: write, params: [{name: tags, label: Tags, type: list, of: data, max_items: 9}]}\n",
         ),
     ]
     .into_iter()
@@ -93,8 +93,27 @@ impl Site for Doors {
     }
 }
 
+/// The effect key each write of an employee saw on its context (TP-K): saved, or stamped.
+static KEYS: std::sync::Mutex<Vec<Option<String>>> = std::sync::Mutex::new(Vec::new());
+
+struct Seen;
+
+#[async_trait]
+impl ferrum_kernel::DocHook for Seen {
+    async fn validate(&self, hc: &mut ferrum_kernel::HookCtx<'_>, _: &ferrum_kernel::Doc) -> ferrum_kernel::Result<()> {
+        KEYS.lock().unwrap().push(hc.ctx.effect_key.as_deref().map(str::to_string));
+        Ok(())
+    }
+
+    async fn action(&self, hc: &mut ferrum_kernel::HookCtx<'_>, _: &str, _: &ferrum_kernel::Doc, _: &Value) -> ferrum_kernel::Result<Option<Value>> {
+        KEYS.lock().unwrap().push(hc.ctx.effect_key.as_deref().map(str::to_string));
+        Ok(Some(json!({"stamped": true})))
+    }
+}
+
 fn register(h: &mut HookRegistry) {
     h.add_site("doors", Arc::new(Doors));
+    h.register("DoorsEmployee", Arc::new(Seen));
 }
 
 #[test]
@@ -342,4 +361,61 @@ async fn scenario() {
     assert_eq!(status, StatusCode::FORBIDDEN, "a member: {body}");
     let (status, _, body) = get(&r, ACME, "/api/admin/packages", Some(&key)).await;
     assert!(status == StatusCode::OK && body.contains("\"doors\""), "an administrator: {status}");
+
+    // ── a_hook_sees_the_records_doors_key (TP-K): with `Idempotency-Key` that key; without it none ──
+    let write = |method: Method, path: String, key: Option<&str>, body: Value| {
+        let mut req = Request::builder().method(method).uri(path).header(header::HOST, ACME).header("x-forwarded-for", "203.0.113.7");
+        req = req.header(header::AUTHORIZATION, format!("Bearer {key_}", key_ = keys[0].1)).header(header::CONTENT_TYPE, "application/json");
+        if let Some(k) = key {
+            req = req.header("idempotency-key", k);
+        }
+        let r = r.clone();
+        async move {
+            let res = r.oneshot(req.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+            let status = res.status();
+            let body: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap_or(Value::Null);
+            (status, body)
+        }
+    };
+    let last = || KEYS.lock().unwrap().last().cloned();
+    let (status, made) = write(Method::POST, "/api/v1/DoorsEmployee".into(), Some("tp-k/hire/1"), json!({"full_name": "Kim"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    assert_eq!(last(), Some(Some("tp-k/hire/1".to_string())), "a keyed create");
+    let id = made["id"].as_str().unwrap().to_string();
+    let (status, body) = write(Method::POST, "/api/v1/DoorsEmployee".into(), None, json!({"full_name": "Lee"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(last(), Some(None), "a create without a key");
+    let (status, body) = write(Method::PATCH, format!("/api/v1/DoorsEmployee/{id}"), Some("tp-k/rename/1"), json!({"full_name": "Kim Park"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(last(), Some(Some("tp-k/rename/1".to_string())), "a keyed update");
+    let (status, body) = write(Method::POST, format!("/api/v1/DoorsEmployee/{id}/actions/stamp"), Some("tp-k/stamp/1"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(last(), Some(Some("tp-k/stamp/1".to_string())), "a keyed action");
+    let (status, body) = write(Method::POST, format!("/api/v1/DoorsEmployee/{id}/actions/stamp"), None, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(last(), Some(None), "an action without a key");
+
+    // ── param-lists in the OpenAPI document: an action's body is its declared parameters, a list one as an array ──
+    let (status, spec) = answer(get(&r, ACME, "/api/openapi.json", Some(&key)).await);
+    assert_eq!(status, StatusCode::OK);
+    let body = &spec["paths"]["/api/v1/DoorsEmployee/{id}/actions/stamp"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+    assert_eq!((body["additionalProperties"].clone(), body["properties"]["tags"]["type"].clone()), (json!(false), json!("array")), "{body}");
+    assert_eq!((body["properties"]["tags"]["maxItems"].clone(), body["properties"]["tags"]["items"]["type"].clone()), (json!(9), json!("string")), "{body}");
+
+    // ── openapi-rights: the document lists only the entities, fields and operations the caller reads or may call ──
+    let staff = k.create_user(&admin, "staff@acme.test", "Staff", Some(PASSWORD), &["Staff".to_string()], false).await.unwrap();
+    let staff_key = k.create_api_key(&admin, staff, "it", None, None).await.unwrap().1;
+    let (_, theirs) = answer(get(&r, ACME, "/api/openapi.json", Some(&staff_key)).await);
+    let employee = &theirs["components"]["schemas"]["DoorsEmployee"]["properties"];
+    assert!(employee["full_name"].is_object() && employee["salary"].is_null(), "a field in a group they cannot read is absent: {employee}");
+    let list = &theirs["paths"]["/api/v1/DoorsEmployee"];
+    assert!(list["get"].is_object() && list["post"].is_null(), "they read, never create: {list}");
+    assert!(theirs["paths"]["/api/v1/DoorsEmployee/{id}/actions/stamp"].is_null(), "an action they may not run");
+    let (_, none) = answer(get(&r, ACME, "/api/openapi.json", Some(&member_key)).await);
+    assert!(
+        none["components"]["schemas"]["DoorsEmployee"].is_null() && none["paths"]["/api/v1/DoorsEmployee"].is_null(),
+        "a member without read finds none of it"
+    );
+    let (_, all) = answer(get(&r, ACME, "/api/openapi.json", Some(&key)).await);
+    assert!(all["components"]["schemas"]["DoorsEmployee"]["properties"]["salary"].is_object(), "an administrator reads the payroll group");
 }

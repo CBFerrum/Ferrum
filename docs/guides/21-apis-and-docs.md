@@ -78,6 +78,21 @@ a project gets `404`, so that what exists elsewhere looks the same as what does 
 Public routes take nothing from a session. Authenticate them by what they carry (a signed link, a webhook signature
 checked with the vault, a device token), and count each request against a limit before any lookup.
 
+**Declaring who outside may call an operation** ([BD-88](../builder/decisions.md)). An operation is the workspace's
+staff's unless its package says otherwise, checked when the package loads: an action's contract may carry `audience:
+customer | anyone`, `cache` (seconds, 1 to 300, an `anyone` query only), `rate` (at most three `{per: address |
+customer | handle | key, max, seconds ≤ 3600}`), `guard: {scope, address?}` (every anonymous create and outside
+effect has one), `handle: {field, days ≤ 90, grants}` (a link property of `returns`; grants name the linked entity's
+`anyone` actions this package declares), `refusals: {<gate code>: words}` and `deprecated_since` + `sunset` (90 days
+or more apart). An action may be `collection: true` (no record: permission `create`, or `read` with `read_only`; no
+docstatus, condition or effects). An entity's `api: {read, list}` names its audience and the fields shown (no secret,
+grouped or unexported field; for `anyone` no email, phone, personal data or value read from a linked record), and a
+list's `filters`, `sort`, `limit` (≤ 100) and `search`. A customer-facing action's `returns` is closed: objects list
+their properties, arrays their items, no `anyOf`, `oneOf`, `allOf`, `not`, `$ref`, `patternProperties`, open
+`additionalProperties` or type lists but `[T, "null"]`. A package with an `internal` entity, a ledger and a line stay
+staff only, and no overlay or customization opens them; a workspace's own entities and actions declare none of this.
+The doors that honour these declarations come in later slices (A11); until then they are checked, not served.
+
 ## Errors with stable codes
 
 Return a kernel `Error`; the server answers `{"error": code, "message": text, "fields"?: [...], "operation"?: id}`

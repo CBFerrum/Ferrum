@@ -103,6 +103,21 @@ extends, with a contract: `hidden`, so that it is no button, and in the catalog 
 An action a package adds to another package's entity is the adding package's: `{adder}.{entity}.{action}`, at the
 adder's version. Its `permission` is for whoever reaches it directly: a person through the API, an agent, a process.
 
+**Callers outside the workspace.** An operation is staff only unless the package declares an `audience` and what
+goes with it (BD-88, `docs/guides/21-apis-and-docs.md`); a package holding an `internal` entity never does, and only
+such a package may declare `called_for_outside: {via: [<entity-name field>, <id field>], operations}` on its own
+entity, naming what another app's work may call while an outside caller's request runs.
+
+**Lists and rows as parameters.** An action's parameter may be a list of one value each,
+`{name: weekdays, label: Weekdays, type: list, of: select, options: [Monday, Sunday]}`, a list of rows,
+`{name: items, label: Items, type: list, max_items: 100, fields: [{name: item, label: Item, type: link, to: Item,
+required: true}, {name: qty, label: Quantity, type: decimal}]}`,
+or one row, `{name: address, label: Address, type: row, fields: [...]}`. Items and fields are one value of `data`, `text`, `select`,
+`int` (a whole JSON number), `decimal` (a number or a decimal in text), `date`, `check` or `link`; never secret, never
+a file, a list or a row. A list takes 500 items at most (`max_items` lowers it). Every door refuses, before the
+handler runs, a list over its length, an item of another type, a row key it does not declare and a required field
+missing; the handler gets the JSON as given. The catalog, MCP and the OpenAPI document show the same schema.
+
 **Declaring a use.** The package that needs another app's operation says so, within what it depends on:
 
 ```yaml
@@ -159,6 +174,13 @@ automation, an API key, a job, an approval completing later, the assistant, anot
 `ctx.stepped_up_within(600)` asks for a fresh step-up as well. Code that elevates a context uses `Ctx::elevated` or
 `ferrum_domain::util::elevated`, never `is_system = true` alone: `scripts/check_contexts.py` refuses that, in every app.
 An approval policy with `people_at_screens: true` refuses asking and deciding by anyone not at a screen.
+
+**The key of a write.** `ctx.effect_key` is the effect key the write in hand was claimed under: the gate's key (an app's
+`call_tx` key as `{app}:{key}`), or the records door's `Idempotency-Key` on a create, an update or an action. It is
+none for a write made without one, and for every write a write sets going (its effects, automations, jobs). A hook whose
+create does something outside the system (sends, calls, charges) may refuse a write without a key, so that a retry by any
+door does it at most once; a key with a prefix an app reserves (`platform:` for a provider's own sends) it may refuse from
+anyone but the caller it is reserved to, by `ctx.user`.
 
 ## Files an app keeps for its own work
 

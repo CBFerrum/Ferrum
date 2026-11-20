@@ -840,7 +840,7 @@ impl Kernel {
         self.redeem_code_of(code, host, &["member"]).await
     }
 
-    /// [`Kernel::redeem_host_code`] on a site host (docs/builder/decisions.md BD-88): the person a member or a portal
+    /// [`Kernel::redeem_host_code`] on a site host (docs/builder/decisions.md BD-89): the person a member or a portal
     /// person, who is a customer there.
     pub async fn redeem_site_code(&self, code: &str, host: &str) -> Result<Session> {
         self.redeem_code_of(code, host, &["member", "portal"]).await
@@ -881,7 +881,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// Whether `host` is a live site address of `tenant` (docs/builder/decisions.md BD-88): its target an app's site,
+    /// Whether `host` is a live site address of `tenant` (docs/builder/decisions.md BD-89): its target an app's site,
     /// not released, a subdomain or verified, not forwarding. Only to such a host is a sign-in handed.
     pub async fn is_site_host_of(&self, tenant: Uuid, host: &str) -> Result<bool> {
         let Some(host) = normalize_host(host) else { return Ok(false) };
@@ -899,7 +899,7 @@ impl Kernel {
     }
 
     /// Where a site of `tenant` sends a customer to sign in: its primary live portal address, else its primary live
-    /// workspace address (BD-88).
+    /// workspace address (BD-89).
     pub async fn sign_in_host(&self, tenant: Uuid) -> Result<Option<String>> {
         let mut tx = self.db.system_tx().await?;
         let host = sqlx::query_scalar(

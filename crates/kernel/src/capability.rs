@@ -122,8 +122,15 @@ fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
             return false;
         }
     }
+    // A rule naming the action lets its holder run it, whatever the action's own permission asks (BD-02, A11 D1), as on
+    // the records path (`ctx::action_scope`); the action's roles still apply.
+    let named = match (&cap.operation, cap.entity.as_deref()) {
+        (Operation::Action(name), Some(entity)) => ctx.perms.action_grants(entity, name).is_some(),
+        _ => false,
+    };
     cap.permissions.iter().all(|p| match p.split_once(':') {
         Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
+        Some((entity, _)) if named && cap.entity.as_deref() == Some(entity) => true,
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),
         None => p == "admin" && (ctx.is_admin || granted),
     })
@@ -138,9 +145,36 @@ fn version_prop() -> Value {
     json!({"type": "integer", "description": "The version it was read at; a change since then is refused"})
 }
 
-fn param_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
+/// The schema of an action's `params`: what the gate takes, as the catalog, MCP and the OpenAPI document show it.
+pub fn params_schema(params: &[ferrum_meta::ActionParam]) -> Value {
+    let mut props = Map::new();
+    for p in params {
+        let mut s = param_schema(p);
+        s["description"] = json!(p.description.clone().unwrap_or_else(|| p.label.clone()));
+        if p.secret {
+            s["writeOnly"] = json!(true);
+        }
+        props.insert(p.name.clone(), s);
+    }
+    object_schema(props, params.iter().filter(|p| p.required).map(|p| p.name.clone()).collect())
+}
+
+fn param_schema(p: &ferrum_meta::ActionParam) -> Value {
+    match p.ptype.as_str() {
+        "list" => json!({
+            "type": "array",
+            "maxItems": p.max_items.unwrap_or(ferrum_meta::MAX_LIST_ITEMS).min(ferrum_meta::MAX_LIST_ITEMS),
+            "items": p.of.as_deref().map_or_else(|| params_schema(&p.fields), |of| one_schema(of, p.to.as_deref(), &p.options)),
+        }),
+        "row" => params_schema(&p.fields),
+        t => one_schema(t, p.to.as_deref(), &p.options),
+    }
+}
+
+fn one_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
     match ptype {
         "int" => json!({"type": "integer"}),
+        "decimal" => json!({"type": ["number", "string"], "format": "decimal"}),
         "date" => json!({"type": "string", "format": "date"}),
         "check" => json!({"type": "boolean"}),
         "select" => json!({"type": "string", "enum": options}),
@@ -307,20 +341,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         let version = if origin == owner { version.clone() } else { version_of(k, ctx, origin) };
         let contract = a.contract.clone().unwrap_or_default();
         let effect = contract.effect.unwrap_or(if a.read_only { Effect::Query } else { Effect::TransactionalAction });
-        let mut params = Map::new();
-        let mut required = vec![];
-        for p in &a.params {
-            let mut s = param_schema(&p.ptype, p.to.as_deref(), &p.options);
-            s["description"] = json!(p.description.clone().unwrap_or_else(|| p.label.clone()));
-            if p.secret {
-                s["writeOnly"] = json!(true);
-            }
-            params.insert(p.name.clone(), s);
-            if p.required {
-                required.push(p.name.clone());
-            }
-        }
-        let input = by_id(&[("params", object_schema(params, required))]);
+        let input = by_id(&[("params", params_schema(&a.params))]);
         let completion = contract
             .completion
             .clone()
@@ -471,7 +492,8 @@ impl Kernel {
         let actions = [Action::Read, Action::Write, Action::Create, Action::Delete, Action::Submit, Action::Cancel];
         let mut out: Vec<Capability> = platform_capabilities();
         for ent in ctx.schema.entities.values() {
-            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) {
+            // An entity reached only through an action a rule names is listed too: its other operations are filtered out.
+            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) || !ctx.perms.named_actions(&ent.def.name).is_empty() {
                 out.extend(entity_capabilities(self, ctx, ent));
             }
         }
@@ -730,8 +752,22 @@ impl Kernel {
         if !claimed {
             return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest, caller).await;
         }
-        let result = self.carry_out(ctx, tx, &cap, &inv.input, Some(key)).await?;
-        let record = result.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let result = self.carry_out(&ctx.keyed(key), tx, &cap, &inv.input, Some(key)).await?;
+        let id_of = |v: &Value| v.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let mut record = id_of(&result);
+        // The record a repeat re-reads is the answer's own: an action that made another entity's record says so
+        // (`{entity, id}`); one answering with its own record, that; anything else is answered as it was kept.
+        let entity = match &cap.operation {
+            Operation::Action(_) => result
+                .get("entity")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| cap.entity.clone().filter(|_| record.is_some() && record == id_of(&inv.input))),
+            _ => cap.entity.clone(),
+        };
+        if entity.is_none() {
+            record = None;
+        }
         sqlx::query(
             "update logic_effect set result = $5, record_entity = $6, record_id = $7 \
              where tenant_id = $1 and environment = $2 and capability = $3 and effect_key = $4",
@@ -741,7 +777,7 @@ impl Kernel {
         .bind(&cap.id)
         .bind(key)
         .bind(action.map_or_else(|| result.clone(), |a| a.kept_result(&result)))
-        .bind(record.and(cap.entity.as_deref()))
+        .bind(record.and(entity))
         .bind(record)
         .execute(&mut **tx)
         .await?;

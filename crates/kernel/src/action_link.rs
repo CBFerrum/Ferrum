@@ -784,6 +784,9 @@ mod tests {
             max_files: None,
             max_bytes: None,
             accept: vec![],
+            of: None,
+            fields: vec![],
+            max_items: None,
         };
         let declared = [p("rating", "int", true), p("note", "text", false), p("price", "data", false)];
         let fixed = Map::from_iter([("price".to_string(), json!("100"))]);

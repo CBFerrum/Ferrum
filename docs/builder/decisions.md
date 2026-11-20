@@ -753,7 +753,7 @@ markup (a body is shown as its text).
 
 ## BD-26. An outside person's session on a site host (design only)
 
-**Superseded by [BD-88](#bd-88-one-customer-account-and-a-session-on-a-site-host)**, which builds it with a sign-in
+**Superseded by [BD-89](#bd-88-one-customer-account-and-a-session-on-a-site-host)**, which builds it with a sign-in
 handed from the portal instead of a code sign-in on each site.
 
 Decided 12 November 2026 as a design; **not built** in this slice, because doing it safely needs a session kind the
@@ -2169,7 +2169,24 @@ Decided 19 November 2026.
   A page asked with `?lang=` keeps it in the cookie for a year (not `HttpOnly`: it holds a tag only), except framed
   (`?embed=1`), where the outside site, not the visitor, chose.
 
-## BD-88. One customer account, and a session on a site host
+## BD-88. Who outside may call an operation, declared and checked at load
+
+* **Staff by default.** Every operation and every record read is the workspace's staff's until its package says
+  otherwise (A11 2.3.1, API-1). What a package may say is checked when it loads, never left to the doors:
+  `crates/meta/src/api.rs` (`check_package`), `PermissionDef::visitor_problem`, and the customization paths
+  (`effective.rs` refuses a workspace's action carrying an audience, rate, guard, handle or refusals; `validate_entity`
+  a workspace's own entity carrying `api`, `called_for_outside` or an audience).
+* **The floor.** A package holding an `internal` entity, a ledger and a line stay staff only: no `api`, no audience,
+  no visitor rule, and no overlay of another package opens them. The money packages and A3's `decides` operations join
+  the floor in API-1b.
+* **Closed answers.** A customer-facing action's `returns` lists every property and item, so the output allow-list
+  (A11 2.14.5) can prune all of it.
+* **Visitor roles** are their own kind (never portal) and only read with a `where` or reference data, and run
+  collection or read-only actions; a rule naming a collection action carries no record condition.
+* **Not yet served.** Nothing here opens a door; the declarations are checked so that the doors (API-2 onward) only
+  honour what passed. Roles saved in a workspace carry no `visitor` flag yet (the role table has no column for it).
+
+## BD-89. One customer account, and a session on a site host
 
 Decided 20 November 2026 (S4-P4). Supersedes BD-26.
 
@@ -2199,4 +2216,3 @@ from the site's own pages (`may_change`), else 403. The context is the person's 
 (`Kernel::customer_ctx`): `outside`, never an administrator, the portal roles alone, so a member who shops is a customer
 there and nothing more. `POST /_auth/sign-out` on the site ends that session; signing out everywhere ends it too (token
 version).
-

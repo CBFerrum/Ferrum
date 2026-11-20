@@ -649,7 +649,7 @@ impl Kernel {
         self.load_core_as(tenant, user, false).await
     }
 
-    /// [`Kernel::load_core`]; `customer`: the person as a customer whatever their kind (a site session, BD-88): outside,
+    /// [`Kernel::load_core`]; `customer`: the person as a customer whatever their kind (a site session, BD-89): outside,
     /// never an administrator, the portal roles alone.
     async fn load_core_as(&self, tenant: Uuid, user: Uuid, customer: bool) -> Result<CtxCore> {
         let schema = self.registry.schema(tenant).await?;
@@ -678,7 +678,7 @@ impl Kernel {
         let roles: Vec<(String, Option<DateTime<Utc>>)> =
             match kind.as_str() {
                 "guest" => vec![],
-                // The portal roles given, and those every portal person holds (BD-88).
+                // The portal roles given, and those every portal person holds (BD-89).
                 "portal" => {
                     sqlx::query_as(
                         "select r.name, case when r.portal_default then null else ur.expires_at end from role r \
@@ -792,7 +792,7 @@ impl Kernel {
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone()), made).await
     }
 
-    /// The context of `user` as a customer (a site session, docs/builder/decisions.md BD-88): loaded as if a portal person
+    /// The context of `user` as a customer (a site session, docs/builder/decisions.md BD-89): loaded as if a portal person
     /// whatever their kind, so a member who shops is a customer there, nothing more; a person at a screen. Within `entry`
     /// when a request made it. A portal person's comes from the cache; anyone else's is read for the request.
     pub async fn customer_ctx(
@@ -996,6 +996,7 @@ impl Kernel {
             proof,
             app: None,
             made,
+            effect_key: None,
             reads: Default::default(),
         })
     }
@@ -1626,7 +1627,7 @@ impl Kernel {
     }
 
     /// Makes a portal role one every portal person holds without being given it, or not (docs/builder/decisions.md
-    /// BD-88). Administrators only; refused for a role that is not a portal role.
+    /// BD-89). Administrators only; refused for a role that is not a portal role.
     pub async fn set_role_portal_default(&self, ctx: &Ctx, role: &str, on: bool) -> Result<()> {
         Self::require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;

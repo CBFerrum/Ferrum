@@ -1480,6 +1480,7 @@ pub(crate) mod tests {
             proof: Default::default(),
             app: None,
             made: ferrum_kernel::Made::Key,
+            effect_key: None,
             reads: Default::default(),
         }
     }

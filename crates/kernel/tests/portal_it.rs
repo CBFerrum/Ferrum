@@ -223,7 +223,7 @@ async fn school() -> (Arc<Kernel>, Uuid, Ctx) {
     (k, tenant, admin)
 }
 
-/// A role every portal person holds without being given it (BD-88): each reaches their own records, not each other's,
+/// A role every portal person holds without being given it (BD-89): each reaches their own records, not each other's,
 /// and a member's customer self reaches only theirs too.
 async fn defaults_reach() {
     let (k, _, admin) = school().await;
@@ -243,7 +243,7 @@ async fn defaults_reach() {
     assert_eq!(ann.roles, vec!["Patients".to_string()], "held without being given");
     assert_eq!(reach(&k, &ann, "Patient", &all, "name").await, names(&["Ann"]));
     assert_eq!(reach(&k, &bob, "Patient", &all, "name").await, names(&["Bob"]));
-    // A member as a customer (a site session, BD-88): outside, no administrator, the portal roles alone.
+    // A member as a customer (a site session, BD-89): outside, no administrator, the portal roles alone.
     let me = k.customer_ctx(admin.tenant, admin.user, None, "it".into(), None).await.unwrap();
     assert!(me.outside && !me.is_admin && me.roles == vec!["Patients".to_string()], "{:?}", me.roles);
     assert_eq!(reach(&k, &me, "Patient", &all, "name").await, names(&["Admin"]));

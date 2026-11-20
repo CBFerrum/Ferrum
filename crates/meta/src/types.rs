@@ -492,6 +492,10 @@ pub struct EventDef {
     pub payload: Option<Value>,
 }
 
+fn is_staff(a: &crate::api::Audience) -> bool {
+    *a == crate::api::Audience::Staff
+}
+
 /// What an action promises beyond its parameters (docs/logic, FLC-CAP-001). Everything is optional and
 /// derived when left out: a read-only action is a query, any other a transactional action with a
 /// receipt committed beside it.
@@ -523,6 +527,27 @@ pub struct ActionContract {
     /// code): a repeat under the same key gets the rest, and is told so and what to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer_once: Option<AnswerOnce>,
+    /// Who may call it beyond the workspace's staff (A11 2.3.1): `customer` or `anyone`; staff when absent.
+    #[serde(default, skip_serializing_if = "is_staff")]
+    pub audience: crate::api::Audience,
+    /// Seconds an anonymous query's answer may be cached, 1 to 300.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<u16>,
+    /// At most three counts of calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate: Vec<crate::api::CallRate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<crate::api::GuardDecl>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<crate::api::HandleDecl>,
+    /// A gate code to the only words a refusal carries outside.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub refusals: std::collections::BTreeMap<String, String>,
+    /// With `deprecated`: since when, and the day it is refused (at least 90 days later).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecated_since: Option<chrono::NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sunset: Option<chrono::NaiveDate>,
 }
 
 /// Result fields given once ([`ActionContract::answer_once`]).
@@ -750,6 +775,12 @@ pub struct EntityDef {
     /// says otherwise (pay, health, personnel files).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub internal: bool,
+    /// Its record reads for callers outside the workspace (A11 2.3.1); staff only when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<crate::api::EntityApi>,
+    /// On a floor entity, in its own package: what another app's work may call for an outside caller (A11 2.14.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub called_for_outside: Option<crate::api::OutsideCalls>,
     /// Who reads its records is recorded on the audit trail (a patient's chart, a personnel file) unless the workspace's
     /// own `record_reads` names it, `off` included (crates/kernel/src/controls.rs). Read from the definition: nothing is
     /// written into a workspace's settings.
@@ -931,6 +962,9 @@ pub struct ActionDef {
     /// writing an audit entry, in a read-only transaction when run on its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+    /// Bound to no record (A11 2.3.1): input `{params}`, permission `read` (then `read_only`) or `create`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collection: bool,
     /// What the action asks for before it runs (the UI shows a dialog; the API takes them as the
     /// action's parameters).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1111,7 +1145,22 @@ pub struct ActionParam {
     pub max_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accept: Vec<String>,
+    /// A `list`'s item type, one of [`ITEM_TYPES`] (`options` and `to` then apply to each item); none for a list of rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<String>,
+    /// A `row`'s fields, or the fields of each row of a `list`: each declared as a parameter is, of a type in
+    /// [`ITEM_TYPES`]; a row has no key it does not declare.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<ActionParam>,
+    /// A `list`'s most items: [`MAX_LIST_ITEMS`] unless declared lower.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u32>,
 }
+
+/// The types a `list`'s items and a row's fields may have: one value each, never a file, a list or a row.
+pub const ITEM_TYPES: &[&str] = &["data", "text", "select", "int", "decimal", "date", "check", "link"];
+/// The most items a `list` parameter takes.
+pub const MAX_LIST_ITEMS: u32 = 500;
 
 /// The most files a `files` parameter takes, and the largest file.
 pub const MAX_PARAM_FILES: u32 = 10;
@@ -1417,10 +1466,14 @@ pub struct RoleDef {
     /// such a role holds only own-record rules (see [`PermissionDef::portal_problem`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub portal: bool,
-    /// Held by every portal person without being given it (docs/builder/decisions.md BD-88): an app's customer role,
+    /// Held by every portal person without being given it (docs/builder/decisions.md BD-89): an app's customer role,
     /// whose rules reach only the person's own records. Only a portal role may be one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub portal_default: bool,
+    /// Held by anyone on the customer door, an anonymous visitor included (A11 2.3.1): only what
+    /// [`PermissionDef::visitor_problem`] lets through. Never with `portal`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub visitor: bool,
 }
 
 /// What a record shows of the records it links to.
@@ -1681,6 +1734,38 @@ impl PermissionDef {
     /// Why this rule cannot belong to a portal role, if it cannot (BD-02): a portal role reaches its
     /// holders' own records, and reads reference data (`personal`: whether the entity holds personal
     /// data, see [`holds_personal_data`]) whole; it never deletes, cancels, exports or imports.
+    /// What a visitor role's rule may not hold (A11 2.3.1 rule 10): every entity named, reading only with a `where` or
+    /// reference data holding no personal data, running only collection or read-only actions of `def`, and nothing else.
+    pub fn visitor_problem(&self, def: Option<&EntityDef>, personal: bool) -> Option<String> {
+        if self.entity == "*" {
+            return Some("a visitor role names each entity it reaches, never *".into());
+        }
+        let refused: Vec<&str> = [
+            (self.write, "write"),
+            (self.create, "create"),
+            (self.delete, "delete"),
+            (self.submit, "submit"),
+            (self.cancel, "cancel"),
+            (self.export, "export"),
+            (self.import, "import"),
+            (self.if_owner, "if_owner"),
+            (self.via.is_some(), "via"),
+            (!self.read_groups.is_empty() || !self.write_groups.is_empty(), "field groups"),
+            (self.shared.is_some(), "shared"),
+        ]
+        .into_iter()
+        .filter_map(|(on, what)| on.then_some(what))
+        .collect();
+        if !refused.is_empty() {
+            return Some(format!("a visitor rule on {} may not hold {}", self.entity, refused.join(", ")));
+        }
+        if self.read && self.condition.is_empty() && personal {
+            return Some(format!("a visitor reads {} only with a where, or when it is reference data holding no personal data", self.entity));
+        }
+        let runs = |a: &String| def.is_some_and(|d| d.actions.iter().any(|x| &x.name == a && (x.collection || x.read_only)));
+        self.actions.iter().find(|a| !runs(a)).map(|a| format!("a visitor rule names only collection or read-only actions: {a} of {} is neither", self.entity))
+    }
+
     pub fn portal_problem(&self, personal: bool) -> Option<String> {
         if self.entity == "*" {
             return Some("a portal role names each entity it reaches, never every entity".into());
