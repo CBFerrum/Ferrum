@@ -164,7 +164,7 @@ async fn session_response_with(
 
 async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<LoginReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &crate::extract::named_workspace(&st.kernel, &req.tenant).await).await?;
     // The directory's people sign in on the accounts host's own page.
     if req.password.len() > 256 || req.email.len() > 254 || req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
         return Err(ApiError(Error::Unauthorized("invalid tenant, email or password".into())));
@@ -196,7 +196,7 @@ struct SecondFactorReq {
 /// app (or a recovery code).
 async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SecondFactorReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|second-factor", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "second-factor").await?;
     let again = || ApiError(Error::Unauthorized("sign in again".into()));
     if req.code.len() > 64 {
         return Err(ApiError(Error::field("code", "is too long")));
@@ -233,7 +233,7 @@ const CODE_ANSWER: std::time::Duration = std::time::Duration::from_millis(600);
 /// same whether or not the address belongs to anyone.
 async fn send_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SendCodeReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &crate::extract::named_workspace(&st.kernel, &req.tenant).await).await?;
     if req.tenant.len() > 63 || req.tenant.trim().eq_ignore_ascii_case(DIRECTORY) {
         return Err(ApiError(Error::field("tenant", "names no workspace")));
     }
@@ -260,7 +260,7 @@ pub async fn sign_up_with_code(k: &Kernel, req: &SignupRequest, network: &str) -
 
 async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignupRequest>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    Ok(Json(sign_up_with_code(&st.kernel, &req, &client_ip(&headers)).await?).into_response())
+    Ok(Json(sign_up_with_code(&st.kernel, &req, &crate::extract::client_net(&headers)).await?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -275,7 +275,7 @@ struct CodeSignInReq {
 /// Signs in with an emailed code; the second step follows for someone with an authenticator app.
 async fn sign_in_with_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<CodeSignInReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|{}", client_ip(&headers), req.tenant.to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &crate::extract::named_workspace(&st.kernel, &req.tenant).await).await?;
     if req.tenant.len() > 63 || req.email.len() > 254 || req.code.len() > 32 {
         return Err(ApiError(Error::Unauthorized("that code is wrong or has expired; ask for a new one".into())));
     }
@@ -311,7 +311,7 @@ struct SsoStartReq {
 /// `binding` can finish.
 async fn sso_start(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SsoStartReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     let url = st.kernel.sso_begin(&req.tenant, req.provider, &req.redirect_uri, &req.binding).await?;
     Ok(Json(json!({"url": url})).into_response())
 }
@@ -328,7 +328,7 @@ struct SsoFinishReq {
 /// Finishes signing in with what the provider sent the browser back with.
 async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SsoFinishReq>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     if req.state.len() > 200 || req.code.len() > 4096 || req.binding.len() > 200 {
         return Err(ApiError(Error::Unauthorized("sign in again".into())));
     }
@@ -353,7 +353,7 @@ async fn saml_acs(
     Form(form): Form<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     let (relay, response) = (form.get("RelayState").map(String::as_str).unwrap_or_default(), form.get("SAMLResponse").map(String::as_str).unwrap_or_default());
     // Signing in again to confirm it is you (a step-up) happens in a small window, which a page of its own ends.
     let step_up = relay.starts_with(ferrum_kernel::sso::STEP_UP_STATE);
@@ -441,7 +441,7 @@ async fn saml_logout_out(State(app): State<AppContext>, headers: HeaderMap, Path
     if crate::zone::refuses_staff(&st, &headers).await {
         return Err(ApiError(Error::NotFound("no such address".into())));
     }
-    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso-logout").await?;
     if q.ticket.is_empty() || q.ticket.len() > 200 {
         return Ok(slo_refused());
     }
@@ -472,7 +472,7 @@ async fn saml_slo(
     if crate::zone::refuses_staff(&st, &headers).await {
         return Err(ApiError(Error::NotFound("no such address".into())));
     }
-    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso-logout").await?;
     let incoming = match (method == axum::http::Method::POST, form.get("SAMLRequest").or(form.get("SAMLResponse"))) {
         (true, Some(message)) => Incoming::Post { message, relay_state: form.get("RelayState").map(String::as_str) },
         (false, _) => Incoming::Redirect(uri.query().unwrap_or_default()),
@@ -498,7 +498,7 @@ async fn sso_backchannel_logout(
     Form(form): Form<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|sso-logout", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso-logout").await?;
     let token = form.get("logout_token").map(String::as_str).filter(|t| t.len() <= 16 * 1024).unwrap_or_default();
     let store = [(header::CACHE_CONTROL, "no-store")];
     Ok(match st.kernel.sso_backchannel_logout(provider, token).await {
@@ -706,7 +706,7 @@ async fn step_up(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let Some(device) = device else { return Err(ApiError(Error::invalid("step-up needs a browser session"))) };
-    st.login_limiter.check(&format!("{}|step-up|{}", client_ip(&headers), ctx.user)).await?;
+    st.login_limiter.check_from(&headers, &format!("step-up|{}", ctx.user)).await?;
     if req.password.len() > 256 {
         return Err(ApiError(Error::Unauthorized("wrong password".into())));
     }
@@ -823,7 +823,7 @@ impl axum::extract::FromRequestParts<AppContext> for StaffZone {
 /// budget, whichever way), and the account whose credentials count.
 async fn step_up_caller(st: &AppState, headers: &HeaderMap, ctx: &ferrum_kernel::Ctx, device: Option<Uuid>) -> Result<StepUp, ApiError> {
     let session = device.ok_or_else(|| ApiError(Error::invalid(NO_BROWSER)))?;
-    st.login_limiter.check(&format!("{}|step-up|{}", client_ip(headers), ctx.user)).await?;
+    st.login_limiter.check_from(headers, &format!("step-up|{}", ctx.user)).await?;
     let (keys, _) = keys_of(st, headers, ctx.tenant, ctx.user).await?;
     Ok(StepUp { tenant: ctx.tenant, user: ctx.user, session, keys })
 }
@@ -957,7 +957,7 @@ struct BackQuery {
 /// only by the session that asked.
 async fn step_up_provider_back(State(app): State<AppContext>, headers: HeaderMap, Query(q): Query<BackQuery>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     if q.state.is_empty() || q.state.len() > 200 || q.code.as_ref().is_some_and(|c| c.len() > 4096) {
         return Ok(step_up_refused("The identity provider's answer is not one this server asked for. Close this window and try again."));
     }
@@ -1170,7 +1170,7 @@ async fn remove_passkey(Auth(ctx): Auth, State(app): State<AppContext>, Path(id)
 /// `POST /api/auth/passkey/options`: what the browser needs to sign in with a passkey here.
 async fn passkey_sign_in_options(State(app): State<AppContext>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "passkey").await?;
     let host = crate::shell::request_host(&headers).ok_or_else(|| ApiError(Error::invalid("no host")))?.to_ascii_lowercase();
     Ok(Json(st.kernel.passkey_sign_in_offer(&host).await?).into_response())
 }
@@ -1187,7 +1187,7 @@ struct PasskeySignIn {
 /// belongs to (on a workspace's own host, only that workspace's).
 async fn passkey_sign_in(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<PasskeySignIn>) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.login_limiter.check(&format!("{}|passkey", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "passkey").await?;
     let (_, origins) = relying_party(&st, &headers)?;
     let tenant = match st.shell.place(&headers).await? {
         crate::shell::Place::Workspace(t) | crate::shell::Place::Portal(t) => Some(t),

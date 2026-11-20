@@ -399,7 +399,8 @@ async fn email_doc(Auth(ctx): Auth, State(app): State<AppContext>, Path((entity,
     if k.mailer.is_none() {
         return Err(ApiError(Error::Unavailable("no mailer is configured on this server".into())));
     }
-    st.mail_limiter.check(&format!("{}|{}", ctx.tenant, ctx.user)).await.map_err(ApiError)?;
+    let net = ctx.zone.as_ref().map_or_else(|| "local".to_string(), |e| crate::extract::net(&e.address));
+    st.mail_limiter.check(&net, &format!("{}|{}", ctx.tenant, ctx.user)).await.map_err(ApiError)?;
     // Mailing a record sends it out of the workspace: it must be reached by a rule that grants export.
     let doc = k.get_for_export(&ctx, &entity, id).await?;
     let label = k.entity(&ctx, &entity)?.def.label.clone();

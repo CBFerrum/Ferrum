@@ -784,8 +784,8 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
 
     // ── The window: which workspace asks, in the browser's language; framed by no page, kept by no cache ──
     let dialog = "dlg-accounts-0123456789";
-    let state = begin(&s, "10.1.3.1", &kim_acme, dialog).await;
-    let page = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    let state = begin(&s, "10.3.1.1", &kim_acme, dialog).await;
+    let page = call_from(&s, "10.3.1.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert!(page.body.contains("Acme asks you to confirm it is you with a passkey of your Ferrum account."), "{}", page.body);
     let said = |a: &Answer, name: &str| a.headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
@@ -796,7 +796,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     let req = Request::builder()
         .uri(format!("/step-up?state={state}"))
         .header(header::HOST, ACCOUNTS)
-        .header("x-forwarded-for", "10.1.3.1")
+        .header("x-forwarded-for", "10.3.1.1")
         .header(header::ACCEPT_LANGUAGE, "ar")
         .body(Body::empty())
         .unwrap();
@@ -805,24 +805,24 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert!(body.contains(&in_arabic) && body.contains("dir=\"rtl\""), "{body}");
 
     // ── The challenge is Kim's, whoever is signed in there; Lee's passkey is refused and the request used up ──
-    let o = challenge(&s, "10.1.3.1", &state, Cred::Cookie(&lee_there)).await;
+    let o = challenge(&s, "10.3.1.1", &state, Cred::Cookie(&lee_there)).await;
     assert_eq!(o.status, StatusCode::OK, "{}", o.body);
     let o = o.json();
     let pk = &o["publicKey"];
     assert_eq!((pk["rpId"].clone(), pk["userVerification"].clone()), (json!(ACCOUNTS), json!("required")), "never the base domain");
     assert_eq!(pk["allowCredentials"].as_array().map(|a| a.iter().map(|c| c["id"].clone()).collect::<Vec<_>>()), Some(vec![json!(B64.encode(&kims.id))]));
-    let a = ceremony(&s, "10.1.3.1", &state, &o, lees.get(&o, lee_id)).await;
+    let a = ceremony(&s, "10.3.1.1", &state, &o, lees.get(&o, lee_id)).await;
     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "another person's passkey: {}", a.body);
-    let a = challenge(&s, "10.1.3.1", &state, Cred::Page).await;
+    let a = challenge(&s, "10.3.1.1", &state, Cred::Page).await;
     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "the request is used up: {}", a.body);
-    let gone = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
+    let gone = call_from(&s, "10.3.1.1", Method::GET, ACCOUNTS, &format!("/step-up?state={state}"), Cred::None, None).await;
     assert!(gone.status == StatusCode::UNAUTHORIZED && gone.body.contains("has expired or was used already"), "{} {}", gone.status, gone.body);
-    let unknown = call_from(&s, "10.1.3.1", Method::GET, ACCOUNTS, "/step-up?state=su.never-made-0123456789", Cred::None, None).await;
+    let unknown = call_from(&s, "10.3.1.1", Method::GET, ACCOUNTS, "/step-up?state=su.never-made-0123456789", Cred::None, None).await;
     assert_eq!((unknown.status, unknown.body.clone()), (gone.status, gone.body.clone()), "an unknown request says no more than a used one");
     assert_eq!(said(&gone, "x-frame-options"), "DENY");
 
     // ── The round trip: the ceremony there, the window back on Acme's address, the dialog's finish ──
-    let ip = "10.1.3.2";
+    let ip = "10.3.2.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let o = challenge(&s, ip, &state, Cred::Page).await.json();
     let a = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await;
@@ -861,7 +861,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     age(&k).await;
 
     // ── At once, as on two replicas: a request makes one proof at most, and a proof is taken once (the database decides) ──
-    let ip = "10.1.3.9";
+    let ip = "10.3.9.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let (o1, o2) = (challenge(&s, ip, &state, Cred::Page).await.json(), challenge(&s, ip, &state, Cred::Page).await.json());
     let (c1, c2) = (kims.get(&o1, kim_id), kims.get(&o2, kim_id));
@@ -880,7 +880,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     age(&k).await;
 
     // ── A proof for another dialog is not taken, and is used up ──
-    let ip = "10.1.3.3";
+    let ip = "10.3.3.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let o = challenge(&s, ip, &state, Cred::Page).await.json();
     let next = ceremony(&s, ip, &state, &o, kims.get(&o, kim_id)).await.json()["redirect"].as_str().unwrap().to_string();
@@ -892,7 +892,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert!(asked(&change(&kim_acme).await));
 
     // ── An expired request: past three minutes the window can no longer be answered ──
-    let ip = "10.1.3.4";
+    let ip = "10.3.4.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let o = challenge(&s, ip, &state, Cred::Page).await.json();
     let mut tx = k.db.system_tx().await.unwrap();
@@ -908,14 +908,14 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert_eq!(page.status, StatusCode::UNAUTHORIZED);
 
     // ── The device not verifying the person ──
-    let ip = "10.1.3.5";
+    let ip = "10.3.5.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let o = challenge(&s, ip, &state, Cred::Page).await.json();
     let a = ceremony(&s, ip, &state, &o, kims.answer(&o, kim_id, 0x01)).await;
     assert_eq!(a.status, StatusCode::UNAUTHORIZED, "present but not verified: {}", a.body);
 
     // ── The ceremony skipped: straight to the provider's way back, to the done page, to the finish ──
-    let ip = "10.1.3.6";
+    let ip = "10.3.6.1";
     let state = begin(&s, ip, &kim_acme, dialog).await;
     let back = call_from(&s, ip, Method::GET, ACME, &format!("/api/auth/step-up/provider/back?state={state}&code=made-up-0123456789"), Cred::None, None).await;
     assert_eq!(back.status, StatusCode::UNAUTHORIZED, "not a provider's: {}", back.body);
@@ -928,7 +928,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     assert!(asked(&change(&kim_acme).await));
 
     // ── The proof goes back only to a live address of the workspace that asked, the one its dialog is on ──
-    let ip = "10.1.3.7";
+    let ip = "10.3.7.1";
     k.add_operator_host("acme", "help.ferrum.test", "portal", None).await.unwrap();
     let a = call_from(&s, ip, Method::POST, "help.ferrum.test", "/api/auth/step-up/accounts", Cred::Cookie(&kim_acme), Some(json!({"dialog": dialog}))).await;
     assert_eq!(a.status, StatusCode::UNPROCESSABLE_ENTITY, "not from the portal's address: {}", a.body);
@@ -972,7 +972,7 @@ async fn accounts_passkey(base: &AppContext, st: &AppState, acme: Uuid, admin: &
     .unwrap();
     tx.commit().await.unwrap();
     let up = events.iter().find(|e| e.2 == "stepped_up").unwrap_or_else(|| panic!("{events:?}"));
-    assert_eq!((up.0, up.1, up.3["address"].clone()), (acme, kim, json!("10.1.3.2")), "Kim's session at Acme, from where it was finished");
+    assert_eq!((up.0, up.1, up.3["address"].clone()), (acme, kim, json!("10.3.2.1")), "Kim's session at Acme, from where it was finished");
     assert!(events.iter().any(|e| (e.0, e.1, e.2.as_str()) == (dir, kim_id, "step_up_failed")), "the passkeys tried are her Ferrum account's: {events:?}");
     let text = format!("{events:?}");
     assert!(!text.contains(&handed["code"]) && !text.contains("su."), "no proof or request on the trail");

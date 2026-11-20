@@ -465,7 +465,7 @@ async fn scenario() {
     let (status, answer) = direct(&r, OUTSIDE, me().header("x-forwarded-for", INSIDE), None).await;
     assert!(refused_by_network(status, &answer), "staff from outside, the header saying inside: {status} {answer}");
     assert_eq!(direct(&r, INSIDE, me(), None).await.0, StatusCode::OK, "staff from inside");
-    // Callers are not one address: the tries one address uses up are its own.
+    // Callers are not one network: the tries one network (an IPv4 /24) uses up are its own.
     let try_from = |peer: &'static str, email: &'static str, password: &'static str| {
         let r = r.clone();
         async move { direct(&r, peer, Request::post("/api/auth/login"), Some(json!({"tenant": "acme", "email": email, "password": password}))).await.0 }
@@ -474,7 +474,7 @@ async fn scenario() {
         assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::UNAUTHORIZED);
     }
     assert_eq!(try_from("198.51.100.21", "nobody@acme.test", "Wrong-Horse-99").await, StatusCode::TOO_MANY_REQUESTS, "the 21st from there");
-    assert_eq!(try_from("198.51.100.22", "portal@acme.test", PASSWORD).await, StatusCode::OK, "another address signs in");
+    assert_eq!(try_from("198.51.101.22", "portal@acme.test", PASSWORD).await, StatusCode::OK, "another network signs in");
     ferrum_server::extract::PROXY_HOPS.store(1, std::sync::atomic::Ordering::Relaxed);
     k.clear_staff_networks("acme", "test").await.unwrap();
 
@@ -636,8 +636,8 @@ async fn scenario() {
     // A refusal by network, before the password.
     let (status, _) = call(&r, Method::PUT, "/api/admin/settings", INSIDE, Cred::Bearer(&admin_token), Some(networks.clone())).await;
     assert_eq!(status, StatusCode::OK);
-    sign_in(&r, "198.51.100.4", "wrong@acme.test", PASSWORD, false).await;
-    let got = sign_ins("198.51.100.4").await;
+    sign_in(&r, "198.51.102.4", "wrong@acme.test", PASSWORD, false).await;
+    let got = sign_ins("198.51.102.4").await;
     assert_eq!((got.len(), got[0].0.as_str(), got[0].1["by"].clone()), (1, "refused", json!("network")), "{got:?}");
     k.clear_staff_networks("acme", "test").await.unwrap();
     // A flood: a few an hour one by one, then one summary with a count once the hour is over.

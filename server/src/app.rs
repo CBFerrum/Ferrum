@@ -769,8 +769,9 @@ fn valid_traceparent(v: &str) -> bool {
 /// port-forwards and the cluster's own calls have no address to tell apart.
 async fn per_address(limiter: Arc<RateLimiter>, req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
+    let net = crate::extract::client_net(req.headers());
     if req.headers().contains_key("x-forwarded-for")
-        && let Err(e) = limiter.check_local(&crate::extract::client_ip(req.headers()))
+        && let Err(e) = limiter.check_local(&net, &net)
     {
         return crate::error::ApiError(e).into_response();
     }
@@ -1283,7 +1284,7 @@ mod tests {
         assert_eq!((call(Some("203.0.113.7")).await, call(Some("203.0.113.7")).await), (200, 200));
         assert_eq!(call(Some("203.0.113.7")).await, 429);
         assert_eq!(call(Some("198.51.100.1, 203.0.113.7")).await, 429, "an address the client made up does not help: the proxy's own entry counts");
-        assert_eq!(call(Some("203.0.113.7, 203.0.113.8")).await, 200, "another address");
+        assert_eq!(call(Some("203.0.113.7, 198.51.100.8")).await, 200, "another network");
         for _ in 0..10 {
             assert_eq!(call(None).await, 200, "not through the proxy: not counted");
         }

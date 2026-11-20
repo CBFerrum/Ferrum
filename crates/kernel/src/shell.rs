@@ -245,7 +245,7 @@ pub fn check_shape(target: &str, shape: &HostShape) -> Result<HostShape> {
     if shape == &HostShape::default() {
         return Ok(HostShape::default());
     }
-    // A portal address may lead its `/` to an app's public page (BD-86); nothing else of a shape.
+    // A portal address may lead its `/` to an app's public page (BD-87); nothing else of a shape.
     if target == "portal" && shape.apps.is_none() && shape.label.is_none() && !shape.forward {
         return match shape.home.as_deref() {
             Some(h) if !(2..=40).contains(&h.len()) || !h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => {
@@ -809,7 +809,7 @@ impl Kernel {
         })
     }
 
-    /// The app a portal address's `/` leads to (its public page, BD-86), cached as [`Kernel::route_host`] is.
+    /// The app a portal address's `/` leads to (its public page, BD-87), cached as [`Kernel::route_host`] is.
     pub async fn portal_home(&self, host: &str) -> Result<Option<String>> {
         Ok(match self.host_row(host).await? {
             (HostRoute::Serve { target, .. }, _, shown) if target == "portal" => shown.shape.home,

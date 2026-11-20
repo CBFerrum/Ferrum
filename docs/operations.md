@@ -4189,7 +4189,7 @@ work on whichever address a person is on. An address only chooses where a person
 | `operator` | a name only a private network resolves | the operator (`ferrum task add_host`, see Zones) | at once, never checked |
 
 Each address has a target: `shell` (the workspace), `portal` (the portal, signing in, links, published lists and the
-workspace's public pages; its `home` may lead `/` to an app's public page, BD-86) or `site:{app}` (an app's public site).
+workspace's public pages; its `home` may lead `/` to an app's public page, BD-87) or `site:{app}` (an app's public site).
 A domain claimed for mail has the target `mail` and is no address (Custom domains, *Domains for mail*).
 
 **What a `shell` address shows.** Three settings, each optional:

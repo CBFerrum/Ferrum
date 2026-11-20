@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// else the environment's (crate::secrets). Each address's tries are counted first, as sign-ins are, so that a token
 /// cannot be guessed at speed.
 pub(crate) async fn operator(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
-    st.login_limiter.check(&format!("{}|operator|token", crate::extract::client_ip(headers))).await?;
+    st.login_limiter.check_from(headers, "operator|token").await?;
     let given = headers.get("x-ferrum-operator-token").and_then(|v| v.to_str().ok()).unwrap_or_default();
     if crate::secrets::token(st, "operator_token", &st.settings.operator_token, given).await != crate::secrets::Token::Good {
         return Err(ApiError(Error::Forbidden("the settings need the operator's token".into())));

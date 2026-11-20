@@ -448,10 +448,10 @@ async fn scenario() {
         ferrum_server::state::RateLimiter::shared("it", std::time::Duration::from_secs(60), 3, k.db.clone()),
     );
     for l in [&a, &b, &a] {
-        l.check("10.0.0.1").await.expect("within the limit");
+        l.check("10.0.0.0/24", "10.0.0.1").await.expect("within the limit");
     }
-    assert!(matches!(b.check("10.0.0.1").await, Err(Error::TooManyRequests(_))), "the fourth request, on another replica");
-    b.check("10.0.0.2").await.expect("another client has its own count");
+    assert!(matches!(b.check("10.0.0.0/24", "10.0.0.1").await, Err(Error::TooManyRequests(_))), "the fourth request, on another replica");
+    b.check("10.0.0.0/24", "10.0.0.2").await.expect("another client has its own count");
     let mut tenants = Vec::new();
     for slug in ["acme", "other"] {
         let id = k

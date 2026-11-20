@@ -6,7 +6,7 @@
 
 use super::sites::{range, read_body, request, respond};
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{client_ip, request_id};
+use crate::extract::request_id;
 use crate::state::{AppState, app_state};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
@@ -52,11 +52,11 @@ async fn person(st: &AppState, headers: &HeaderMap) -> ApiResult<Option<Ctx>> {
     }
     match found {
         Some(ctx) => {
-            st.user_limiter.check_local(&format!("{}|{}", ctx.tenant, ctx.user))?;
+            st.user_limiter.check_local(&crate::extract::client_net(headers), &format!("{}|{}", ctx.tenant, ctx.user))?;
             Ok(Some(ctx))
         }
         None => {
-            st.login_limiter.check(&format!("{}|dav", client_ip(headers))).await?;
+            st.login_limiter.check_from(headers, "dav").await?;
             Ok(None)
         }
     }

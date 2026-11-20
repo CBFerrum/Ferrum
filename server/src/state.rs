@@ -1,10 +1,10 @@
 //! Process-wide state shared by handlers (stored in Loco's `SharedStore`).
 
 use crate::error::ApiError;
-use dashmap::DashMap;
 use ferrum_kernel::{Db, Error, Kernel};
 use loco_rs::app::AppContext;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -372,28 +372,90 @@ impl Shares {
     }
 }
 
-/// Fixed-window limiter keyed by e.g. client IP, its count shared by every replica on the
-/// database (`rate_window`). The replica's own count, bounded so a flood of keys cannot exhaust
-/// memory, turns a flood away before it reaches the database.
+/// Fixed-window limiter, its count shared by every replica on the database (`rate_window`) or kept by this replica
+/// alone. The replica's own count turns a flood away before it reaches the database, and is bounded whatever callers
+/// send (docs/builder/decisions.md BD-86).
 pub struct RateLimiter {
     name: &'static str,
     window: Duration,
     /// Changed while the server runs for the per-replica budgets ([`RateLimiter::set_max`]).
     max: AtomicU32,
-    hits: DashMap<String, (Instant, u32)>,
+    counts: std::sync::Mutex<Counts>,
     /// Where the count is shared; without it the limit is the replica's own.
     db: Option<Db>,
 }
 
+/// How many keys one generation of a limiter's count holds; past it a new key counts in its network's bucket.
+const KEYS: usize = 20_000;
+/// How many networks' buckets a generation holds besides; past them every new key counts in one bucket.
+const NETS: usize = 5_000;
+
+/// A replica's own count of a limiter's keys (BD-86): this window's generation and the one before, each holding at
+/// most [`KEYS`] keys and [`NETS`] networks' buckets. At each window's end the one before is dropped whole and this one
+/// takes its place, so no request scans anything and nothing grows with what callers send. A key's own window (a start
+/// and a count) moves into this generation when it is next counted, so a window is exactly as long as before.
+struct Counts {
+    /// When this generation began.
+    began: Instant,
+    now: HashMap<String, (Instant, u32)>,
+    before: HashMap<String, (Instant, u32)>,
+    /// Map lookups and inserts made, for the test that each call makes a fixed few.
+    #[cfg(test)]
+    touched: u64,
+}
+
+impl Counts {
+    fn new() -> Counts {
+        Counts {
+            began: Instant::now(),
+            now: HashMap::new(),
+            before: HashMap::new(),
+            #[cfg(test)]
+            touched: 0,
+        }
+    }
+
+    /// One more for `key`, if this generation has room for it within `room` entries (one already counted always has).
+    fn count(&mut self, key: &str, room: usize, window: Duration, at: Instant) -> Option<u32> {
+        #[cfg(test)]
+        {
+            self.touched += 1;
+        }
+        let fresh = |e: &(Instant, u32)| at.duration_since(e.0) < window;
+        if let Some(e) = self.now.get_mut(key) {
+            if !fresh(e) {
+                *e = (at, 0);
+            }
+            e.1 += 1;
+            return Some(e.1);
+        }
+        if self.now.len() >= room {
+            return None;
+        }
+        #[cfg(test)]
+        {
+            self.touched += 1;
+        }
+        let carried = self.before.get(key).filter(|e| fresh(e)).copied().unwrap_or((at, 0));
+        let e = self.now.entry(key.to_string()).or_insert(carried);
+        e.1 += 1;
+        Some(e.1)
+    }
+}
+
 impl RateLimiter {
+    fn with(name: &'static str, window: Duration, max: u32, db: Option<Db>) -> Self {
+        RateLimiter { name, window, max: AtomicU32::new(max), counts: std::sync::Mutex::new(Counts::new()), db }
+    }
+
     /// `name` keeps this limiter's counts apart from other limiters'.
     pub fn shared(name: &'static str, window: Duration, max: u32, db: Db) -> Self {
-        RateLimiter { name, window, max: AtomicU32::new(max), hits: DashMap::new(), db: Some(db) }
+        RateLimiter::with(name, window, max, Some(db))
     }
 
     /// Counted on this replica only: cheap enough for every request.
     pub fn local_only(name: &'static str, window: Duration, max: u32) -> Self {
-        RateLimiter { name, window, max: AtomicU32::new(max), hits: DashMap::new(), db: None }
+        RateLimiter::with(name, window, max, None)
     }
 
     /// A new budget, from the next request on (a setting changed, or the pool's replicas did).
@@ -406,19 +468,23 @@ impl RateLimiter {
         self.max.load(Ordering::Relaxed)
     }
 
-    /// The replica's own count (`local_only` limiters).
-    pub fn check_local(&self, key: &str) -> Result<(), Error> {
+    /// The replica's own count of `key` (`local_only` limiters), for a request from network `net`
+    /// ([`crate::extract::net`]). `key` is built from `net` and values already checked, never from what the caller sent
+    /// as it came (BD-86).
+    pub fn check_local(&self, net: &str, key: &str) -> Result<(), Error> {
         let max = self.max();
-        if max > 0 && self.local(key) > max {
+        if max > 0 && self.local(net, key) > max {
             return Err(Error::TooManyRequests(format!("more than {max} requests a minute; slow down")));
         }
         Ok(())
     }
 
-    pub async fn check(&self, key: &str) -> Result<(), Error> {
+    /// [`RateLimiter::check_local`], then the count every replica shares, written only for a request this replica
+    /// admitted: a refused flood writes nothing.
+    pub async fn check(&self, net: &str, key: &str) -> Result<(), Error> {
         let refused = || Err(Error::TooManyRequests("too many requests; slow down".into()));
         let max = self.max();
-        if self.local(key) > max {
+        if self.local(net, key) > max {
             return refused();
         }
         let Some(db) = &self.db else { return Ok(()) };
@@ -433,17 +499,44 @@ impl RateLimiter {
         }
     }
 
-    fn local(&self, key: &str) -> u32 {
-        if self.hits.len() > 100_000 {
-            let window = self.window;
-            self.hits.retain(|_, (t, _)| t.elapsed() < window);
+    /// [`RateLimiter::check`] for the request's network ([`crate::extract::client_net`]) and `what`, a constant or a value
+    /// already checked (a workspace found, a person signed in): counted as `{network}|{what}`.
+    pub async fn check_from(&self, headers: &axum::http::HeaderMap, what: &str) -> Result<(), Error> {
+        let net = crate::extract::client_net(headers);
+        self.check(&net, &format!("{net}|{what}")).await
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> usize {
+        let c = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        c.now.len() + c.before.len()
+    }
+
+    #[cfg(test)]
+    fn touched(&self) -> u64 {
+        self.counts.lock().unwrap_or_else(|e| e.into_inner()).touched
+    }
+
+    /// One more for `key`, or, with the generation full, for its network's bucket, or for the bucket of everyone
+    /// past them: a flood of new keys is counted as one caller and never grows the table.
+    fn local(&self, net: &str, key: &str) -> u32 {
+        let at = Instant::now();
+        let mut c = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        let since = at.duration_since(c.began);
+        if since >= self.window {
+            // ponytail: the generation dropped here is freed by this request, at most KEYS + NETS entries once a window.
+            let ended = std::mem::take(&mut c.now);
+            c.before = if since >= self.window * 2 { HashMap::new() } else { ended };
+            c.began = at;
         }
-        let mut e = self.hits.entry(key.to_string()).or_insert((Instant::now(), 0));
-        if e.0.elapsed() >= self.window {
-            *e = (Instant::now(), 0);
+        let window = self.window;
+        if let Some(n) = c.count(key, KEYS, window, at) {
+            return n;
         }
-        e.1 += 1;
-        e.1
+        if let Some(n) = c.count(&format!("*{net}"), KEYS + NETS, window, at) {
+            return n;
+        }
+        c.count("*", usize::MAX, window, at).unwrap_or(u32::MAX)
     }
 }
 
@@ -531,18 +624,47 @@ mod tests {
     }
 
     #[test]
+    fn a_flood_of_new_keys_keeps_the_limiter_bounded_and_constant_time() {
+        // A million keys made up by one network, as fast as they come: the count holds at most two generations of 20,000
+        // keys, 5,000 networks' buckets and one for everyone past them, and no call touches more than a fixed few entries.
+        let l = RateLimiter::local_only("public", Duration::from_secs(60), 300);
+        for i in 0..1_000_000u32 {
+            let before = l.touched();
+            let _ = l.check_local("203.0.113.0/24", &format!("203.0.113.0/24|{i}"));
+            assert!(l.touched() - before <= 6, "call {i} touched {} entries", l.touched() - before);
+            assert!(l.entries() <= 50_002, "{} entries after {i} keys", l.entries());
+        }
+        // Counted as one caller: the flooding network's next new key shares its refused bucket; another network's is its own.
+        assert!(l.check_local("203.0.113.0/24", "203.0.113.0/24|one-more").is_err());
+        assert!(l.check_local("198.51.100.0/24", "198.51.100.0/24|first").is_ok());
+    }
+
+    #[test]
+    fn legitimate_limits_are_unchanged() {
+        // A key's window is its own: counted late in one generation, it keeps its count into the next until it ends.
+        let l = RateLimiter::local_only("user", Duration::from_secs(3), 2);
+        std::thread::sleep(Duration::from_millis(1800));
+        assert!(l.check_local("local", "t|k").is_ok(), "its window starts here");
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(l.check_local("local", "t|k").is_ok(), "its second, in a new generation, within its own window");
+        assert!(l.check_local("local", "t|k").is_err(), "its third within its own window is refused");
+        std::thread::sleep(Duration::from_millis(1800));
+        assert!(l.check_local("local", "t|k").is_ok(), "its window ended: a new one");
+    }
+
+    #[test]
     fn a_users_budget_is_counted_per_window() {
         let l = RateLimiter::local_only("user", Duration::from_secs(60), 3);
         for _ in 0..3 {
-            assert!(l.check_local("t|alice").is_ok());
+            assert!(l.check_local("local", "t|alice").is_ok());
         }
-        assert!(matches!(l.check_local("t|alice"), Err(Error::TooManyRequests(_))));
-        assert!(l.check_local("t|bob").is_ok(), "per user");
+        assert!(matches!(l.check_local("local", "t|alice"), Err(Error::TooManyRequests(_))));
+        assert!(l.check_local("local", "t|bob").is_ok(), "per user");
         let off = RateLimiter::local_only("user", Duration::from_secs(60), 0);
-        assert!((0..10_000).all(|_| off.check_local("t|alice").is_ok()), "0 turns it off");
+        assert!((0..10_000).all(|_| off.check_local("local", "t|alice").is_ok()), "0 turns it off");
         let short = RateLimiter::local_only("user", Duration::from_millis(30), 1);
-        assert!(short.check_local("k").is_ok() && short.check_local("k").is_err());
+        assert!(short.check_local("local", "k").is_ok() && short.check_local("local", "k").is_err());
         std::thread::sleep(Duration::from_millis(40));
-        assert!(short.check_local("k").is_ok(), "a new window");
+        assert!(short.check_local("local", "k").is_ok(), "a new window");
     }
 }

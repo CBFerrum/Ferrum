@@ -3,7 +3,7 @@
 //! person connects their own account; the provider sends the browser back to one exact address.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, BrowserSession, client_ip};
+use crate::extract::{Auth, BrowserSession};
 use crate::state::RateLimiter;
 use crate::state::app_state;
 use axum::Json;
@@ -212,7 +212,7 @@ async fn inbound(
 /// the same 401 as any refusal.
 async fn handshake(State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q): Query<BTreeMap<String, String>>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.public_limiter.check(&format!("{}|connections", client_ip(&headers))).await?;
+    st.public_limiter.check_from(&headers, "connections").await?;
     let challenge = st.kernel.connection_handshake(id, &q).await?;
     Ok((
         [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8"), (axum::http::header::HeaderName::from_static("x-content-type-options"), "nosniff")],
@@ -231,7 +231,7 @@ pub async fn inbound_answer(
     id: Uuid,
     body: &[u8],
 ) -> ApiResult<Response> {
-    limiter.check(&format!("{}|connections", client_ip(headers))).await?;
+    limiter.check_from(headers, "connections").await?;
     let names: BTreeMap<String, String> = headers.iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
     Ok(Json(k.connection_inbound(id, &names, query, body).await?).into_response())
 }

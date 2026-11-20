@@ -276,7 +276,7 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
     Ok(to_login(&uri))
 }
 
-/// `/` on a portal address: the shortest public page of the app its `home` names (`/bookings/book/{workspace}/`, BD-86), so
+/// `/` on a portal address: the shortest public page of the app its `home` names (`/bookings/book/{workspace}/`, BD-87), so
 /// the address is a booking site with nothing to remember; without one, the portal.
 async fn portal_root(st: &AppState, headers: &HeaderMap, tenant: Uuid) -> ApiResult<Response> {
     let host = shell::request_host(headers).unwrap_or_default();
@@ -474,10 +474,10 @@ async fn page(
         return Ok(res);
     }
     match place {
-        // A site host serves the platform's own scripts and sign-in return first (BD-86); the rest is the app's.
+        // A site host serves the platform's own scripts and sign-in return first (BD-87); the rest is the app's.
         Place::Site(tenant, app_id) if !matches!(first, "_shell" | "_auth") => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
         // The portal's host is the customer's whole public side: the portal, signing in, links to records, published
-        // lists and every public page of its workspace (BD-86); the rest leads to the portal.
+        // lists and every public page of its workspace (BD-87); the rest leads to the portal.
         Place::Portal(_)
             if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico" | "public" | "_auth") && shell::public_page(&path).is_none() =>
         {
@@ -734,8 +734,10 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
         )
     };
     let slug = rest.split('/').next().unwrap_or_default();
-    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), slug.to_ascii_lowercase())).await?;
-    let Some(tenant) = st.shell.workspace_by_slug(slug).await? else { return Ok(gone()) };
+    // Counted per network and workspace once found; one that does not exist counts on the network alone (BD-86).
+    let tenant = st.shell.workspace_by_slug(slug).await?;
+    st.public_limiter.check_from(headers, &tenant.map(|t| t.to_string()).unwrap_or_default()).await?;
+    let Some(tenant) = tenant else { return Ok(gone()) };
     match st.shell.place(headers).await? {
         Place::Workspace(t) | Place::Portal(t) if t != tenant => return Ok(gone()),
         Place::Moved(Some(to)) => {
@@ -778,7 +780,7 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     });
     let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
     let mut boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
-    // The visitor's language among those the workspace offers (BD-86): asked in the address, else kept from before,
+    // The visitor's language among those the workspace offers (BD-87): asked in the address, else kept from before,
     // else the browser's; the address's is kept for the next page unless the page is framed.
     let offered = st.kernel.public_languages(tenant).await?;
     let pairs: Vec<(&str, &str)> = uri.query().unwrap_or_default().split('&').filter_map(|kv| kv.split_once('=')).collect();
@@ -983,7 +985,7 @@ const SITE_CSP: &str = "default-src 'self'; img-src 'self' data: https:; style-s
 async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMap, uri: &Uri, path: &str, q: Vec<(String, String)>) -> ApiResult<Response> {
     let unavailable = |status: StatusCode, title: &str, message: &str| status_page(status, title, message, &[], None);
     let ws = st.shell.workspace(tenant).await?;
-    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), ws.slug)).await?;
+    st.public_limiter.check_from(headers, &tenant.to_string()).await?;
     if ws.status != "active" {
         return Ok(unavailable(StatusCode::SERVICE_UNAVAILABLE, "This site is closed for now", "Try again later."));
     }
@@ -1003,7 +1005,7 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     let host = shell::request_host(headers).unwrap_or_default();
     req.headers.insert("x-ferrum-site-api".into(), json!(format!("/api/site/{}/{package}", ws.slug)));
     req.headers.insert("x-ferrum-site-origin".into(), json!(format!("{scheme}://{host}")));
-    // The address's brand and the visitor's languages (BD-79, BD-86), for the app to choose among its own.
+    // The address's brand and the visitor's languages (BD-79, BD-87), for the app to choose among its own.
     if let Some(brand) = st.kernel.host_brand(host).await? {
         req.headers.insert("x-ferrum-brand".into(), json!(brand.to_string()));
     }
@@ -1262,7 +1264,7 @@ fn query<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {
 /// workspace's current host for that audience ([`shell::Shell::go_target`]), `302`; else 404.
 /// Rate-limited per client address like other public addresses.
 async fn go(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiResult<Response> {
-    st.public_limiter.check(&format!("{}|go", crate::extract::client_ip(headers))).await?;
+    st.public_limiter.check_from(headers, "go").await?;
     let rest = uri.path().strip_prefix("/go/").unwrap_or_default();
     let Some(to) = st.shell.go_target(rest, uri.query()).await? else { return Ok(not_found(uri.path())) };
     let Ok(location) = HeaderValue::from_str(&to) else { return Ok(not_found(uri.path())) };
