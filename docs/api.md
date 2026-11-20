@@ -1785,12 +1785,19 @@ in the recipient's zone when known, else the workspace's. `per_hour` (500) and `
 chat-app messages.
 
 **Channel connections** (administrators): `GET|POST /api/admin/messages/channels`, `PUT|DELETE
-/api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?}`. One enabled for
-each kind; `secrets` (`{name: value}`) are kept in the vault and never read back (left out, they stay).
+/api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?, replace?}`. One
+enabled for each kind: enabling one where another of its kind is enabled is refused (409 naming that channel, also when
+the other was enabled at the same moment) unless `replace` is true, which turns the other off and names it in the audit
+trail; a save with `enabled: false` touches no other channel; `secrets` (`{name: value}`) are kept in the vault and never read back (left out, they stay).
 `description`: `url`, `method` (POST), `headers`, `body` (a JSON template) or `form` (fields), each a template over
-`to` (international form), `text`, `template_name`, `values`, `language`, `from` and `secret.<name>` (`| json` writes a
-value as JSON); `id_at` and `error_at` (JSON pointers into the answer); `temporary` (statuses meaning "later";
-408, 425, 429, 500, 502, 503, 504 when left out; any other non-2xx fails at once). `{"test": true}` is a test channel:
+`to` (international form), `text`, `template_name`, `values`, `language`, `from`, `secret.<name>`, `send` (the
+platform's id of the send, the same on every attempt), `kept` (`{text, template_name, values}` as the platform keeps
+the message: each secret value, such as a one-time code, as dots) and `promotional` (true or false) (`| json` writes a
+value as JSON); `id_at`, `error_at` and `simulated_at` (JSON pointers into the answer; `true` at `simulated_at` marks
+the send simulated); `temporary` (statuses meaning "later"; 408, 425, 429, 500, 502, 503, 504 when left out; any other
+non-2xx fails at once). Whatever an answer or an error echoes of a secret value, the channel's own secrets or the
+recipient's number is kept and logged as dots. A send's state moves forward only, whichever comes first, the
+provider's answer or its report. `{"test": true}` is a test channel:
 it delivers into the log only. Two worked examples, with placeholder addresses:
 
 ```json
@@ -1816,9 +1823,12 @@ it delivers into the log only. Two worked examples, with placeholder addresses:
 **Delivery reports and replies**: `POST /api/messages/inbound/{channel}` (no session; the address the channel listing
 gives). Authenticated as `inbound` says: `hmac` (the body's HMAC-SHA256 under `secret.<inbound.secret>`, in hex, in
 `header`, `sha256=` before it or not) or `token` (`header`, or the `token` query parameter, equal to the secret). JSON
-or a form. A report (`id_at` and `status_at` present, the status mapped by `statuses`) moves the send forward only
-(`sent`, then `delivered`; `failed` is final); a reply (`from_at`, `text_at`) with a `stop` or `start` word records the
-number's choice for that channel, once: the same body sent again is refused as an unsigned call is, so a captured reply
+or a form. A report (`status_at` present, the status mapped by `statuses`, and the send named at `send_at` or its
+provider's id at `id_at`) moves the send forward only (`sent`, then `delivered`; `failed` is final); one naming the
+send by `send_at` is applied even before the provider's answer is recorded, and adds the provider's id. `true` at
+`simulated_at` marks the send simulated (never taken back; the message log shows `simulated`). A reply (`from_at`,
+`text_at`) with a `stop` or `start` word records the number's choice for that channel (source "a reply to a message",
+or "a simulated reply" when `simulated_at` says so), once: the same body sent again is refused as an unsigned call is, so a captured reply
 cannot undo a later choice. Unknown, unsigned or wrongly signed calls are refused (404, 401) and counted (the channel's
 `refused`).
 
