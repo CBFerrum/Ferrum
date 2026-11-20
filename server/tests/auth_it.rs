@@ -152,6 +152,22 @@ async fn post_page(host: &str, ip: &str, path: &str, cookie: Option<&str>, body:
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), set.filter(|c| !c.is_empty()))
 }
 
+/// A page GET at `host` with the session cookie: its status and headers.
+async fn get_page(host: &str, ip: &str, path: &str, cookie: &str) -> (StatusCode, axum::http::HeaderMap) {
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .header(header::HOST, host)
+        .header("x-forwarded-for", ip)
+        .header(header::ACCEPT, "text/html")
+        .header("sec-fetch-site", "same-origin")
+        .header(header::COOKIE, format!("{}={cookie}", ferrum_server::shell::cookie_name(false)))
+        .body(Body::empty())
+        .unwrap();
+    let res = server().await.router.clone().oneshot(req).await.unwrap();
+    (res.status(), res.headers().clone())
+}
+
 fn refused(status: StatusCode) -> bool {
     status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED
 }
@@ -495,6 +511,16 @@ fn a_setup_only_session_is_the_sign_in_pages_cookie() {
         assert_eq!(call(&w.host, ip, Method::GET, "/api/auth/2fa", Cred::Cookie(&setup), None).await.0, StatusCode::OK, "its own status");
         assert!(refused(call(&w.host, ip, Method::POST, "/api/auth/2fa/begin", Cred::Bearer(&setup), None).await.0), "its token as a bearer");
         assert!(refused(call(&w.host, ip, Method::GET, "/api/auth/sessions", Cred::Cookie(&setup), None).await.0), "nothing but the setup");
+        // API-K2a-readers: every other reader of the cookie takes the browser as not signed in: a page sends it to sign in
+        // (where the setup goes on), the sign-in page keeps the setup cookie, no page token is minted, no socket opens.
+        let (status, headers) = get_page(&w.host, ip, "/settings", &setup).await;
+        assert!(status.is_redirection() && headers.get(header::LOCATION).is_some_and(|l| l.to_str().unwrap().contains("/login")), "a page: {status}");
+        let (status, headers) = get_page(&w.host, ip, "/login", &setup).await;
+        let cleared =
+            headers.get_all(header::SET_COOKIE).iter().any(|c| c.to_str().unwrap().starts_with(&format!("{}=;", ferrum_server::shell::cookie_name(false))));
+        assert!(status.is_success() && !cleared, "the sign-in page keeps the setup going: {status} {headers:?}");
+        assert!(refused(call(&w.host, ip, Method::POST, "/api/auth/token", Cred::Cookie(&setup), None).await.0), "no page token");
+        assert_eq!(socket(&w.host, ip, &setup).await, (false, false), "no socket");
         let (status, answer) = call(&w.host, ip, Method::POST, "/api/auth/2fa/begin", Cred::Cookie(&setup), None).await;
         assert_eq!(status, StatusCode::OK, "it begins the setup: {answer}");
         let secret = serde_json::from_str::<Value>(&answer).unwrap()["secret"].as_str().unwrap().to_string();

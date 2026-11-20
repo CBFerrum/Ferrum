@@ -110,9 +110,28 @@ pub fn clear_cookie(secure: bool) -> HeaderValue {
         .expect("static")
 }
 
-/// The session cookie's token, if the request carries one.
+/// The session cookie's token, if the request carries a full browser session's. The session that may only set up a second
+/// factor (API-K2) is no browser session to any reader of the cookie but the setup routes ([`setup_cookie`]): every page,
+/// the OpenID provider, OAuth consent, the accounts host, the page token and sockets take its browser as signed out.
 pub fn session_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie(headers, cookie_name(secure))
+    cookie(headers, cookie_name(secure)).filter(|t| !setup_only(t))
+}
+
+/// The cookie of the session that may only set up a second factor (API-K2), for the setup routes alone.
+pub fn setup_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie(headers, cookie_name(secure)).filter(|t| setup_only(t))
+}
+
+/// Whether a session token says it may only set up a second factor. Read without its signature checked: it only ever
+/// narrows what the cookie opens, and a token is checked in full wherever it is taken.
+fn setup_only(token: &str) -> bool {
+    use base64::Engine as _;
+    let claims = token
+        .split('.')
+        .nth(1)
+        .and_then(|p| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p.trim_end_matches('=')).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    claims.is_some_and(|c| c.get("setup_2fa") == Some(&Value::Bool(true)) || c.pointer("/claims/setup_2fa") == Some(&Value::Bool(true)))
 }
 
 /// A cookie's value, if the request carries it.

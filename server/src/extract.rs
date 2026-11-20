@@ -478,9 +478,7 @@ async fn setup_caller(parts: &Parts, state: &AppContext, programs: bool) -> Resu
     let Some(token) = bearer(&parts.headers) else {
         // The session that may only set up a second factor is the sign-in page's cookie (API-K2): a person at a screen for
         // that setup and nowhere else; any other cookie is a full browser session.
-        if let Some(cookie) = crate::shell::session_cookie(&parts.headers, st.shell.secure)
-            && st.sessions.validate(&cookie).await.is_some_and(|d| d.claims.get("setup_2fa").and_then(|v| v.as_bool()) == Some(true))
-        {
+        if let Some(cookie) = crate::shell::setup_cookie(&parts.headers, st.shell.secure) {
             if !crate::shell::may_change(&parts.method, &parts.headers) {
                 return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
             }
