@@ -1877,6 +1877,10 @@ pub struct ApprovalPolicy {
     /// BD-83): two persons, never one person twice, an automation, a key, the assistant or an app. Never by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub people_at_screens: bool,
+    /// With `people_at_screens`: the asker and each decider proved who they are (a step-up) within this many seconds
+    /// (`Ctx::stepped_up_within`), 60 to 86,400.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_within: Option<u32>,
     /// A message template (BD-20) its notices are sent with instead of the fixed wording: it reads `values.notice`
     /// (`waiting`, `reminder`, `escalated`, `approved`, `rejected`, `not_done`) and `values.title`, the fixed wording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
