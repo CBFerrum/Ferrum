@@ -287,7 +287,15 @@ async fn a_sandbox_copies_a_workspace_and_reaches_nothing_outside() {
     let s = a.login("acme", "pat@acme.test", PASSWORD).await.unwrap();
     let pat_ctx = a.load_ctx(t, pat, Some(s.token_version), "it".into()).await.unwrap();
     let secret = a.begin_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await).await.unwrap()["secret"].as_str().unwrap().to_string();
-    a.enable_two_factor(&ferrum_testkit::at_screen(&a, &pat_ctx).await, &code(&secret, now()).unwrap()).await.unwrap();
+    // This installation mails: the code mailed to Pat confirms the second factor (API-K2).
+    let (subject,): (String,) = sql(
+        &a,
+        "select payload->>'subject' from outbox where tenant_id = $1 and topic = 'ferrum.mail' and payload->>'subject' like '% to turn on two-factor sign-in'",
+        t,
+    )
+    .await
+    .remove(0);
+    a.enable_two_factor_mailed(&ferrum_testkit::at_screen(&a, &pat_ctx).await, &code(&secret, now()).unwrap(), Some(&subject[..6])).await.unwrap();
     let (hook, conn, old_conn, channel, provider) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let mut tx = a.db.system_tx().await.unwrap();
     // The webhook's signing secret kept in the vault, as the admin route keeps it; the other stores' rows as the kernel

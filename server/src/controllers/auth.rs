@@ -577,16 +577,24 @@ struct CodeReq {
     code: String,
 }
 
+/// The authenticator's code, and the one mailed to the person when this server mails (API-K2).
+#[derive(Deserialize)]
+struct EnableReq {
+    code: String,
+    #[serde(default)]
+    mailed_code: Option<String>,
+}
+
 /// Turns two-factor sign-in on; a session that could only set it up gets a full one.
 async fn two_factor_enable(
     SetupAuth(ctx, setup_only): SetupAuth,
     State(app): State<AppContext>,
     headers: HeaderMap,
-    Json(req): Json<CodeReq>,
+    Json(req): Json<EnableReq>,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     kept_by_identity(&st, &headers, &ctx).await?;
-    let codes = st.kernel.enable_two_factor(&ctx, &req.code).await?;
+    let codes = st.kernel.enable_two_factor_mailed(&ctx, &req.code, req.mailed_code.as_deref()).await?;
     let mut res = Json(json!({"recovery_codes": codes})).into_response();
     // The setup-only cookie gives way to a full browser session, proved by the second factor just set up (API-K2).
     // ponytail: the setup session's row ends at its own 15 minutes; it reaches nothing but a setup now finished.
