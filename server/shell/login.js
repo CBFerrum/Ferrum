@@ -43,9 +43,10 @@ const accounts = boot.accounts ?? null;
 let verifying = null;
 let resetFor = null;
 let typed = null;
-// A workspace that requires two-factor sign-in, for someone who has not set it up: a token that
-// may do only that; then, with the recovery codes shown, signing in again.
-let setupToken = null;
+// A workspace that requires two-factor sign-in, for someone who has not set it up: the setup step,
+// `{ mailed }` when a code was emailed too. The browser holds the setup-only session as its cookie
+// (API-K2): nothing of it is kept here. Then, with the recovery codes shown, on in.
+let setup = null;
 let again = false;
 // "code": signing in with an emailed code; `codeFor` is the address it went to.
 let mode = accounts ? "password" : boot.codes ? "code" : "password";
@@ -82,7 +83,11 @@ async function post(path, body, headers = {}) {
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data?.fields?.[0]?.message ?? data?.error?.message ?? data?.message ?? tr("Signing in failed ({status})", { status: r.status }));
+  if (!r.ok) {
+    const err = new Error(data?.fields?.[0]?.message ?? data?.error?.message ?? data?.message ?? tr("Signing in failed ({status})", { status: r.status }));
+    err.status = r.status;
+    throw err;
+  }
   return data;
 }
 
@@ -94,13 +99,15 @@ function text(tag, content, className) {
 }
 
 /** Two-factor sign-in on the way in: an authenticator app scans the code (or takes the key), and
- *  one of its codes turns it on. */
-async function setUp(token) {
-  setupToken = token;
+ *  one of its codes turns it on, with the code emailed to the person where the server mails. */
+async function setUp() {
+  setup = { mailed: false };
   fields.replaceChildren();
+  for (const id of ["ferrum-switch", "ferrum-passkey", "ferrum-sso", "ferrum-regions"]) document.getElementById(id)?.remove();
   document.querySelector(".ferrum-login h1").textContent = tr("Set up two-factor sign-in");
   try {
-    const begun = await post("/api/auth/2fa/begin", {}, { authorization: `Bearer ${token}` });
+    const begun = await post("/api/auth/2fa/begin", {});
+    setup = { mailed: begun.mailed === true };
     const qr = Object.assign(document.createElement("img"), {
       src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(begun.qr_svg)}`,
       alt: tr("QR code for your authenticator app"),
@@ -117,11 +124,25 @@ async function setUp(token) {
       key,
     );
     field("code", tr("Code from the app"), "text", "", { autocomplete: "one-time-code", inputMode: "numeric" }).focus();
+    if (setup.mailed) {
+      fields.append(text("p", tr("We also emailed you a code, to show the address is yours."), "ferrum-hint"));
+      field("mailed_code", tr("Code from the email"), "text", "", { autocomplete: "off", inputMode: "numeric", maxLength: 12 });
+    }
     submit.textContent = tr("Turn on");
   } catch (err) {
-    setupToken = null;
+    if (err.status === 401) return expired();
+    setup = null;
     say(err.message);
   }
+}
+
+/** The setup-only session ended (fifteen minutes): back to signing in, saying why. */
+function expired() {
+  setup = null;
+  ticket = null;
+  heading.textContent = title;
+  draw();
+  say(tr("Setting up took too long, so signing in stopped. Sign in again."));
 }
 
 /** Once it is on: the recovery codes, shown this once, then signing in again with a code. */
@@ -130,8 +151,16 @@ function recoveryCodes(codes) {
     text("p", tr("Two-factor sign-in is on. Keep these recovery codes somewhere safe: each one signs you in once if you lose the app, and they are not shown again.")),
     text("pre", codes.join("\n"), "ferrum-codes"),
   );
-  submit.textContent = tr("Sign in");
+  submit.textContent = tr("Continue");
   again = true;
+}
+
+/** Signed in (the browser holds the session's cookie): the other tabs are told, and on to where the person was. */
+function signedIn() {
+  try {
+    new BroadcastChannel("ferrum-session").postMessage({ type: "signed-in" });
+  } catch {}
+  location.replace(boot.next || "/");
 }
 
 function done(data) {
@@ -159,14 +188,11 @@ function done(data) {
     return;
   }
   if (data.two_factor_setup) {
-    setUp(data.token);
+    setUp();
     return;
   }
   if (data.cookie) {
-    try {
-      new BroadcastChannel("ferrum-session").postMessage({ type: "signed-in" });
-    } catch {}
-    location.replace(boot.next || "/");
+    signedIn();
     return;
   }
   say(tr("This browser could not be signed in. Make sure cookies are allowed for this site."));
@@ -178,15 +204,18 @@ form.addEventListener("submit", async (e) => {
   submit.disabled = true;
   try {
     if (again) {
-      location.reload();
+      // Turning it on gave this browser a full session's cookie in place of the setup one.
+      signedIn();
       return;
     }
-    if (accounts) {
-      await viaAccounts();
-    } else if (setupToken) {
-      const { recovery_codes } = await post("/api/auth/2fa/enable", { code: form.elements.code.value.trim() }, { authorization: `Bearer ${setupToken}` });
-      setupToken = null;
+    if (setup) {
+      const body = { code: form.elements.code.value.trim() };
+      if (setup.mailed) body.mailed_code = form.elements.mailed_code.value.trim();
+      const { recovery_codes } = await post("/api/auth/2fa/enable", body);
+      setup = null;
       recoveryCodes(recovery_codes);
+    } else if (accounts) {
+      await viaAccounts();
     } else if (ticket) {
       done(await post("/api/auth/login/second-factor", { ticket, code: form.elements.code.value.trim(), session: "cookie" }));
     } else if (mode === "code") {
@@ -210,7 +239,8 @@ form.addEventListener("submit", async (e) => {
       done(await post("/api/auth/login", { tenant, email: form.elements.email.value.trim(), password: form.elements.password.value, session: "cookie" }));
     }
   } catch (err) {
-    say(err.message);
+    if (setup && err.status === 401) expired();
+    else say(err.message);
   } finally {
     submit.disabled = false;
   }

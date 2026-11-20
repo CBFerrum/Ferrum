@@ -374,5 +374,7 @@
   "This browser cannot use a passkey. Use another browser, or close this window.": "यह ब्राउज़र पासकी का उपयोग नहीं कर सकता। कोई दूसरा ब्राउज़र इस्तेमाल करें, या यह विंडो बंद करें।",
   "Confirm it is you in the window that opened.": "जो विंडो खुली है उसमें पुष्टि करें कि यह आप हैं।",
   "If you closed the window before confirming it is you, try again.": "अगर आपने यह पुष्टि करने से पहले विंडो बंद कर दी कि यह आप हैं, तो फिर से कोशिश करें।",
-  "Confirming it is you did not finish. Try again.": "पुष्टि पूरी नहीं हुई कि यह आप हैं। फिर से कोशिश करें।"
+  "Confirming it is you did not finish. Try again.": "पुष्टि पूरी नहीं हुई कि यह आप हैं। फिर से कोशिश करें।",
+  "We also emailed you a code, to show the address is yours.": "हमने आपको एक कोड ईमेल भी किया है, यह दिखाने के लिए कि पता आपका है।",
+  "Setting up took too long, so signing in stopped. Sign in again.": "सेट अप में बहुत समय लगा, इसलिए साइन इन रुक गया। फिर से साइन इन करें।"
 }

@@ -2190,6 +2190,17 @@ mod tests {
 
     use super::*;
 
+    /// The sign-in page as served keeps no setup token and sends no bearer: the setup-only session is the browser's
+    /// cookie (API-K2); login.test.mjs drives the page itself.
+    #[test]
+    fn the_sign_in_page_keeps_no_setup_token() {
+        let (kind, body) = platform_file("login.js").expect("served");
+        let page = std::str::from_utf8(body).unwrap();
+        assert!(kind.starts_with("text/javascript"));
+        assert!(!page.contains("setupToken") && !page.contains("Bearer") && !page.to_lowercase().contains("authorization"), "no token kept or sent");
+        assert!(page.contains("mailed_code"), "it sends the emailed code when asked");
+    }
+
     #[test]
     fn the_help_center_is_a_page_of_the_records_not_an_app() {
         // Every record's Help link opens /data/help/{entity}: read as an app called "help", it
