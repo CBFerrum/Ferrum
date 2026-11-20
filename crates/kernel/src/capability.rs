@@ -122,8 +122,15 @@ fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
             return false;
         }
     }
+    // A rule naming the action lets its holder run it, whatever the action's own permission asks (BD-02, A11 D1), as on
+    // the records path (`ctx::action_scope`); the action's roles still apply.
+    let named = match (&cap.operation, cap.entity.as_deref()) {
+        (Operation::Action(name), Some(entity)) => ctx.perms.action_grants(entity, name).is_some(),
+        _ => false,
+    };
     cap.permissions.iter().all(|p| match p.split_once(':') {
         Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
+        Some((entity, _)) if named && cap.entity.as_deref() == Some(entity) => true,
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),
         None => p == "admin" && (ctx.is_admin || granted),
     })
@@ -485,7 +492,8 @@ impl Kernel {
         let actions = [Action::Read, Action::Write, Action::Create, Action::Delete, Action::Submit, Action::Cancel];
         let mut out: Vec<Capability> = platform_capabilities();
         for ent in ctx.schema.entities.values() {
-            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) {
+            // An entity reached only through an action a rule names is listed too: its other operations are filtered out.
+            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) || !ctx.perms.named_actions(&ent.def.name).is_empty() {
                 out.extend(entity_capabilities(self, ctx, ent));
             }
         }
@@ -745,7 +753,21 @@ impl Kernel {
             return self.repeat(ctx, tx, &cap, &inv.environment, key, &digest, caller).await;
         }
         let result = self.carry_out(&ctx.keyed(key), tx, &cap, &inv.input, Some(key)).await?;
-        let record = result.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let id_of = |v: &Value| v.get("id").and_then(Value::as_str).and_then(|s| s.parse::<Uuid>().ok());
+        let mut record = id_of(&result);
+        // The record a repeat re-reads is the answer's own: an action that made another entity's record says so
+        // (`{entity, id}`); one answering with its own record, that; anything else is answered as it was kept.
+        let entity = match &cap.operation {
+            Operation::Action(_) => result
+                .get("entity")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| cap.entity.clone().filter(|_| record.is_some() && record == id_of(&inv.input))),
+            _ => cap.entity.clone(),
+        };
+        if entity.is_none() {
+            record = None;
+        }
         sqlx::query(
             "update logic_effect set result = $5, record_entity = $6, record_id = $7 \
              where tenant_id = $1 and environment = $2 and capability = $3 and effect_key = $4",
@@ -755,7 +777,7 @@ impl Kernel {
         .bind(&cap.id)
         .bind(key)
         .bind(action.map_or_else(|| result.clone(), |a| a.kept_result(&result)))
-        .bind(record.and(cap.entity.as_deref()))
+        .bind(record.and(entity))
         .bind(record)
         .execute(&mut **tx)
         .await?;

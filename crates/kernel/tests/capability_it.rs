@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
 
-const PACKAGE: &str = "package: stockcap\nversion: 0.3.1\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, read_groups: [costing], write_groups: [costing]}\n      - {entity: StockLine, read: true}\n      - {entity: Safe, read: true, write: true, create: true}\n  - name: Viewer\n    permissions:\n      - {entity: Hold, read: true}\n  - name: Approver\n    permissions:\n      - {entity: Hold, read: true, write: true}\nworkflows:\n  - name: Hold approval\n    entity: Hold\n    initial_state: Draft\n    states:\n      - {name: Draft}\n      - {name: Approved}\n    transitions:\n      - {action: approve, from: Draft, to: Approved, roles: [Approver], not_creator: true}\n";
+const PACKAGE: &str = "package: stockcap\nversion: 0.3.1\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, read_groups: [costing], write_groups: [costing]}\n      - {entity: StockLine, read: true}\n      - {entity: Safe, read: true, write: true, create: true}\n  - name: Viewer\n    permissions:\n      - {entity: Hold, read: true}\n  - name: Approver\n    permissions:\n      - {entity: Hold, read: true, write: true}\n  - name: Placer\n    permissions:\n      - {entity: Hold, actions: [place]}\nworkflows:\n  - name: Hold approval\n    entity: Hold\n    initial_state: Draft\n    states:\n      - {name: Draft}\n      - {name: Approved}\n    transitions:\n      - {action: approve, from: Draft, to: Approved, roles: [Approver], not_creator: true}\n";
 const ENTITIES: &str = r#"
 - name: Hold
   label: Hold
@@ -33,6 +33,7 @@ const ENTITIES: &str = r#"
     - {name: peek, label: Peek, read_only: true, permission: read}
     - {name: fix_up, label: Fix up, hidden: true}
     - {name: restock, label: Restock, permission: write}
+    - {name: split, label: Split, permission: write, contract: {completion: A safe is made from the hold}}
     - name: plan
       label: Plan
       permission: write
@@ -83,6 +84,10 @@ impl DocHook for Stock {
             "release" => Some(json!({"released": true})),
             "peek" => Some(json!({"qty": doc["qty"]})),
             "weigh" => Some(json!({"weighed": doc["qty"]})),
+            "split" => {
+                let made = hc.kernel.insert_tx(hc.ctx, hc.tx, "Safe", json!({"label": "From a hold"}).as_object().cloned().unwrap()).await?;
+                Some(json!({"entity": "Safe", "id": made["id"], "label": made["label"]}))
+            }
             "plan" => {
                 self.planned.lock().unwrap().push(params.clone());
                 Some(json!({"planned": true}))
@@ -446,4 +451,25 @@ async fn scenario() {
     );
     assert_eq!((line["properties"]["qty"]["type"].clone(), line["properties"]["item"]["format"].clone()), (json!("integer"), json!("uuid")), "{input}");
     assert_eq!((params["address"]["type"].clone(), params["address"]["additionalProperties"].clone()), (json!("object"), json!(false)), "{input}");
+
+    // ── API-0 (D1): a_rule_naming_an_action_lets_its_holder_run_it_through_the_gate,
+    // an_entity_reached_only_through_a_named_action_is_in_the_catalog: a rule naming `place`, and nothing else on holds ──
+    let placer = k.create_user(&admin, "placer@acme.test", "Placer", Some("Correct-Horse-9"), &["Placer".to_string()], false).await.unwrap();
+    let placer = k.load_ctx(admin.tenant, placer, None, "it".into()).await.unwrap();
+    let theirs = k.catalog(&placer);
+    let theirs: Vec<&str> = ids(&theirs).into_iter().filter(|id| id.starts_with("stockcap.")).collect();
+    assert_eq!(theirs, ["stockcap.hold.place"], "the action the rule names, and nothing else of holds");
+    let placed = k.invoke(&placer, Invocation::new("stockcap.hold.place", json!({"id": hold, "params": {}})).key("api0/place")).await;
+    assert!(placed.is_ok_and(|r| r.result["held"] == json!(1)), "run through the gate");
+    let other = k.invoke(&placer, plan(json!({}), "api0/plan")).await;
+    assert!(other.is_err(), "an action the rule does not name: {other:?}");
+
+    // ── the gate repeat fault: an action whose answer is another entity's record, repeated under its key, answers that
+    // record (it was re-read as the action's own entity, and answered null) ──
+    let split = || Invocation::new("stockcap.hold.split", json!({"id": hold, "params": {}})).key("repeat/split");
+    let first = k.invoke(&clerk, split()).await.expect("split");
+    let again = k.invoke(&clerk, split()).await.expect("split again");
+    assert!(again.repeated, "{again:?}");
+    assert_eq!((again.result["id"].clone(), again.result["label"].clone()), (first.result["id"].clone(), json!("From a hold")), "{again:?}");
+    assert_eq!(count(&k, &clerk, "select count(*) from e_safe where label = 'From a hold'").await, 1, "made once");
 }

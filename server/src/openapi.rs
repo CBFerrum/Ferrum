@@ -39,7 +39,19 @@ fn field_schema(f: &FieldDef) -> Value {
     s
 }
 
-fn entity_schema(e: &EffEntity) -> Value {
+/// `ops` with only the operations the caller may call (`may`), or nothing when none is left.
+fn only(mut ops: Value, may: &[(&str, bool)]) -> Option<Value> {
+    let m = ops.as_object_mut()?;
+    for (op, ok) in may {
+        if !ok {
+            m.remove(*op);
+        }
+    }
+    m.keys().any(|k| ["get", "post", "patch", "delete"].contains(&k.as_str())).then_some(ops)
+}
+
+/// The record as `ctx` reads it: the fields it may read (openapi-rights).
+fn entity_schema(ctx: &Ctx, e: &EffEntity) -> Value {
     let mut props = Map::new();
     if e.def.kind != EntityKind::Child {
         for (k, t) in [("id", "uuid"), ("created_at", "date-time"), ("updated_at", "date-time")] {
@@ -52,7 +64,7 @@ fn entity_schema(e: &EffEntity) -> Value {
         props.insert("id".into(), json!({"type": "string", "format": "uuid"}));
     }
     let mut required = Vec::new();
-    for f in &e.def.fields {
+    for f in e.def.fields.iter().filter(|f| ctx.perms.can_read_field(&e.def.name, f)) {
         props.insert(f.name.clone(), field_schema(f));
         if f.required && f.default.is_none() && f.default_expr.is_none() {
             required.push(f.name.clone());
@@ -65,28 +77,47 @@ pub fn spec(ctx: &Ctx) -> Value {
     let mut paths = Map::new();
     let mut schemas = Map::new();
     let err = json!({"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}});
+    // Only what the caller reaches (openapi-rights): the entities it reads, with the fields it reads and the operations it
+    // may call, and the actions it may run (one a rule names included).
     for e in ctx.schema.entities.values() {
-        schemas.insert(e.def.name.clone(), entity_schema(e));
-        if e.def.kind == EntityKind::Child || ctx.perms.access(&e.def.name, Action::Read) == Access::None {
+        if e.def.kind == EntityKind::Child {
             continue;
         }
-        let r = json!({"$ref": format!("#/components/schemas/{}", e.def.name)});
         let n = &e.def.name;
-        paths.insert(format!("/api/v1/{n}"), json!({
-            "get": {"tags": [n], "summary": format!("List {}", e.def.label), "parameters": [
-                {"name": "filters", "in": "query", "schema": {"type": "string"}, "description": "JSON: [[field, op, value], ...]"},
-                {"name": "fields", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}},
-                {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 500}}, {"name": "cursor", "in": "query", "schema": {"type": "string"}},
-                {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "count", "in": "query", "schema": {"type": "boolean"}}],
-                "responses": {"200": {"description": "Page", "content": {"application/json": {"schema": {"type": "object", "properties": {
-                    "rows": {"type": "array", "items": r}, "next_cursor": {"type": "string"}, "total": {"type": "integer"}}}}}}, "default": err}},
-            "post": {"tags": [n], "summary": format!("Create {}", e.def.label),
-                "parameters": [{"name": "Idempotency-Key", "in": "header", "schema": {"type": "string"}}],
-                "requestBody": {"required": true, "content": {"application/json": {"schema": r}}},
-                "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": r}}}, "default": err}},
-        }));
-        paths.insert(
-            format!("/api/v1/{n}/{{id}}"),
+        let may = |a: Action| ctx.perms.access(n, a) != Access::None;
+        let actions: Vec<_> = e.def.actions.iter().filter(|a| ferrum_kernel::ctx::action_gate(ctx, e, a).is_ok()).collect();
+        if !may(Action::Read) && actions.is_empty() {
+            continue;
+        }
+        if may(Action::Read) {
+            schemas.insert(n.clone(), entity_schema(ctx, e));
+            for f in e.def.fields.iter().filter(|f| f.ftype == FieldType::Table && ctx.perms.can_read_field(n, f)) {
+                if let Some(c) = f.of.as_deref().and_then(|c| ctx.schema.entity(c)) {
+                    schemas.insert(c.def.name.clone(), entity_schema(ctx, c));
+                }
+            }
+        }
+        let r = json!({"$ref": format!("#/components/schemas/{}", e.def.name)});
+        let list = only(
+            json!({
+                "get": {"tags": [n], "summary": format!("List {}", e.def.label), "parameters": [
+                    {"name": "filters", "in": "query", "schema": {"type": "string"}, "description": "JSON: [[field, op, value], ...]"},
+                    {"name": "fields", "in": "query", "schema": {"type": "string"}}, {"name": "sort", "in": "query", "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 500}}, {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                    {"name": "search", "in": "query", "schema": {"type": "string"}}, {"name": "count", "in": "query", "schema": {"type": "boolean"}}],
+                    "responses": {"200": {"description": "Page", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                        "rows": {"type": "array", "items": r}, "next_cursor": {"type": "string"}, "total": {"type": "integer"}}}}}}, "default": err}},
+                "post": {"tags": [n], "summary": format!("Create {}", e.def.label),
+                    "parameters": [{"name": "Idempotency-Key", "in": "header", "schema": {"type": "string"}}],
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": r}}},
+                    "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": r}}}, "default": err}},
+            }),
+            &[("get", may(Action::Read)), ("post", may(Action::Create))],
+        );
+        if let Some(list) = list {
+            paths.insert(format!("/api/v1/{n}"), list);
+        }
+        let one = only(
             json!({
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
                 "get": {"tags": [n], "responses": {"200": {"description": "Record", "content": {"application/json": {"schema": r}}}, "default": err}},
@@ -94,9 +125,13 @@ pub fn spec(ctx: &Ctx) -> Value {
                     "requestBody": {"content": {"application/json": {"schema": r}}}, "responses": {"200": {"description": "Updated"}, "default": err}},
                 "delete": {"tags": [n], "responses": {"204": {"description": "Deleted"}, "default": err}},
             }),
+            &[("get", may(Action::Read)), ("patch", may(Action::Write)), ("delete", may(Action::Delete))],
         );
+        if let Some(one) = one {
+            paths.insert(format!("/api/v1/{n}/{{id}}"), one);
+        }
         if e.def.submittable {
-            for op in ["submit", "cancel", "amend"] {
+            for (op, _) in [("submit", Action::Submit), ("cancel", Action::Cancel), ("amend", Action::Create)].into_iter().filter(|(_, a)| may(*a)) {
                 paths.insert(
                     format!("/api/v1/{n}/{{id}}/{op}"),
                     json!({"post": {"tags": [n], "parameters": [
@@ -105,7 +140,7 @@ pub fn spec(ctx: &Ctx) -> Value {
                 );
             }
         }
-        for a in &e.def.actions {
+        for a in actions {
             paths.insert(
                 format!("/api/v1/{n}/{{id}}/actions/{}", a.name),
                 json!({"post": {"tags": [n], "summary": a.label, "parameters": [

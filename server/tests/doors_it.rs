@@ -52,7 +52,7 @@ packages: [doors]
 /// Its package: a person's record whose pay is in the `payroll` field group.
 fn packages() -> Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
     let files: BTreeMap<String, String> = [
-        ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\n"),
+        ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\nroles:\n  - name: Staff\n    permissions:\n      - {entity: DoorsEmployee, read: true}\n"),
         (
             "entities/employee.yaml",
             "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\nactions:\n  - {name: stamp, label: Stamp, permission: write, params: [{name: tags, label: Tags, type: list, of: data, max_items: 9}]}\n",
@@ -401,4 +401,21 @@ async fn scenario() {
     let body = &spec["paths"]["/api/v1/DoorsEmployee/{id}/actions/stamp"]["post"]["requestBody"]["content"]["application/json"]["schema"];
     assert_eq!((body["additionalProperties"].clone(), body["properties"]["tags"]["type"].clone()), (json!(false), json!("array")), "{body}");
     assert_eq!((body["properties"]["tags"]["maxItems"].clone(), body["properties"]["tags"]["items"]["type"].clone()), (json!(9), json!("string")), "{body}");
+
+    // ── openapi-rights: the document lists only the entities, fields and operations the caller reads or may call ──
+    let staff = k.create_user(&admin, "staff@acme.test", "Staff", Some(PASSWORD), &["Staff".to_string()], false).await.unwrap();
+    let staff_key = k.create_api_key(&admin, staff, "it", None, None).await.unwrap().1;
+    let (_, theirs) = answer(get(&r, ACME, "/api/openapi.json", Some(&staff_key)).await);
+    let employee = &theirs["components"]["schemas"]["DoorsEmployee"]["properties"];
+    assert!(employee["full_name"].is_object() && employee["salary"].is_null(), "a field in a group they cannot read is absent: {employee}");
+    let list = &theirs["paths"]["/api/v1/DoorsEmployee"];
+    assert!(list["get"].is_object() && list["post"].is_null(), "they read, never create: {list}");
+    assert!(theirs["paths"]["/api/v1/DoorsEmployee/{id}/actions/stamp"].is_null(), "an action they may not run");
+    let (_, none) = answer(get(&r, ACME, "/api/openapi.json", Some(&member_key)).await);
+    assert!(
+        none["components"]["schemas"]["DoorsEmployee"].is_null() && none["paths"]["/api/v1/DoorsEmployee"].is_null(),
+        "a member without read finds none of it"
+    );
+    let (_, all) = answer(get(&r, ACME, "/api/openapi.json", Some(&key)).await);
+    assert!(all["components"]["schemas"]["DoorsEmployee"]["properties"]["salary"].is_object(), "an administrator reads the payroll group");
 }
