@@ -369,6 +369,7 @@ impl Kernel {
         Ok(serde_json::json!({
             "timezone": settings.get("timezone").cloned().unwrap_or_else(|| serde_json::json!("UTC")),
             "language": settings.get("language").cloned().unwrap_or(Value::Null),
+            "public_languages": settings.get("public_languages").cloned().unwrap_or(Value::Null),
             "fiscal_year_start_month": settings.get("fiscal_year_start_month").cloned().unwrap_or_else(|| serde_json::json!(1)),
             "require_two_factor": settings.get("require_two_factor").and_then(Value::as_bool).unwrap_or(false),
             "require_sso": settings.get("require_sso").and_then(Value::as_bool).unwrap_or(false),
@@ -418,6 +419,19 @@ impl Kernel {
                         return Err(Error::field("language", "must be a language tag (e.g. hi, ar, pt-BR), or empty for English"));
                     }
                     clean.insert(k.clone(), v.clone());
+                }
+                // The languages people outside the workspace are offered, its default first (BD-87).
+                "public_languages" if v.is_null() => {
+                    clean.insert(k.clone(), Value::Null);
+                }
+                "public_languages" => {
+                    let list: Vec<String> =
+                        serde_json::from_value(v.clone()).map_err(|_| Error::field("public_languages", "must be a list of language tags"))?;
+                    let mut seen = std::collections::BTreeSet::new();
+                    if list.is_empty() || list.len() > 20 || !list.iter().all(|l| valid_language(l) && seen.insert(l.to_lowercase())) {
+                        return Err(Error::field("public_languages", "1 to 20 language tags (en, pt-BR), each once; the first is the default"));
+                    }
+                    clean.insert(k.clone(), serde_json::json!(list));
                 }
                 "fiscal_year_start_month" => {
                     let m = v.as_u64().filter(|m| (1..=12).contains(m)).ok_or_else(|| Error::field("fiscal_year_start_month", "must be 1 to 12"))?;

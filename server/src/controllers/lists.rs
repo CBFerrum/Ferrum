@@ -395,10 +395,17 @@ async fn public(
     axum::extract::Query(query): axum::extract::Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> Response {
-    match app_state(&app) {
-        Ok(st) => answer(&st.kernel, &st.public_limiter, &headers, &workspace, &name, &query).await,
-        Err(e) => e.into_response(),
+    let st = match app_state(&app) {
+        Ok(st) => st,
+        Err(e) => return e.into_response(),
+    };
+    // Another workspace's address answers as for a list that is not there (BD-87).
+    if let Ok(Some(t)) = st.shell.workspace_by_slug(&workspace).await
+        && !st.shell.answers_for(&headers, t).await.unwrap_or(false)
+    {
+        return not_found(false);
     }
+    answer(&st.kernel, &st.public_limiter, &headers, &workspace, &name, &query).await
 }
 
 pub fn routes() -> Routes {

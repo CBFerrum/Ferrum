@@ -149,6 +149,18 @@ pub fn host_cookie(secure: bool, name: &str, value: &str, max_age: Duration) -> 
         .unwrap_or_else(|_| HeaderValue::from_static("ferrum_bad=; Max-Age=0"))
 }
 
+/// The visitor's language on public pages (BD-87): `__Host-ferrum-lang` (`ferrum-lang` on plain http), a year, readable
+/// by the page's script (it holds a language tag only).
+pub fn lang_cookie_name(secure: bool) -> &'static str {
+    if secure { "__Host-ferrum-lang" } else { "ferrum-lang" }
+}
+
+/// The cookie keeping a visitor's chosen language (`tag`, already one the workspace offers).
+pub fn lang_cookie(secure: bool, tag: &str) -> HeaderValue {
+    HeaderValue::from_str(&format!("{}={tag}; Path=/; SameSite=Lax; Max-Age=31536000{}", lang_cookie_name(secure), if secure { "; Secure" } else { "" }))
+        .unwrap_or_else(|_| HeaderValue::from_static("ferrum_bad=; Max-Age=0"))
+}
+
 /// The host the browser asked for, as sent (`Host`).
 pub fn request_host(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::HOST).and_then(|v| v.to_str().ok()).filter(|h| !h.is_empty())

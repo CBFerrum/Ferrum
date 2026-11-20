@@ -47,7 +47,18 @@ pub(crate) fn request(
     let mut safe: Map<String, Value> = headers
         .iter()
         .filter(|(k, _)| {
-            !matches!(k.as_str(), "authorization" | "cookie" | "proxy-authorization" | "x-ferrum-uri" | "x-ferrum-site-api" | "x-ferrum-site-origin")
+            !matches!(
+                k.as_str(),
+                "authorization"
+                    | "cookie"
+                    | "proxy-authorization"
+                    | "x-ferrum-uri"
+                    | "x-ferrum-site-api"
+                    | "x-ferrum-site-origin"
+                    | "x-ferrum-brand"
+                    | "x-ferrum-language"
+                    | "x-ferrum-languages"
+            )
         })
         .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v))))
         .collect();
@@ -203,6 +214,26 @@ pub fn routes() -> Routes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caller_cannot_send_platform_headers() {
+        let mut h = HeaderMap::new();
+        for (k, v) in [
+            ("x-ferrum-brand", "0190a0a0-0000-7000-8000-000000000001"),
+            ("x-ferrum-language", "de"),
+            ("x-ferrum-languages", "de,fr"),
+            ("x-ferrum-site-origin", "https://evil.example"),
+            ("x-other", "kept"),
+        ] {
+            h.insert(axum::http::HeaderName::from_static(k), axum::http::HeaderValue::from_static(v));
+        }
+        let uri: Uri = "/x".parse().unwrap();
+        let req = request(Uuid::nil(), None, Method::GET, &uri, "x".into(), HashMap::new(), &h, Bytes::new()).unwrap();
+        for k in ["x-ferrum-brand", "x-ferrum-language", "x-ferrum-languages", "x-ferrum-site-origin"] {
+            assert!(!req.headers.contains_key(k), "{k} is the server's to set");
+        }
+        assert_eq!(req.headers["x-other"], serde_json::json!("kept"));
+    }
 
     #[tokio::test]
     async fn bodies_are_read_only_up_to_their_route_limit() {

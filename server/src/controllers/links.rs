@@ -185,6 +185,15 @@ async fn limited(st: &crate::state::AppState, headers: &HeaderMap, workspace: &s
     st.public_limiter.check_from(headers, &crate::extract::named_workspace(&st.kernel, workspace).await).await.map_err(|e| ApiError(e).into_response())
 }
 
+/// Whether this host may answer for `workspace` (BD-87): its own addresses and hosts of no workspace; another
+/// workspace's address answers as for a link that does not work, so nothing is learned.
+async fn answers_here(st: &crate::state::AppState, headers: &HeaderMap, workspace: &str) -> bool {
+    match st.shell.workspace_by_slug(workspace).await {
+        Ok(Some(t)) => st.shell.answers_for(headers, t).await.unwrap_or(false),
+        _ => true,
+    }
+}
+
 /// A link that does not work: one answer, the same for a workspace that is not there as for an unknown link in one
 /// that is (status, body, headers; the address's own workspace name aside), so a stranger learns nothing of which
 /// workspaces exist. Its wording is the platform's `core.link_gone` as shipped, for that reason not a workspace's edit.
@@ -200,6 +209,9 @@ async fn show(State(app): State<AppContext>, Path((workspace, token)): Path<(Str
     };
     if let Err(r) = limited(&st, &headers, &workspace).await {
         return r;
+    }
+    if !answers_here(&st, &headers, &workspace).await {
+        return gone(&st.kernel, &workspace);
     }
     match st.kernel.link_page(&workspace, &token).await {
         Ok(Some(p)) => page_of(&p, None, false),
@@ -250,6 +262,9 @@ async fn act(State(app): State<AppContext>, Path((workspace, token)): Path<(Stri
     };
     if let Err(r) = limited(&st, &headers, &workspace).await {
         return r;
+    }
+    if !answers_here(&st, &headers, &workspace).await {
+        return gone(&st.kernel, &workspace);
     }
     let (form, files) = match posted(req).await {
         Ok(p) => p,

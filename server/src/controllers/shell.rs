@@ -260,7 +260,7 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
     }
     match place {
         Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
-        Place::Portal(_) => return Ok(Redirect::to("/portal/").into_response()),
+        Place::Portal(tenant) => return portal_root(&st, &headers, tenant).await,
         Place::Accounts => return super::accounts::home(&st, &headers).await,
         Place::Hooks | Place::Nowhere => return Ok(nowhere()),
         _ => {}
@@ -274,6 +274,21 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
         return shell_page(&st, &headers, ctx, device, "", None).await;
     }
     Ok(to_login(&uri))
+}
+
+/// `/` on a portal address: the shortest public page of the app its `home` names (`/bookings/book/{workspace}/`, BD-87), so
+/// the address is a booking site with nothing to remember; without one, the portal.
+async fn portal_root(st: &AppState, headers: &HeaderMap, tenant: Uuid) -> ApiResult<Response> {
+    let host = shell::request_host(headers).unwrap_or_default();
+    if let Some(app) = st.kernel.portal_home(host).await? {
+        let apps = st.apps.shell_apps(tenant).await?;
+        let page = apps.iter().find(|a| a.id == app).and_then(|a| a.manifest.public_paths().last().map(|p| p.to_string()));
+        if let Some(page) = page {
+            let slug = st.shell.workspace(tenant).await?.slug.clone();
+            return Ok(found_at(&format!("/{page}/{slug}/")));
+        }
+    }
+    Ok(Redirect::to("/portal/").into_response())
 }
 
 /// `/` on an address whose `home` is an app (docs/operations.md, "Addresses of a workspace"): that app's page, for someone
@@ -459,9 +474,13 @@ async fn page(
         return Ok(res);
     }
     match place {
-        Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
-        // The portal's host has the portal, signing in and links to records; the rest leads to the portal.
-        Place::Portal(_) if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico") => {
+        // A site host serves the platform's own scripts and sign-in return first (BD-87); the rest is the app's.
+        Place::Site(tenant, app_id) if !matches!(first, "_shell" | "_auth") => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
+        // The portal's host is the customer's whole public side: the portal, signing in, links to records, published
+        // lists and every public page of its workspace (BD-87); the rest leads to the portal.
+        Place::Portal(_)
+            if !matches!(first, "portal" | "login" | "open" | "_ui" | "_shell" | "favicon.ico" | "public" | "_auth") && shell::public_page(&path).is_none() =>
+        {
             return Ok(Redirect::to("/portal/").into_response());
         }
         // The accounts host has its own pages; the platform's files and interfaces as anywhere.
@@ -493,7 +512,7 @@ async fn page(
         // A workspace's published list (controllers/lists.rs).
         "public" => {
             let bound = match st.shell.place(&headers).await? {
-                Place::Workspace(t) => Some(t),
+                Place::Workspace(t) | Place::Portal(t) => Some(t),
                 _ => None,
             };
             let origin = shell::request_host(&headers).map(|h| format!("{}://{h}", if st.shell.secure { "https" } else { "http" }));
@@ -720,12 +739,12 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     st.public_limiter.check_from(headers, &tenant.map(|t| t.to_string()).unwrap_or_default()).await?;
     let Some(tenant) = tenant else { return Ok(gone()) };
     match st.shell.place(headers).await? {
-        Place::Workspace(t) if t != tenant => return Ok(gone()),
+        Place::Workspace(t) | Place::Portal(t) if t != tenant => return Ok(gone()),
         Place::Moved(Some(to)) => {
             return Ok(Redirect::permanent(&format!("{}{}", moved_origin(st, &to, headers), path_and_query(uri))).into_response());
         }
-        Place::Moved(None) | Place::Portal(_) | Place::Site(..) | Place::Accounts | Place::Hooks | Place::Nowhere => return Ok(gone()),
-        Place::Workspace(_) | Place::Any => {}
+        Place::Moved(None) | Place::Site(..) | Place::Accounts | Place::Hooks | Place::Nowhere => return Ok(gone()),
+        Place::Workspace(_) | Place::Portal(_) | Place::Any => {}
     }
     let ws = st.shell.workspace(tenant).await?;
     if ws.status != "active" {
@@ -761,9 +780,22 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
     });
     let timezone = st.kernel.registry.schema(tenant).await?.timezone.clone();
     let mut boot = shell::public_bootstrap(&ws, shell::request_host(headers).unwrap_or_default(), &timezone, app_json, page);
-    let language = st.kernel.language_of(tenant, None).await?;
-    boot["locale"] = shell::locale(language.as_deref(), &timezone, None);
-    let words = st.kernel.interface_words(tenant, language.as_deref().unwrap_or("en")).await?;
+    // The visitor's language among those the workspace offers (BD-87): asked in the address, else kept from before,
+    // else the browser's; the address's is kept for the next page unless the page is framed.
+    let offered = st.kernel.public_languages(tenant).await?;
+    let pairs: Vec<(&str, &str)> = uri.query().unwrap_or_default().split('&').filter_map(|kv| kv.split_once('=')).collect();
+    let framed = pairs.iter().any(|(k, v)| *k == "embed" && *v == "1");
+    let offered_as = |tag: &str| offered.iter().find(|o| o.eq_ignore_ascii_case(tag)).cloned();
+    let asked_here = pairs.iter().find(|(k, _)| *k == "lang").and_then(|(_, v)| offered_as(v).filter(|_| ferrum_kernel::lang::valid_code(&v.to_lowercase())));
+    let mut asked: Vec<String> = asked_here.iter().cloned().collect();
+    if let Some(kept) = shell::cookie(headers, shell::lang_cookie_name(st.shell.secure)).and_then(|c| offered_as(&c)) {
+        asked.push(kept);
+    }
+    asked.extend(ferrum_kernel::lang::accepted(headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()).unwrap_or_default()));
+    let language = ferrum_kernel::lang::choose(&offered, &asked);
+    boot["locale"] = shell::locale(Some(&language), &timezone, None);
+    boot["locale"]["languages"] = json!(offered);
+    let words = st.kernel.interface_words(tenant, &language).await?;
     if !words.is_empty() {
         boot["locale"]["words"] = Value::Object(words);
     }
@@ -776,7 +808,11 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
         boot["embed"] = json!({"origins": frames});
     }
     let csp = framed_by(shell::csp(Some(app.manifest.as_ref()), &Value::Null), &frames);
-    Ok(not_modified(headers, shell::public_entry_page(&entry, &boot, &csp)))
+    let mut res = not_modified(headers, shell::public_entry_page(&entry, &boot, &csp));
+    if let Some(tag) = asked_here.filter(|_| !framed) {
+        res.headers_mut().append(header::SET_COOKIE, shell::lang_cookie(st.shell.secure, &tag));
+    }
+    Ok(res)
 }
 
 /// The origins that may frame public page `path` of `tenant` (its address after the workspace, `forms/f/contact`;
@@ -969,6 +1005,14 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     let host = shell::request_host(headers).unwrap_or_default();
     req.headers.insert("x-ferrum-site-api".into(), json!(format!("/api/site/{}/{package}", ws.slug)));
     req.headers.insert("x-ferrum-site-origin".into(), json!(format!("{scheme}://{host}")));
+    // The address's brand and the visitor's languages (BD-79, BD-87), for the app to choose among its own.
+    if let Some(brand) = st.kernel.host_brand(host).await? {
+        req.headers.insert("x-ferrum-brand".into(), json!(brand.to_string()));
+    }
+    let asked = ferrum_kernel::lang::accepted(headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()).unwrap_or_default());
+    let offered = st.kernel.public_languages(tenant).await?;
+    req.headers.insert("x-ferrum-language".into(), json!(ferrum_kernel::lang::choose(&offered, &asked)));
+    req.headers.insert("x-ferrum-languages".into(), json!(asked.join(",")));
     let mut res = match super::sites::handle(&st.kernel, site, req).await {
         Ok(r) => super::sites::respond(st, tenant, &package, r, super::sites::range(headers)).await?,
         Err(ApiError(Error::NotFound(_))) => return Ok(unavailable(StatusCode::NOT_FOUND, "Page not found", "There is nothing at this address.")),

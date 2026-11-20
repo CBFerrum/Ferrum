@@ -245,6 +245,15 @@ pub fn check_shape(target: &str, shape: &HostShape) -> Result<HostShape> {
     if shape == &HostShape::default() {
         return Ok(HostShape::default());
     }
+    // A portal address may lead its `/` to an app's public page (BD-87); nothing else of a shape.
+    if target == "portal" && shape.apps.is_none() && shape.label.is_none() && !shape.forward {
+        return match shape.home.as_deref() {
+            Some(h) if !(2..=40).contains(&h.len()) || !h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') => {
+                Err(Error::field("home", "is not an app's id"))
+            }
+            _ => Ok(HostShape { home: shape.home.clone(), ..Default::default() }),
+        };
+    }
     if target != "shell" {
         return Err(Error::field("target", "home, apps, label and forward are for addresses that open the workspace (shell)"));
     }
@@ -796,6 +805,14 @@ impl Kernel {
     pub async fn host_shown(&self, host: &str) -> Result<Option<HostShown>> {
         Ok(match self.host_row(host).await? {
             (HostRoute::Serve { target, .. } | HostRoute::Leaving { target, .. }, _, shown) if target == "shell" => Some(shown),
+            _ => None,
+        })
+    }
+
+    /// The app a portal address's `/` leads to (its public page, BD-87), cached as [`Kernel::route_host`] is.
+    pub async fn portal_home(&self, host: &str) -> Result<Option<String>> {
+        Ok(match self.host_row(host).await? {
+            (HostRoute::Serve { target, .. }, _, shown) if target == "portal" => shown.shape.home,
             _ => None,
         })
     }
@@ -2015,7 +2032,9 @@ mod tests {
             forward: false,
         };
         assert_eq!(check_shape("portal", &HostShape::default()).unwrap(), HostShape::default(), "nothing set: any address");
-        assert!(check_shape("portal", &shape(Some("crm"), None, None)).is_err());
+        assert_eq!(check_shape("portal", &shape(Some("crm"), None, None)).unwrap(), shape(Some("crm"), None, None), "a portal leads / to an app");
+        assert!(check_shape("portal", &shape(Some("Not An Id"), None, None)).is_err());
+        assert!(check_shape("portal", &shape(None, Some(&["crm"]), None)).is_err());
         assert!(check_shape("site:commerce", &shape(None, None, Some("Shop"))).is_err());
         assert_eq!(
             check_shape("shell", &shape(Some("crm"), Some(&["crm", "helpdesk", "crm"]), Some("  Sales "))).unwrap(),
