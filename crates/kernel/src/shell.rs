@@ -102,11 +102,13 @@ pub struct DeviceSession {
 }
 
 /// What a valid browser session adds to who the person is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionState {
     /// Who really acts, when someone acts as the session's person.
     pub actor: Option<Uuid>,
     pub step_up_at: Option<DateTime<Utc>>,
+    /// The site host a site session works on alone (docs/builder/decisions.md BD-88); none for any other session.
+    pub host: Option<String>,
 }
 
 impl SessionState {
@@ -503,13 +505,36 @@ impl Kernel {
         saml: Option<&Value>,
         proof: &[&str],
     ) -> Result<Uuid> {
+        self.open_session_on(s, ttl, user_agent, ip, actor, zone, saml, proof, None).await
+    }
+
+    /// A session on the site host `host` (docs/builder/decisions.md BD-88): it works there alone, as its person's
+    /// customer self, and nowhere else.
+    pub async fn open_site_session(&self, s: &Session, ttl: Duration, user_agent: &str, ip: &str, host: &str) -> Result<Uuid> {
+        let host = normalize_host(host).ok_or_else(|| Error::invalid("not a host name"))?;
+        self.open_session_on(s, ttl, user_agent, ip, None, None, None, &["accounts"], Some(&host)).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_session_on(
+        &self,
+        s: &Session,
+        ttl: Duration,
+        user_agent: &str,
+        ip: &str,
+        actor: Option<Uuid>,
+        zone: Option<&str>,
+        saml: Option<&Value>,
+        proof: &[&str],
+        host: Option<&str>,
+    ) -> Result<Uuid> {
         let id = Uuid::now_v7();
         let ua: String = user_agent.chars().filter(|c| !c.is_control()).take(300).collect();
         let ip: String = ip.chars().take(64).collect();
         let mut tx = self.db.tenant_tx(s.tenant).await?;
         sqlx::query(
-            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone, saml, proof) \
-             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8, $9, $10)",
+            "insert into user_session (tenant_id, id, user_id, actor, step_up_at, expires_at, user_agent, ip, zone, saml, proof, host) \
+             values ($1, $2, $3, $4, now(), now() + make_interval(secs => $5), $6, $7, $8, $9, $10, $11)",
         )
         .bind(s.tenant)
         .bind(id)
@@ -521,6 +546,7 @@ impl Kernel {
         .bind(zone)
         .bind(saml)
         .bind((!proof.is_empty()).then_some(proof))
+        .bind(host)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -542,15 +568,15 @@ impl Kernel {
         if let Some(e) = self.sessions.get(&(tenant, sid))
             && e.1.elapsed() < CACHE_TTL
         {
-            return e.0.filter(|(owner, _)| *owner == user).map(|(_, state)| state).ok_or_else(expired);
+            return e.0.clone().filter(|(owner, _)| *owner == user).map(|(_, state)| state).ok_or_else(expired);
         }
         let mut tx = self.db.tenant_tx(tenant).await?;
-        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>, i32, bool);
+        type Row = (Uuid, DateTime<Utc>, Option<Uuid>, Option<DateTime<Utc>>, i32, bool, Option<String>);
         // A setting that cannot be read as a number fails the query, which refuses. A workspace that takes no changes
         // just now (moving, or the database fenced) is still read: its sessions are checked, not written.
         let row: Option<Row> = sqlx::query_as(
             "select user_id, last_seen_at, actor, step_up_at, \
-             (select coalesce((settings->>'idle_minutes')::int, 0) from tenant where id = $1), current_setting('transaction_read_only') = 'on' from user_session \
+             (select coalesce((settings->>'idle_minutes')::int, 0) from tenant where id = $1), current_setting('transaction_read_only') = 'on', host from user_session \
              where tenant_id = $1 and id = $2 and revoked_at is null and expires_at > now()",
         )
         .bind(tenant)
@@ -566,12 +592,12 @@ impl Kernel {
             return Err(expired());
         }
         let row_owner = row.as_ref().map(|r| r.0);
-        let state = row.filter(|r| r.0 == user).map(|r| (r.1, SessionState { actor: r.2, step_up_at: r.3 }));
+        let state = row.filter(|r| r.0 == user).map(|r| (r.1, SessionState { actor: r.2, step_up_at: r.3, host: r.6 }));
         let every = if idle > 0 { SEEN_EVERY_IDLE } else { SEEN_EVERY };
-        if let Some((seen, _)) = state
+        if let Some((seen, _)) = &state
             && active
             && writable
-            && Utc::now() - seen > every
+            && Utc::now() - *seen > every
         {
             sqlx::query("update user_session set last_seen_at = now() where tenant_id = $1 and id = $2").bind(tenant).bind(sid).execute(&mut *tx).await?;
         }
@@ -582,7 +608,7 @@ impl Kernel {
         }
         // Cached with its owner: a session id presented with another person is no session.
         let owner = row_owner.filter(|_| state.is_some());
-        self.sessions.insert((tenant, sid), (owner.zip(state), Instant::now()));
+        self.sessions.insert((tenant, sid), (owner.zip(state.clone()), Instant::now()));
         state.ok_or_else(expired)
     }
 

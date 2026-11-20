@@ -1417,6 +1417,10 @@ pub struct RoleDef {
     /// such a role holds only own-record rules (see [`PermissionDef::portal_problem`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub portal: bool,
+    /// Held by every portal person without being given it (docs/builder/decisions.md BD-88): an app's customer role,
+    /// whose rules reach only the person's own records. Only a portal role may be one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub portal_default: bool,
 }
 
 /// What a record shows of the records it links to.

@@ -209,11 +209,18 @@ async fn list_roles(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
 #[derive(Deserialize)]
 struct Portal {
     portal: bool,
+    /// Held by every portal person (BD-88); left out, as it is.
+    #[serde(default)]
+    portal_default: Option<bool>,
 }
 
-/// Marks a role for the portal or not (docs/builder/decisions.md BD-02).
+/// Marks a role for the portal or not (docs/builder/decisions.md BD-02), and as one every portal person holds (BD-88).
 async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
-    app_state(&app)?.kernel.set_role_portal(&ctx, role.trim(), p.portal).await?;
+    let k = &app_state(&app)?.kernel;
+    k.set_role_portal(&ctx, role.trim(), p.portal).await?;
+    if let Some(on) = p.portal_default {
+        k.set_role_portal_default(&ctx, role.trim(), on).await?;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

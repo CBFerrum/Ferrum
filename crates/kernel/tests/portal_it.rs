@@ -11,7 +11,7 @@ use ferrum_kernel::tenant::NewTenant;
 use ferrum_kernel::{Action, Ctx, Db, DbConfig, Doc, DocHook, Error, HookCtx, HookRegistry, Kernel, KernelSettings, ListQuery, Result};
 use ferrum_meta::{Catalog, PermissionDef};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -189,10 +189,86 @@ fn names(v: &[&str]) -> BTreeSet<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// The tests one at a time: each starts from an empty database.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn run<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
+    let _one = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(f).await.unwrap() });
+}
+
 #[test]
 fn portal_roles_reach_their_holders_own_records_and_nothing_else() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    run(scenario());
+}
+
+#[test]
+fn portal_default_roles_reach_only_own_records() {
+    run(defaults_reach());
+}
+
+#[test]
+fn portal_default_refused_on_member_role() {
+    run(default_refused());
+}
+
+/// An empty database and the school workspace.
+async fn school() -> (Arc<Kernel>, Uuid, Ctx) {
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let k = Kernel::boot(db, catalog(), HookRegistry::default(), KernelSettings::default(), None).await.expect("boot");
+    let (tenant, admin) = workspace(&k, "school").await;
+    (k, tenant, admin)
+}
+
+/// A role every portal person holds without being given it (BD-88): each reaches their own records, not each other's,
+/// and a member's customer self reaches only theirs too.
+async fn defaults_reach() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    let mut all = vec![];
+    for (name, email) in [("Ann", "ann@x.test"), ("Bob", "bob@x.test"), ("Admin", "admin@school.test")] {
+        all.push((id_of(&k.insert(&admin, "Patient", obj(json!({"name": name, "email": email}))).await.unwrap()), name));
+    }
+    let ann = portal_person(&k, &admin, "ann@x.test", &[]).await;
+    let bob = portal_person(&k, &admin, "bob@x.test", &[]).await;
+    let refused = |r: Result<ferrum_kernel::Page>| matches!(r, Err(Error::Forbidden(_)));
+    assert!(refused(k.list(&ann, "Patient", &ListQuery::default()).await), "not held before it is a default");
+    k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
+    let ann = k.load_ctx(admin.tenant, ann.user, None, "it".into()).await.unwrap();
+    let bob = k.load_ctx(admin.tenant, bob.user, None, "it".into()).await.unwrap();
+    assert_eq!(ann.roles, vec!["Patients".to_string()], "held without being given");
+    assert_eq!(reach(&k, &ann, "Patient", &all, "name").await, names(&["Ann"]));
+    assert_eq!(reach(&k, &bob, "Patient", &all, "name").await, names(&["Bob"]));
+    // A member as a customer (a site session, BD-88): outside, no administrator, the portal roles alone.
+    let me = k.customer_ctx(admin.tenant, admin.user, None, "it".into(), None).await.unwrap();
+    assert!(me.outside && !me.is_admin && me.roles == vec!["Patients".to_string()], "{:?}", me.roles);
+    assert_eq!(reach(&k, &me, "Patient", &all, "name").await, names(&["Admin"]));
+    // Unmarked as a portal role, it is no default either.
+    k.set_role_portal(&admin, "Patients", false).await.unwrap();
+    let ann = k.load_ctx(admin.tenant, ann.user, None, "it".into()).await.unwrap();
+    assert!(refused(k.list(&ann, "Patient", &ListQuery::default()).await), "no longer held");
+}
+
+/// Only a portal role may be held by every portal person: refused for a member's role, by an administrator only, and in
+/// a package.
+async fn default_refused() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Staff", &rule(json!({"entity": "Patient", "read": true}))).await.unwrap();
+    let e = k.set_role_portal_default(&admin, "Staff", true).await.expect_err("not a portal role");
+    assert!(e.to_string().contains("portal role"), "{e}");
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    let ann = portal_person(&k, &admin, "ann@x.test", &[]).await;
+    assert!(matches!(k.set_role_portal_default(&ann, "Patients", true).await, Err(Error::Forbidden(_))), "administrators only");
+    let mut files: BTreeMap<String, String> = BTreeMap::new();
+    files.insert("package.yaml".into(), "package: clinic\nversion: 0.1.0\ndepends: [core]\nroles:\n  - {name: Clinic Staff, portal_default: true}\n".into());
+    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).unwrap();
+    let e = ferrum_meta::catalog::load_package_files(&files).and_then(|p| Catalog::from_packages(vec![core, p])).map(|_| ()).expect_err("refused in a package");
+    assert!(e.to_string().contains("portal role"), "{e}");
 }
 
 async fn scenario() {

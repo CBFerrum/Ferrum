@@ -354,6 +354,9 @@ impl Catalog {
                 if role.name.trim().is_empty() {
                     return invalid(format!("{name}: role without a name"));
                 }
+                if role.portal_default && !role.portal {
+                    return invalid(format!("{name}: role {}: only a portal role is held by every portal person (portal_default needs portal)", role.name));
+                }
                 for perm in &role.permissions {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));

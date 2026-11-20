@@ -141,14 +141,16 @@ impl Kernel {
             for role in &pkg.manifest.roles {
                 // A package's portal mark follows its version (BD-02); its roles stay its own.
                 sqlx::query(
-                    "insert into role (tenant_id, name, description, package, portal) values ($1, $2, $3, $4, $5) \
-                     on conflict (tenant_id, name) do update set portal = excluded.portal where role.package = excluded.package",
+                    "insert into role (tenant_id, name, description, package, portal, portal_default) values ($1, $2, $3, $4, $5, $6) \
+                     on conflict (tenant_id, name) do update set portal = excluded.portal, portal_default = excluded.portal_default \
+                     where role.package = excluded.package",
                 )
                 .bind(tenant)
                 .bind(&role.name)
                 .bind(&role.description)
                 .bind(name)
                 .bind(role.portal)
+                .bind(role.portal_default)
                 .execute(&mut *tx)
                 .await?;
                 // A rule row follows the releases of the package that wrote it, and of none other: two packages

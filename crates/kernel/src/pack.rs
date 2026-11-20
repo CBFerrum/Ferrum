@@ -679,7 +679,7 @@ impl Kernel {
             }
             let permissions = rules.remove(&name).unwrap_or_default();
             match package {
-                None => out.push(RoleDef { name, description, permissions, portal }),
+                None => out.push(RoleDef { name, description, permissions, portal, portal_default: false }),
                 Some(pkg) => {
                     let seeded = catalog.package(&pkg).and_then(|p| p.manifest.roles.iter().find(|r| r.name == name).cloned());
                     let kept: Vec<PermissionDef> = installed
@@ -693,7 +693,7 @@ impl Kernel {
                         continue;
                     }
                     packages.insert(pkg);
-                    out.push(RoleDef { name, description: None, permissions: added, portal });
+                    out.push(RoleDef { name, description: None, permissions: added, portal, portal_default: false });
                 }
             }
         }

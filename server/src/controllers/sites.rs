@@ -198,11 +198,38 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
+    let user = site_user(&st, &headers, &method, tenant, Some(&package)).await?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
-    let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
+    let req = request(tenant, user, method, &uri, path, query, &headers, body)?;
     let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
     super::system::contain(res.headers_mut());
     Ok(res)
+}
+
+/// The customer a site session makes of this request (docs/builder/decisions.md BD-88): only on a site host of `tenant`,
+/// and only for `package` when it is one of that host's app's packages (another app's routes on the same host see
+/// nobody); a request that changes something must come from the site's own pages.
+pub(crate) async fn site_user(
+    st: &crate::state::AppState,
+    headers: &HeaderMap,
+    method: &Method,
+    tenant: Uuid,
+    package: Option<&str>,
+) -> Result<Option<Ctx>, ApiError> {
+    let Ok(crate::shell::Place::Site(t, app)) = st.shell.place(headers).await else { return Ok(None) };
+    if t != tenant {
+        return Ok(None);
+    }
+    if let Some(p) = package
+        && !st.apps.shell_apps(tenant).await?.iter().any(|a| a.id == app && a.manifest.packages.iter().any(|x| x == p))
+    {
+        return Ok(None);
+    }
+    let Some((ctx, _)) = crate::extract::site_person(st, headers, tenant).await else { return Ok(None) };
+    if !crate::shell::may_change(method, headers) {
+        return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
+    }
+    Ok(Some(ctx))
 }
 
 pub fn routes() -> Routes {

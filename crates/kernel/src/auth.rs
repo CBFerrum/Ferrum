@@ -646,6 +646,12 @@ impl Kernel {
     }
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
+        self.load_core_as(tenant, user, false).await
+    }
+
+    /// [`Kernel::load_core`]; `customer`: the person as a customer whatever their kind (a site session, BD-88): outside,
+    /// never an administrator, the portal roles alone.
+    async fn load_core_as(&self, tenant: Uuid, user: Uuid, customer: bool) -> Result<CtxCore> {
         let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.tenant_tx(tenant).await?;
         let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
@@ -666,15 +672,19 @@ impl Kernel {
         // people also hold the roles marked for the portal (docs/builder/decisions.md BD-02), which
         // reach only their own records; any other role given to them counts for nothing, as every
         // role does for a guest. Neither is ever an administrator.
+        let kind = if customer && kind != "guest" { "portal".to_string() } else { kind };
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
         let roles: Vec<(String, Option<DateTime<Utc>>)> =
             match kind.as_str() {
                 "guest" => vec![],
+                // The portal roles given, and those every portal person holds (BD-88).
                 "portal" => {
                     sqlx::query_as(
-                        "select ur.role, ur.expires_at from user_role ur join role r on r.tenant_id = ur.tenant_id and r.name = ur.role \
-                     where ur.tenant_id = $1 and ur.user_id = $2 and r.portal and (ur.expires_at is null or ur.expires_at > now()) order by ur.role",
+                        "select r.name, case when r.portal_default then null else ur.expires_at end from role r \
+                         left join user_role ur on ur.tenant_id = r.tenant_id and ur.role = r.name and ur.user_id = $2 \
+                         where r.tenant_id = $1 and r.portal \
+                           and (r.portal_default or (ur.user_id is not null and (ur.expires_at is null or ur.expires_at > now()))) order by r.name",
                     )
                     .bind(tenant)
                     .bind(user)
@@ -780,6 +790,27 @@ impl Kernel {
         admit_network(&core, tenant, user, entry)?;
         let made = if screen { crate::ctx::Made::Screen } else { crate::ctx::Made::Key };
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone()), made).await
+    }
+
+    /// The context of `user` as a customer (a site session, docs/builder/decisions.md BD-88): loaded as if a portal person
+    /// whatever their kind, so a member who shops is a customer there, nothing more; a person at a screen. Within `entry`
+    /// when a request made it. A portal person's comes from the cache; anyone else's is read for the request.
+    pub async fn customer_ctx(
+        &self,
+        tenant: Uuid,
+        user: Uuid,
+        token_version: Option<i32>,
+        request_id: String,
+        entry: Option<&Arc<crate::zones::Entry>>,
+    ) -> Result<Ctx> {
+        crate::sandbox::serving(tenant);
+        let mut core = self.core(tenant, user, token_version).await?;
+        // ponytail: a member's customer self is read for each request (members who shop are few); a cache of its own
+        // if that shows.
+        if core.kind != "portal" {
+            core = Arc::new(self.load_core_as(tenant, user, true).await?);
+        }
+        self.ctx_of(&core, tenant, user, request_id, entry.cloned(), crate::ctx::Made::Screen).await
     }
 
     /// Builds the context of `user` for work a request queued in zone `zone` (`None`: from inside, no
@@ -1217,7 +1248,7 @@ impl Kernel {
     /// Drops a person's cached context and their cached browser sessions (a step-up, a sign-out).
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
-        self.sessions.retain(|k, v| k.0 != tenant || v.0.is_some_and(|(owner, _)| owner != user));
+        self.sessions.retain(|k, v| k.0 != tenant || v.0.as_ref().is_some_and(|(owner, _)| *owner != user));
     }
 
     pub fn invalidate_tenant_users(&self, tenant: Uuid) {
@@ -1584,8 +1615,37 @@ impl Kernel {
                 return Err(Error::field("portal", format!("its rules must change first: {}", problems.join("; "))));
             }
         }
-        sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut **tx).await?;
+        // Unmarked, it is no longer held by every portal person either.
+        sqlx::query("update role set portal = $3, portal_default = portal_default and $3 where tenant_id = $1 and name = $2")
+            .bind(ctx.tenant)
+            .bind(role)
+            .bind(portal)
+            .execute(&mut **tx)
+            .await?;
         notify_users(tx, ctx.tenant, None).await
+    }
+
+    /// Makes a portal role one every portal person holds without being given it, or not (docs/builder/decisions.md
+    /// BD-88). Administrators only; refused for a role that is not a portal role.
+    pub async fn set_role_portal_default(&self, ctx: &Ctx, role: &str, on: bool) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let portal: Option<bool> = sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2 for update")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_optional(&mut *tx)
+            .await?;
+        match portal {
+            None => return Err(Error::NotFound(format!("role {role}"))),
+            Some(false) if on => return Err(Error::field("portal_default", "only a portal role is held by every portal person")),
+            _ => {}
+        }
+        sqlx::query("update role set portal_default = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(on).execute(&mut *tx).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": on})).await?;
+        notify_users(&mut tx, ctx.tenant, None).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
     }
 }
 
