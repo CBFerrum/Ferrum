@@ -208,7 +208,7 @@ async fn two_factor_sign_in() {
     let (_, scope) = k.verify_api_key(&reader).await.unwrap();
     assert_eq!(scope.as_deref(), Some("records:Currency=read;ExchangeRate=read+write"));
     let grants = ferrum_kernel::auth::records_scope(scope.as_deref().unwrap()).unwrap();
-    let narrowed = admin.perms.limited_to(&grants, &Default::default());
+    let narrowed = admin.perms.limited_to(&grants, &Default::default(), &admin.schema);
     assert!(!narrowed.admin);
     assert_eq!((narrowed.access("Currency", Action::Read), narrowed.access("Currency", Action::Write)), (Access::All, Access::None));
     assert_eq!((narrowed.access("ExchangeRate", Action::Write), narrowed.access("Company", Action::Read)), (Access::All, Access::None));

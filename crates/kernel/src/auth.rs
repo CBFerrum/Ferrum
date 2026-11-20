@@ -181,7 +181,7 @@ fn canonical_records_scope(ctx: &Ctx, scope: &str) -> Result<String> {
 }
 
 /// A key's networks, each checked and written as the zone code writes it; none: `None`.
-fn key_networks(networks: &[String]) -> Result<Option<Vec<String>>> {
+pub(crate) fn key_networks(networks: &[String]) -> Result<Option<Vec<String>>> {
     if networks.len() > 100 {
         return Err(Error::field("networks", "at most 100"));
     }
@@ -193,8 +193,24 @@ fn key_networks(networks: &[String]) -> Result<Option<Vec<String>>> {
     Ok((!out.is_empty()).then_some(out))
 }
 
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     hex::encode(Sha256::digest(s.as_bytes()))
+}
+
+/// An agent never mints, narrows or revokes a person's key (A2-A3 2.9.2).
+fn no_agent(ctx: &Ctx) -> Result<()> {
+    match ctx.agent {
+        Some(_) => ctx.person_only("managing API keys"),
+        None => Ok(()),
+    }
+}
+
+/// A new key's prefix and secret (`fk_<prefix>_<secret>`): only the secret's SHA-256 is kept.
+pub(crate) fn new_key() -> (String, String) {
+    let mut rng = rand::rng();
+    let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut token = |n: usize| -> String { (0..n).map(|_| alphabet[rng.random_range(0..alphabet.len())] as char).collect() };
+    (token(10), token(40))
 }
 
 /// Counts a failed sign-in attempt (a wrong password or second-step code); enough in a row lock
@@ -515,6 +531,7 @@ impl Kernel {
         networks: &[String],
     ) -> Result<(Uuid, String)> {
         let networks = key_networks(networks)?;
+        no_agent(ctx)?;
         if !ctx.is_admin && user != ctx.user {
             return Err(Error::Forbidden("you can only create API keys for yourself".into()));
         }
@@ -529,12 +546,7 @@ impl Kernel {
         if scope == Some("scim") && !ctx.is_admin {
             return Err(Error::Forbidden("only administrators can make a key for an identity provider".into()));
         }
-        let (prefix, secret) = {
-            let mut rng = rand::rng();
-            let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
-            let mut token = |n: usize| -> String { (0..n).map(|_| alphabet[rng.random_range(0..alphabet.len())] as char).collect() };
-            (token(10), token(40))
-        };
+        let (prefix, secret) = new_key();
         let id = Uuid::now_v7();
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         sqlx::query(
@@ -577,6 +589,7 @@ impl Kernel {
 
     /// [`Kernel::verify_api_key_from`], with whether the key is narrowed to apps or operations (BD-85), for a caller
     /// that decides where such a key may be used: the server's doors, which refuse it but at the capability door.
+    /// An agent's key (crate::agent) is never its owner's: it opens nothing here.
     pub async fn api_key_session(&self, raw: &str, address: &str) -> Result<(Session, Option<String>, bool)> {
         let denied = || Error::Unauthorized("invalid API key".into());
         let rest = raw.strip_prefix("fk_").ok_or_else(denied)?;
@@ -585,7 +598,8 @@ impl Kernel {
         #[allow(clippy::type_complexity)]
         let row: Option<(Uuid, Uuid, String, bool, i32, Option<String>, Option<Vec<String>>, bool)> = sqlx::query_as(
             "select k.tenant_id, k.user_id, k.secret_hash, \
-             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active'), u.token_version, k.scope, k.networks, \
+             (k.revoked_at is null and (k.expires_at is null or k.expires_at > now()) and u.is_active and t.status = 'active' and k.agent_id is null), \
+             u.token_version, k.scope, k.networks, \
              (k.apps is not null or k.operations is not null) \
              from api_key k join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id join tenant t on t.id = k.tenant_id \
              where k.prefix = $1",
@@ -623,6 +637,7 @@ impl Kernel {
     /// Sets the networks a key works from (none: anywhere): its owner's, or anyone's for an
     /// administrator. On the audit trail.
     pub async fn set_api_key_networks(&self, ctx: &Ctx, id: Uuid, networks: &[String]) -> Result<()> {
+        no_agent(ctx)?;
         let networks = key_networks(networks)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
@@ -643,6 +658,7 @@ impl Kernel {
     }
 
     pub async fn revoke_api_key(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        no_agent(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let n = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and id = $2 and (user_id = $3 or $4)")
             .bind(ctx.tenant)
@@ -1012,6 +1028,7 @@ impl Kernel {
             made,
             effect_key: None,
             reads: Default::default(),
+            agent: None,
         })
     }
 

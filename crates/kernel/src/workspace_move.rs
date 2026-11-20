@@ -92,7 +92,7 @@ pub(crate) const LEFT_BEHIND: &[&str] = &[
 
 /// Columns a read changes (when a key or a person was last seen): left out of the comparison that proves nothing changed
 /// at the source after the copy.
-const SEEN: &[(&str, &str)] = &[("api_key", "last_used_at"), ("app_user", "last_login_at")];
+const SEEN: &[(&str, &str)] = &[("api_key", "last_used_at"), ("app_user", "last_login_at"), ("agent", "last_used_at")];
 
 /// Every column that holds an event's id (`outbox.id`, a counter of the whole database, so renumbered at the target).
 pub(crate) const EVENT_REFS: &[(&str, &str)] = &[

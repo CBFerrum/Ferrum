@@ -226,6 +226,8 @@ pub enum Credential {
     SignIn,
     /// Work a request queued (a job, an event), done later in the zone the request was in.
     Queued,
+    /// An agent's key or token (crate::agent): its own networks, or the staff networks, are asked by the agent check.
+    Agent,
 }
 
 impl Credential {
@@ -241,6 +243,7 @@ impl Credential {
             Credential::Socket => "socket",
             Credential::SignIn => "sign_in",
             Credential::Queued => "queued",
+            Credential::Agent => "agent",
         }
     }
 }

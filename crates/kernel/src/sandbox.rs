@@ -70,6 +70,8 @@ const NOT_COPIED: &[&str] = &[
     // A companion's client and the sign-ins through it (crate::oidc): a sandbox signs nobody in to a program outside.
     "oauth_companion",
     "oidc_sign_in",
+    // An agent's days are the live workspace's history (A2-A3 F10).
+    "agent_day",
 ];
 
 /// Tables whose rows the outside world calls by their id alone (a provider's callback, a channel's inbound messages,
@@ -469,6 +471,10 @@ impl Kernel {
             let Value::Object(r) = whole else { unreachable!("an object stays one") };
             *row = r;
             renumber_events(t, row, &events);
+            if t == "agent" && row.get("state") != Some(&json!("revoked")) {
+                row.insert("state".into(), json!("revoked"));
+                row.insert("revoked_at".into(), json!(chrono::Utc::now()));
+            }
             // A column set to `to`, counted where it held something: a secret's flag set off, its value being one the
             // sandbox's vault does not have (by its rule).
             let mut blank = |column: &str, to: Value| {
@@ -491,6 +497,11 @@ impl Kernel {
                     blank("account_key", Value::Null);
                 }
                 "conn" | "message_channel" => blank("has_secrets", json!(false)),
+                // Agents are copied revoked (above) and bound to no client (A2-A3 F10): no agent acts in a sandbox.
+                "agent" => {
+                    blank("oauth_client", Value::Null);
+                    blank("oauth_redirect", Value::Null);
+                }
                 "sso_provider" => blank("has_client_secret", json!(false)),
                 // A sandbox's work is judged by the zone its own requests arrive in, not the one the live workspace's did.
                 "approval_request" => {

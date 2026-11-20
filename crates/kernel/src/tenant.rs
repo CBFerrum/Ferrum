@@ -394,6 +394,8 @@ impl Kernel {
             // Entities whose work needs a recent step-up, and whose reads are recorded (crate::controls); null: off.
             "step_up": settings.get("step_up").cloned().unwrap_or(Value::Null),
             "record_reads": settings.get("record_reads").cloned().unwrap_or(Value::Null),
+            // What agents may do here (crate::agent), each default filled in.
+            "agents": serde_json::to_value(crate::agent::Settings::of(settings.get("agents"))).map_err(Error::internal)?,
             // What the workspace's entities declare (their definitions' `record_reads`), in force for each one
             // `record_reads` does not name.
             "record_reads_declared": ctx.schema.entities.values()
@@ -528,6 +530,11 @@ impl Kernel {
                     }
                     let empty = crate::controls::named(&kept, step_up).is_empty();
                     clean.insert(k.clone(), if empty { Value::Null } else { kept });
+                }
+                // What agents may do here (crate::agent): an administrator's, at a screen, checked whole.
+                "agents" => {
+                    ctx.person_only("changing what agents may do")?;
+                    clean.insert(k.clone(), crate::agent::check_settings(self, ctx, v).await?);
                 }
                 other => return Err(Error::field(other, "unknown setting")),
             }

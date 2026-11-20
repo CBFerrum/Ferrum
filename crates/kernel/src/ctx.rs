@@ -186,6 +186,10 @@ pub struct PermSet {
     /// (as staff).
     #[serde(skip)]
     pub own_by_address: bool,
+    /// Made by [`PermSet::limited_to`] (a records key, an app's screen, an agent): a role-gated transition then asks leave
+    /// to change the record, since a role is not a grant the narrowing named.
+    #[serde(skip)]
+    pub narrowed: bool,
 }
 
 /// What a context reaches in a zone that limits staff to some apps (crate::zones, level 2): the
@@ -499,10 +503,13 @@ impl PermSet {
     /// What an app's screen may do for this user (docs/plugins.md, "Pages an app brings"): the user's access
     /// narrowed to what the app declared (entity or `*` → actions as its consent lists them:
     /// `read`, `write (own records)`, `read field group <g>`...) and to every action on `own`, the
-    /// app's own entities. Field groups only as declared; never administrator power.
-    pub fn limited_to(&self, declared: &BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String>) -> PermSet {
+    /// app's own entities. Field groups only as declared; never administrator power. Records keys and agents are
+    /// narrowed the same way. Actions the user's rules name (BD-02) stay as narrow as those rules: kept where the
+    /// declaration names the action's own permission in `schema` (to the user's own records where it names only those),
+    /// dropped otherwise, so the action's permission alone never reaches records the rules keep it from.
+    pub fn limited_to(&self, declared: &BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String>, schema: &Schema) -> PermSet {
         // A zone's limit holds on whatever is narrowed from it.
-        let mut out = PermSet { limit: self.limit.clone(), own_by_address: self.own_by_address, ..Default::default() };
+        let mut out = PermSet { limit: self.limit.clone(), own_by_address: self.own_by_address, narrowed: true, ..Default::default() };
         let names: BTreeSet<&str> = self.entities.keys().chain(declared.keys()).chain(own).map(String::as_str).chain(["*"]).collect();
         for name in names {
             let decl: BTreeSet<&str> = [name, "*"].into_iter().filter_map(|k| declared.get(k)).flatten().map(String::as_str).collect();
@@ -537,9 +544,27 @@ impl PermSet {
                 e.hidden = mine.hidden.clone();
                 e.write_hidden = mine.write_hidden.clone();
                 e.line_hidden = mine.line_hidden.clone();
+                for (action, grants) in &mine.actions {
+                    let perm =
+                        schema.entity(name).and_then(|ent| ent.def.actions.iter().find(|a| &a.name == action)).and_then(|d| Action::parse(&d.permission));
+                    let verb = perm.unwrap_or(Action::Write).verb();
+                    let kept = if own.contains(name) || decl.contains(verb) {
+                        grants.clone()
+                    } else if decl.contains(format!("{verb} (own records)").as_str()) {
+                        grants.iter().cloned().map(|g| Grant { owner: true, ..g }).collect()
+                    } else {
+                        continue;
+                    };
+                    e.actions.insert(action.clone(), kept);
+                }
             }
             let hides = !e.hidden.is_empty() || !e.line_hidden.is_empty();
-            if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None) || !e.read_groups.is_empty() || !e.write_groups.is_empty() || hides {
+            if ACTIONS.iter().any(|(a, _)| e.get(*a) != Access::None)
+                || !e.read_groups.is_empty()
+                || !e.write_groups.is_empty()
+                || !e.actions.is_empty()
+                || hides
+            {
                 out.entities.insert(name.to_string(), e);
             }
         }
@@ -603,6 +628,9 @@ pub struct Ctx {
     pub effect_key: Option<Arc<str>>,
     /// The reads this request has recorded already (crate::controls), shared by its clones.
     pub reads: Arc<crate::controls::Seen>,
+    /// The agent this request is (A2-A3, crate::agent), set only by `agent::as_agent`: its owner's context,
+    /// narrowed. None everywhere else, the system acting inside an agent's call included.
+    pub agent: Option<Arc<crate::agent::AgentCtx>>,
 }
 
 /// How a context was made (BD-83, `gapclose/design/S1-payments.md` 2.21): what is acting behind it.
@@ -664,7 +692,16 @@ impl Ctx {
     /// from an interactive session credential, not the system, carrying no app, not the assistant. An automation, a key,
     /// a job, an approval completing later, the assistant and an app's call are each refused where this is required.
     pub fn at_screen(&self) -> bool {
-        self.made == Made::Screen && !self.is_system && self.app.is_none() && self.egress.is_none()
+        self.made == Made::Screen && !self.is_system && self.app.is_none() && self.egress.is_none() && self.agent.is_none()
+    }
+
+    /// Refused (403 `at_screen`) unless [`Ctx::at_screen`]: a decision only a person makes (A2-A3 2.3), `what` saying
+    /// which. Managing agents and their keys asks it, so no key (the owner's own included), agent, job or app does.
+    pub fn person_only(&self, what: &str) -> Result<()> {
+        match self.at_screen() {
+            true => Ok(()),
+            false => Err(Error::Refused { code: "at_screen", status: 403, message: format!("{what} is done by a person at a screen"), pointer: None }),
+        }
     }
 
     /// Refused unless [`Ctx::at_screen`]: every change to how a person signs in (BD-85), so that no key, token, app,
@@ -691,6 +728,7 @@ impl Ctx {
     pub fn elevated(mut self) -> Ctx {
         self.is_system = true;
         self.made = Made::System;
+        self.agent = None;
         self
     }
 
@@ -723,6 +761,7 @@ impl Ctx {
             app: None,
             effect_key: None,
             reads: Default::default(),
+            agent: None,
         }
     }
 
@@ -780,6 +819,8 @@ impl Ctx {
             "is_admin": self.is_admin,
             "companies": self.scopes.get("Company").map(|v| v.iter().map(|u| u.to_string()).collect::<Vec<_>>()).unwrap_or_default(),
             "default_company": self.default_company.map(|u| u.to_string()),
+            // The agent acting for the person, if one is (A2-A3): an expression can tell it from the person.
+            "agent": self.agent.as_ref().map(|a| a.id.to_string()),
         });
         // Bound as `settings` for the expressions that name them (ferrum_meta::Expr), as time is.
         if let Some(s) = &self.settings {
@@ -1066,7 +1107,9 @@ pub fn transition_gate(ctx: &Ctx, ent: &EffEntity, t: &ferrum_meta::WorkflowTran
     if !t.roles.iter().any(|r| ctx.has_role(r)) {
         return Err(Error::Forbidden(format!("'{}' requires one of the roles: {}", t.action, t.roles.join(", "))));
     }
-    row_scope(ctx, ent, Action::Read)
+    // Narrowed (a records key, an app's screen, an agent): the role is the person's, not a grant of the narrowing, so it
+    // takes the transition only with leave to change the record.
+    row_scope(ctx, ent, if ctx.perms.narrowed { Action::Write } else { Action::Read })
 }
 
 /// The fields of one record hidden from `ctx` (BD-40): those every rule reaching the record hides. A field one rule
@@ -1447,7 +1490,7 @@ mod tests {
             ("Item", &["read (own records)"]),
         ]);
         let mine: BTreeSet<String> = ["XBoard".to_string()].into();
-        let p = user.limited_to(&declared, &mine);
+        let p = user.limited_to(&declared, &mine, &Schema::default());
         assert!(!p.admin);
         assert_eq!(p.access("Customer", Action::Read), Access::All);
         assert_eq!(p.access("Customer", Action::Write), Access::None, "not declared");
@@ -1460,7 +1503,7 @@ mod tests {
         assert_eq!(p.groups("Customer", false), BTreeSet::from(["credit"]));
 
         // An administrator gets exactly the declaration.
-        let a = PermSet { admin: true, ..Default::default() }.limited_to(&declared, &mine);
+        let a = PermSet { admin: true, ..Default::default() }.limited_to(&declared, &mine, &Schema::default());
         assert!(!a.admin);
         assert_eq!(a.access("Customer", Action::Read), Access::All);
         assert_eq!(a.access("Customer", Action::Delete), Access::None);
@@ -1471,10 +1514,10 @@ mod tests {
         // A wildcard declaration reaches entities named nowhere else, within the user's rights.
         let mut u = PermSet::default();
         u.entities.insert("*".into(), EntityAccess { read: Access::All, write: Access::All, ..Default::default() });
-        let w = u.limited_to(&decl(&[("*", &["read"])]), &BTreeSet::new());
+        let w = u.limited_to(&decl(&[("*", &["read"])]), &BTreeSet::new(), &Schema::default());
         assert_eq!(w.access("Anything", Action::Read), Access::All);
         assert_eq!(w.access("Anything", Action::Write), Access::None);
-        assert_eq!(u.limited_to(&BTreeMap::new(), &BTreeSet::new()).access("Anything", Action::Read), Access::None);
+        assert_eq!(u.limited_to(&BTreeMap::new(), &BTreeSet::new(), &Schema::default()).access("Anything", Action::Read), Access::None);
     }
 
     #[test]

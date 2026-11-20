@@ -217,6 +217,8 @@ serial_test = "3"
 wat = "1"
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 tower = { version = "0.5", features = ["util"] }
+# Agents are admitted in the server's own tests, as in the test kit's (crates/kernel/src/agent.rs; the binary never is).
+ferrum-kernel = { path = "../crates/kernel", features = ["agents-preview"] }
 
 [lints]
 workspace = true

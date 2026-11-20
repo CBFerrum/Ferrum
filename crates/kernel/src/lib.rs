@@ -8,6 +8,7 @@ pub mod access;
 pub mod account;
 pub mod action_link;
 pub mod actions;
+pub mod agent;
 pub mod approvals;
 pub mod apps;
 pub mod audit;
@@ -636,7 +637,8 @@ impl Kernel {
             + step("purging connection events", self.purge_connection_events().await)
             + step("purging connection logs", self.purge_connections().await)
             + step("purging public file addresses", self.purge_public_files().await)
-            + step("purging schedule occurrences", self.prune_occurrences().await);
+            + step("purging schedule occurrences", self.prune_occurrences().await)
+            + step("purging agents' old days", self.purge_agent_days().await);
         if purged > 0 {
             tracing::info!(purged, "old events purged");
         }

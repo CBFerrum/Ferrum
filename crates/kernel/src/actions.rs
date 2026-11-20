@@ -217,6 +217,8 @@ pub(crate) fn system(ctx: &Ctx) -> Ctx {
         app: None,
         // Nor under the key of the write that set it going (TP-K).
         effect_key: None,
+        // Nor as the agent whose call set it going: what an agent's call does is checked where it passes (A2-A3 2.4).
+        agent: None,
         is_admin: true,
         egress: None,
         scopes: BTreeMap::new(),

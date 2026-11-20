@@ -565,6 +565,16 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     .await?;
     // Their second factor goes from the vault with it.
     crate::vault::kept::forget(tx, &crate::vault::kept::Place::totp(tenant, id)).await?;
+    // Their agents are revoked for good, under names that name no one (A2-A3 F9); their keys go with theirs below.
+    sqlx::query(
+        "update agent set state = 'revoked', revoked_at = coalesce(revoked_at, now()), revoked_by = coalesce(revoked_by, $3), paused_by = null, \
+         name = 'Erased agent ' || right(replace(id::text, '-', ''), 8), oauth_redirect = null, updated_at = now() where tenant_id = $1 and owner_id = $2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind((!ctx.user.is_nil()).then_some(ctx.user))
+    .execute(&mut **tx)
+    .await?;
     // A passkey's name ("Pat's phone") went into its history when they added it, also for one
     // removed since; it goes from there too.
     let passkeys: Vec<Uuid> =
@@ -769,6 +779,15 @@ impl Kernel {
         .bind(&theirs_ids)
         .fetch_all(&mut *tx)
         .await?;
+        // Their agents (A2-A3 F9): what each is called, and when it was made, last used and revoked.
+        let agents: Vec<Value> = sqlx::query_scalar(
+            "select jsonb_build_object('id', id, 'name', name, 'state', state, 'created_at', created_at, 'last_used_at', last_used_at, \
+               'revoked_at', revoked_at) from agent where tenant_id = $1 and owner_id = $2 order by created_at",
+        )
+        .bind(ctx.tenant)
+        .bind(account_id)
+        .fetch_all(&mut *tx)
+        .await?;
         // Of the reads of their records, who read them is the workspace's, not theirs.
         let (read, read_of_theirs): (Vec<Value>, Vec<Value>) = reads.into_iter().partition(|r| r["mine"] == json!(true));
         let read_of_theirs: Vec<Value> = read_of_theirs
@@ -794,7 +813,7 @@ impl Kernel {
         let sandboxes = self.sandboxes_of(ctx.tenant).await?;
         Ok(json!({
             "email": email, "addresses": emails, "phone": phone, "records": records, "possibly": possibly, "account": account, "held": held,
-            "sign_ins": sign_ins, "reads": read, "reads_of_their_records": read_of_theirs, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data, "sandboxes": sandboxes,
+            "sign_ins": sign_ins, "reads": read, "reads_of_their_records": read_of_theirs, "agents": agents, "apps": apps, "not_searched": ctx.schema.undeclared_personal_data, "sandboxes": sandboxes,
         }))
     }
 

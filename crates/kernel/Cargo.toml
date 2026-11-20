@@ -8,6 +8,9 @@ license.workspace = true
 [features]
 # SAML single sign-on checked by xmlsec1 (crates/saml); without it SAML providers cannot be added.
 saml = ["ferrum-saml/xmlsec"]
+# Agents (crate::agent, gapclose/design/A2-A3-agents.md): until their checks have all landed (AG-9 deletes this), only a
+# build with this feature admits an agent's credential. Only the test kit names it; the release image never does.
+agents-preview = []
 
 [dependencies]
 ferrum-logic = { path = "../logic" }
