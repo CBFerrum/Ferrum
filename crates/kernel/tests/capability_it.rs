@@ -33,6 +33,7 @@ const ENTITIES: &str = r#"
     - {name: peek, label: Peek, read_only: true, permission: read}
     - {name: fix_up, label: Fix up, hidden: true}
     - {name: restock, label: Restock, permission: write}
+    - {name: split, label: Split, permission: write, contract: {completion: A safe is made from the hold}}
     - name: plan
       label: Plan
       permission: write
@@ -83,6 +84,10 @@ impl DocHook for Stock {
             "release" => Some(json!({"released": true})),
             "peek" => Some(json!({"qty": doc["qty"]})),
             "weigh" => Some(json!({"weighed": doc["qty"]})),
+            "split" => {
+                let made = hc.kernel.insert_tx(hc.ctx, hc.tx, "Safe", json!({"label": "From a hold"}).as_object().cloned().unwrap()).await?;
+                Some(json!({"entity": "Safe", "id": made["id"], "label": made["label"]}))
+            }
             "plan" => {
                 self.planned.lock().unwrap().push(params.clone());
                 Some(json!({"planned": true}))
@@ -458,4 +463,13 @@ async fn scenario() {
     assert!(placed.is_ok_and(|r| r.result["held"] == json!(1)), "run through the gate");
     let other = k.invoke(&placer, plan(json!({}), "api0/plan")).await;
     assert!(other.is_err(), "an action the rule does not name: {other:?}");
+
+    // ── the gate repeat fault: an action whose answer is another entity's record, repeated under its key, answers that
+    // record (it was re-read as the action's own entity, and answered null) ──
+    let split = || Invocation::new("stockcap.hold.split", json!({"id": hold, "params": {}})).key("repeat/split");
+    let first = k.invoke(&clerk, split()).await.expect("split");
+    let again = k.invoke(&clerk, split()).await.expect("split again");
+    assert!(again.repeated, "{again:?}");
+    assert_eq!((again.result["id"].clone(), again.result["label"].clone()), (first.result["id"].clone(), json!("From a hold")), "{again:?}");
+    assert_eq!(count(&k, &clerk, "select count(*) from e_safe where label = 'From a hold'").await, 1, "made once");
 }
