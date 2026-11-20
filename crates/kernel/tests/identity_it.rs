@@ -83,7 +83,20 @@ async fn ctx(k: &Kernel, s: &Session) -> Ctx {
 /// Turns on an authenticator app for a person: its secret and recovery codes.
 async fn two_factor(k: &Kernel, person: &Ctx) -> (String, Vec<String>) {
     let secret = k.begin_two_factor(&ferrum_testkit::at_screen(k, person).await).await.unwrap()["secret"].as_str().unwrap().to_string();
-    let recovery = k.enable_two_factor(&ferrum_testkit::at_screen(k, person).await, &code(&secret, now()).unwrap()).await.unwrap();
+    // This server mails: the code mailed to the person confirms it (API-K2).
+    let mut tx = k.db.system_tx().await.unwrap();
+    let subject: String = sqlx::query_scalar(
+        "select o.payload->>'subject' from outbox o join app_user u on u.email::text = o.payload->>'to' \
+         where o.topic = 'ferrum.mail' and u.tenant_id = $1 and u.id = $2 and o.payload->>'subject' like '% to turn on two-factor sign-in' order by o.id desc limit 1",
+    )
+    .bind(person.tenant)
+    .bind(person.user)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mailed = &subject[..6];
+    let recovery = k.enable_two_factor_mailed(&ferrum_testkit::at_screen(k, person).await, &code(&secret, now()).unwrap(), Some(mailed)).await.unwrap();
     (secret, recovery)
 }
 

@@ -36,8 +36,8 @@ Every change to how a person signs in (`/2fa/…`, `/passkeys…`, `/password`, 
 | `POST /code/sign-up` | public sign-up to a portal role (below, "Public sign-up"): `{tenant, role, name, email, passes?}` → `{"sent": true}`; the code it mails is confirmed at `/code/sign-in` |
 | `GET /me` | → `{tenant, user: {id, email, full_name, is_admin, roles}, default_company, scopes, fiscal_year_start_month, timezone, display_timezone, today, packages, two_factor_setup, accounts}`; `accounts`: in shapes B and C, the accounts host that keeps the person's password, two-factor sign-in and passkeys (their account joined their Ferrum account), else `null` |
 | `GET /2fa` | → `{enabled, pending, recovery_codes_left, required}`. This and the two below take the browser's cookie (the setup-only one included), or the page token bound to a full one; never a key or another token |
-| `POST /2fa/begin` | → `{secret, uri (otpauth://), qr_svg}`: a new secret for an authenticator app (TOTP, SHA-1, 6 digits, 30 s); it takes effect once confirmed |
-| `POST /2fa/enable` | `{code}` → `{recovery_codes}` (ten, shown once); called with the setup-only cookie, the answer sets a full session cookie in its place |
+| `POST /2fa/begin` | → `{secret, uri (otpauth://), qr_svg, mailed}`: a new secret for an authenticator app (TOTP, SHA-1, 6 digits, 30 s); it takes effect once confirmed. Where the server sends mail (`mailed: true`) a six-digit code is mailed to the person too (one at a time: asking again while it works mails nothing; it works once, for ten minutes, five tries); without mail none is, the doctor warns (`two_factor.mail`) and the setup is audited as made without one |
+| `POST /2fa/enable` | `{code, mailed_code}` (`mailed_code` where `/2fa/begin` answered `mailed: true`) → `{recovery_codes}` (ten, shown once); called with the setup-only cookie, the answer sets a full session cookie in its place |
 | `POST /2fa/recovery-codes` | `{code}` → `{recovery_codes}`: new ones replace the old |
 | `POST /2fa/disable` | `{password}` or `{code}` → `204` |
 | `POST /logout_all` | revokes every session of the caller (and clears the session cookie) |

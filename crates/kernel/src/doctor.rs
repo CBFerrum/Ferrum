@@ -327,6 +327,13 @@ impl Kernel {
         if let Some(f) = self.audit_sink_finding().await {
             out.push(f);
         }
+        if self.mailer.is_none() {
+            out.push(Finding::warning(
+                "two_factor.mail",
+                "this server sends no email: a first second factor is set up without a code mailed to the person, and each such setup is audited so",
+                "Configure mail (SMTP) so that a password alone cannot put someone else's authenticator on an account.",
+            ));
+        }
         out.push(self.floors_finding().await?);
         out.push(self.audit_months_finding().await?);
         out.push(keys_finding(&self.unvalidated_keys().await?));

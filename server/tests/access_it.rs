@@ -752,7 +752,7 @@ async fn scenario() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
             loop {
                 let mut tx = k.db.system_tx().await.unwrap();
-                let waiting: bool = sqlx::query_scalar("select exists (select 1 from audit_event where xid >= pg_snapshot_xmin(pg_current_snapshot()))")
+                let waiting: bool = sqlx::query_scalar("select exists (select 1 from audit_event where xid >= pg_snapshot_xmin(pg_current_snapshot()) and xid < pg_snapshot_xmax(pg_current_snapshot()))")
                     .fetch_one(&mut *tx)
                     .await
                     .unwrap();
@@ -877,6 +877,48 @@ async fn scenario() {
     for id in &before {
         assert_eq!(after.iter().filter(|g| *g == id).count(), before.iter().filter(|g| *g == id).count(), "{id}: nothing sent before is sent again");
     }
+    // A copy restored while the source still had events to send: committed before the dump, they keep the source's
+    // transaction ids, ahead of the copy's counter, and one has an id below the highest the source sent. They go first,
+    // in order, once each, and the copy's own events after them: nothing lost, nothing out of order.
+    let high = *rx.ids("/sink").iter().max().unwrap();
+    let ahead: i64 = 999_999_999_990;
+    // The floor below every id: a first copy's (0), with this test's ids below it.
+    cursor(Some(format!("{ahead}/{high}/-100/{high}"))).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    let mut source = vec![];
+    for (xid, id) in [(ahead + 5, Some(-5_i64)), (ahead + 7, None)] {
+        let made: i64 = match id {
+            Some(id) => sqlx::query_scalar(
+                "insert into audit_event (tenant_id, id, entity, record_id, action, hash, xid, category) overriding system value \
+                 values ($1, $3, 'Tenant', $1, 'copied', '\\x00', $2::text::xid8, 'administration') returning id",
+            )
+            .bind(acme)
+            .bind(xid.to_string())
+            .bind(id),
+            None => sqlx::query_scalar(
+                "insert into audit_event (tenant_id, entity, record_id, action, hash, xid, category) \
+                 values ($1, 'Tenant', $1, 'copied', '\\x00', $2::text::xid8, 'administration') returning id",
+            )
+            .bind(acme)
+            .bind(xid.to_string()),
+        }
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        source.push(made);
+    }
+    tx.commit().await.unwrap();
+    let own = write(1).await;
+    settled().await;
+    for _ in 0..3 {
+        while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    }
+    let got = rx.ids("/sink");
+    let at = |id: i64| got.iter().position(|g| *g == id);
+    for id in source.iter().chain(&own) {
+        assert_eq!(got.iter().filter(|g| *g == id).count(), 1, "{id}: the copy's unsent events once each: {got:?}");
+    }
+    assert!(at(source[0]) < at(source[1]) && at(source[1]) < at(own[0]), "the source's events first, in order: {source:?} {own:?} in {got:?}");
     let (_, metrics) = call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await;
     assert!(!metrics.contains("ferrum_audit_sink_behind_seconds"), "only where the sink is set");
     assert!(k1.doctor(10).await.unwrap().iter().any(|f| f.check == "audit.sink"), "the doctor reports it");

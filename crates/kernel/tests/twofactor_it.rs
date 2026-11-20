@@ -15,10 +15,29 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
 
+fn url() -> String {
+    std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into())
+}
+
 async fn kernel() -> Arc<Kernel> {
-    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    boot(db, None).await
+}
+
+/// A mailer that sends nothing: mail stays in the outbox, where the test reads it.
+struct Quiet;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Quiet {
+    async fn send(&self, _: &str, _: &str, _: &str) -> ferrum_kernel::Result<()> {
+        Ok(())
+    }
+}
+
+/// Another server on the same database, with or without mail.
+async fn boot(db: Db, mailer: Option<Arc<dyn ferrum_kernel::Mailer>>) -> Arc<Kernel> {
+    let url = url();
     let opener = ferrum_kernel::vault::Opener {
         database_url: url.clone(),
         file: "/nonexistent/root.key".into(),
@@ -28,7 +47,36 @@ async fn kernel() -> Arc<Kernel> {
     ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let catalog = Catalog::load_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages")).expect("catalog");
     let settings = KernelSettings::default();
-    Kernel::boot(db, catalog, HookRegistry::default(), settings, None).await.expect("boot")
+    Kernel::boot(db, catalog, HookRegistry::default(), settings, mailer).await.expect("boot")
+}
+
+/// The codes mailed to `to` to confirm a second factor, newest first.
+async fn mailed(k: &Kernel, to: &str) -> Vec<String> {
+    let mut tx = k.db.system_tx().await.unwrap();
+    let subjects: Vec<String> = sqlx::query_scalar(
+        "select payload->>'subject' from outbox where topic = 'ferrum.mail' and payload->>'to' = $1 and payload->>'subject' like '% to turn on two-factor sign-in' order by id desc",
+    )
+    .bind(to)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    subjects.iter().map(|s| s[..6].to_string()).collect()
+}
+
+/// What the audit log keeps of a person's turning on two-factor sign-in.
+async fn enabled_audit(k: &Kernel, tenant: uuid::Uuid, user: uuid::Uuid) -> serde_json::Value {
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let details: serde_json::Value = sqlx::query_scalar(
+        "select coalesce(diff, 'null') from audit_event where tenant_id = $1 and record_id = $2 and action = 'enable_two_factor' order by id desc limit 1",
+    )
+    .bind(tenant)
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    details
 }
 
 #[tokio::test]
@@ -58,6 +106,7 @@ async fn two_factor_sign_in() {
     let secret = setup["secret"].as_str().unwrap().to_string();
     assert!(setup["uri"].as_str().unwrap().starts_with("otpauth://totp/"));
     assert!(setup["qr_svg"].as_str().unwrap().contains("<svg"));
+    assert_eq!(setup["mailed"], json!(false), "this server sends no mail");
     assert_eq!(k.two_factor_status(&pat).await.unwrap()["pending"], json!(true));
     assert_eq!(
         k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await.unwrap()["secret"],
@@ -69,6 +118,11 @@ async fn two_factor_sign_in() {
     assert!(matches!(k.enable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, wrong).await, Err(Error::Validation(_))));
     let recovery = k.enable_two_factor(&ferrum_testkit::at_screen(&k, &pat).await, &code(&secret, now()).unwrap()).await.unwrap();
     assert_eq!(recovery.len(), 10);
+    assert_eq!(enabled_audit(&k, tenant, pat_id).await["mailed"], json!(false), "audited as set up without a mailed code");
+    assert!(
+        k.doctor(10).await.unwrap().iter().any(|f| f.check == "two_factor.mail" && f.detail.contains("without a code mailed")),
+        "the doctor warns on a server without mail"
+    );
     let status = k.two_factor_status(&pat).await.unwrap();
     assert_eq!((status["enabled"].clone(), status["recovery_codes_left"].clone()), (json!(true), json!(10)));
     assert!(matches!(k.begin_two_factor(&ferrum_testkit::at_screen(&k, &pat).await).await, Err(Error::Invalid(_))), "on already");
@@ -161,4 +215,52 @@ async fn two_factor_sign_in() {
     // A key one character off (never the same character: random keys end in x now and then).
     let tampered = format!("{}{}", &full[..full.len() - 1], if full.ends_with('x') { 'y' } else { 'x' });
     assert!(matches!(k.verify_api_key(&tampered).await, Err(Error::Unauthorized(_))));
+
+    a_first_second_factor_needs_the_code_mailed_to_the_person(&k, tenant, &admin).await;
+}
+
+/// Where the server mails, a first second factor takes effect only with the code mailed to the person (API-K2): a password
+/// alone cannot put someone else's authenticator on the account.
+async fn a_first_second_factor_needs_the_code_mailed_to_the_person(k: &Kernel, tenant: uuid::Uuid, admin: &ferrum_kernel::Ctx) {
+    let m = boot(k.db.clone(), Some(Arc::new(Quiet))).await;
+    let sam_id = m.create_user(admin, "sam@twofa.test", "Sam", Some("Correct-Horse-9"), &[], false).await.unwrap();
+    // The workspace requires a second factor by now: Sam's password gives only the session that sets one up.
+    let SignIn::SetupRequired(s) = m.sign_in("twofa", "sam@twofa.test", "Correct-Horse-9").await.unwrap() else { panic!("setup required") };
+    let sam = m.load_ctx(tenant, sam_id, Some(s.token_version), "it".into()).await.unwrap();
+    let screen = || ferrum_testkit::at_screen(&m, &sam);
+    let setup = m.begin_two_factor(&screen().await).await.unwrap();
+    assert_eq!(setup["mailed"], json!(true));
+    let secret = setup["secret"].as_str().unwrap().to_string();
+    let sent = mailed(&m, "sam@twofa.test").await;
+    assert_eq!(sent.len(), 1, "one code mailed: {sent:?}");
+    assert!(sent[0].bytes().all(|b| b.is_ascii_digit()), "{sent:?}");
+    m.begin_two_factor(&screen().await).await.unwrap();
+    assert_eq!(mailed(&m, "sam@twofa.test").await.len(), 1, "the page shown again mails no second code while the first works");
+
+    // The authenticator's code alone is not enough, nor a wrong mailed code; the error never carries the code.
+    let refused = m.enable_two_factor(&screen().await, &code(&secret, now()).unwrap()).await;
+    assert!(matches!(&refused, Err(Error::Validation(f)) if f.iter().any(|f| f.field == "mailed_code")), "{refused:?}");
+    let wrong = if sent[0] == "000000" { "111111" } else { "000000" };
+    let refused = m.enable_two_factor_mailed(&screen().await, &code(&secret, now()).unwrap(), Some(wrong)).await;
+    assert!(matches!(&refused, Err(Error::Validation(_))) && !format!("{refused:?}").contains(&sent[0]), "{refused:?}");
+    assert_eq!(m.two_factor_status(&sam).await.unwrap()["enabled"], json!(false));
+    // A mailed code is not a sign-in code: it does not sign anyone in.
+    assert!(m.sign_in_with_code("twofa", "sam@twofa.test", &sent[0]).await.is_err());
+
+    // Five wrong codes use it up: the right one no longer works, and starting again mails a new one.
+    for _ in 0..4 {
+        assert!(m.enable_two_factor_mailed(&screen().await, &code(&secret, now()).unwrap(), Some(wrong)).await.is_err());
+    }
+    assert!(m.enable_two_factor_mailed(&screen().await, &code(&secret, now()).unwrap(), Some(&sent[0])).await.is_err(), "used up");
+    m.begin_two_factor(&screen().await).await.unwrap();
+    let again = mailed(&m, "sam@twofa.test").await;
+    assert_eq!(again.len(), 2, "a new code once the first is used up");
+
+    let recovery = m.enable_two_factor_mailed(&screen().await, &code(&secret, now()).unwrap(), Some(&again[0])).await.unwrap();
+    assert_eq!(recovery.len(), 10);
+    assert_eq!(m.two_factor_status(&sam).await.unwrap()["enabled"], json!(true));
+    let audited = enabled_audit(&m, tenant, sam_id).await;
+    assert_eq!(audited["mailed"], json!(true));
+    assert!(!audited.to_string().contains(&again[0]), "no code in the audit log: {audited}");
+    assert!(!m.doctor(10).await.unwrap().iter().any(|f| f.check == "two_factor.mail" && f.detail.contains("without")), "a server that mails is not warned");
 }
