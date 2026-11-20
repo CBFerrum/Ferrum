@@ -33,6 +33,14 @@ const ENTITIES: &str = r#"
     - {name: peek, label: Peek, read_only: true, permission: read}
     - {name: fix_up, label: Fix up, hidden: true}
     - {name: restock, label: Restock, permission: write}
+    - name: plan
+      label: Plan
+      permission: write
+      contract: {completion: The hold is planned}
+      params:
+        - {name: days, label: Days, type: list, of: select, options: [Monday, Sunday]}
+        - {name: lines, label: Lines, type: list, max_items: 3, fields: [{name: qty, label: Qty, type: int, required: true}, {name: item, label: Item, type: link, to: Hold}, {name: price, label: Price, type: decimal}, {name: note, label: Note}]}
+        - {name: address, label: Address, type: row, fields: [{name: city, label: City, required: true}, {name: kept, label: Kept, type: check}]}
 - name: Safe
   label: Safe
   kind: master
@@ -59,11 +67,13 @@ struct Stock {
     failing: std::sync::atomic::AtomicBool,
     /// The effect key each `place` saw on its context (TP-K).
     keys: std::sync::Mutex<Vec<Option<String>>>,
+    /// The parameters each `plan` was given (param-lists).
+    planned: std::sync::Mutex<Vec<Value>>,
 }
 
 #[async_trait]
 impl DocHook for Stock {
-    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, _params: &Value) -> Result<Option<Value>> {
+    async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         Ok(match name {
             "place" => {
                 self.placed.fetch_add(1, Ordering::SeqCst);
@@ -73,6 +83,10 @@ impl DocHook for Stock {
             "release" => Some(json!({"released": true})),
             "peek" => Some(json!({"qty": doc["qty"]})),
             "weigh" => Some(json!({"weighed": doc["qty"]})),
+            "plan" => {
+                self.planned.lock().unwrap().push(params.clone());
+                Some(json!({"planned": true}))
+            }
             "restock" => {
                 let id: Uuid = doc["id"].as_str().unwrap().parse().unwrap();
                 sqlx::query("update e_hold set note = 'restocked' where id = $1").bind(id).execute(&mut **hc.tx).await?;
@@ -383,4 +397,53 @@ async fn scenario() {
     assert_eq!(stock.keys.lock().unwrap().last().cloned(), Some(Some("tp-k/place".to_string())), "the gate's key");
     k.run_action(&clerk, "Hold", hold, "place", json!({})).await.expect("placed directly");
     assert_eq!(stock.keys.lock().unwrap().last().cloned(), Some(None), "no key claimed, none seen");
+
+    // ── param-lists: a list of one type, a list of rows and a row reach the handler as given; what they do not declare is
+    // refused before it, by the gate and by every other door ──
+    let plan = |params: Value, key: &str| Invocation::new("stockcap.hold.plan", json!({"id": hold, "params": params})).key(key);
+    let good = json!({"days": ["Monday", "Sunday"], "lines": [{"qty": 2, "item": hold, "price": "9.50", "note": "first"}, {"qty": 1, "price": 3}],
+        "address": {"city": "Pune", "kept": true}});
+    k.invoke(&clerk, plan(good.clone(), "tp/plan/1")).await.expect("declared lists and a row");
+    let seen = stock.planned.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((&seen["days"], &seen["lines"], &seen["address"]), (&good["days"], &good["lines"], &good["address"]), "as given: {seen}");
+    let before = stock.planned.lock().unwrap().len();
+    for (n, (bad, field)) in [
+        (json!({"days": ["Friday"]}), "days"),
+        (json!({"days": [5]}), "days"),
+        (json!({"days": "Monday"}), "days"),
+        (json!({"lines": [{"qty": "two"}]}), "lines"),
+        (json!({"lines": [{"qty": 1.5}]}), "lines"),
+        (json!({"lines": [{"note": "no qty"}]}), "lines"),
+        (json!({"lines": [{"qty": 1, "discount": 5}]}), "discount"),
+        (json!({"lines": [{"qty": 1, "item": "not an id"}]}), "lines"),
+        (json!({"lines": [{"qty": 1, "price": "nine"}]}), "lines"),
+        (json!({"lines": [{"qty": 1}, {"qty": 1}, {"qty": 1}, {"qty": 1}]}), "at most 3"),
+        (json!({"lines": [7]}), "lines"),
+        (json!({"address": {"city": "Pune", "zip": "411001"}}), "zip"),
+        (json!({"address": {"kept": "yes"}}), "address"),
+        (json!({"address": ["Pune"]}), "address"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let refused = k.invoke(&clerk, plan(bad.clone(), &format!("tp/plan/bad/{n}"))).await.expect_err(&bad.to_string());
+        let said = format!("{refused} {refused:?}");
+        assert!(said.contains(field), "{bad}: {said}");
+        let direct = k.run_action(&clerk, "Hold", hold, "plan", bad.clone()).await.expect_err(&bad.to_string());
+        assert!(format!("{direct} {direct:?}").contains(field), "{bad} by the records door: {direct:?}");
+    }
+    assert_eq!(stock.planned.lock().unwrap().len(), before, "the handler never ran for any of them");
+    // ── the_schema_an_agent_reads_matches_what_is_accepted ──
+    let input = k.capability(&clerk, "stockcap.hold.plan").unwrap().input;
+    let params = &input["properties"]["params"]["properties"];
+    assert_eq!((params["days"]["type"].clone(), params["days"]["maxItems"].clone()), (json!("array"), json!(500)), "{input}");
+    assert_eq!(params["days"]["items"]["enum"], json!(["Monday", "Sunday"]), "{input}");
+    let line = &params["lines"]["items"];
+    assert_eq!(
+        (params["lines"]["maxItems"].clone(), line["additionalProperties"].clone(), line["required"].clone()),
+        (json!(3), json!(false), json!(["qty"])),
+        "{input}"
+    );
+    assert_eq!((line["properties"]["qty"]["type"].clone(), line["properties"]["item"]["format"].clone()), (json!("integer"), json!("uuid")), "{input}");
+    assert_eq!((params["address"]["type"].clone(), params["address"]["additionalProperties"].clone()), (json!("object"), json!(false)), "{input}");
 }

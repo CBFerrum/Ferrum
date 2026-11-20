@@ -138,9 +138,36 @@ fn version_prop() -> Value {
     json!({"type": "integer", "description": "The version it was read at; a change since then is refused"})
 }
 
-fn param_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
+/// The schema of an action's `params`: what the gate takes, as the catalog, MCP and the OpenAPI document show it.
+pub fn params_schema(params: &[ferrum_meta::ActionParam]) -> Value {
+    let mut props = Map::new();
+    for p in params {
+        let mut s = param_schema(p);
+        s["description"] = json!(p.description.clone().unwrap_or_else(|| p.label.clone()));
+        if p.secret {
+            s["writeOnly"] = json!(true);
+        }
+        props.insert(p.name.clone(), s);
+    }
+    object_schema(props, params.iter().filter(|p| p.required).map(|p| p.name.clone()).collect())
+}
+
+fn param_schema(p: &ferrum_meta::ActionParam) -> Value {
+    match p.ptype.as_str() {
+        "list" => json!({
+            "type": "array",
+            "maxItems": p.max_items.unwrap_or(ferrum_meta::MAX_LIST_ITEMS).min(ferrum_meta::MAX_LIST_ITEMS),
+            "items": p.of.as_deref().map_or_else(|| params_schema(&p.fields), |of| one_schema(of, p.to.as_deref(), &p.options)),
+        }),
+        "row" => params_schema(&p.fields),
+        t => one_schema(t, p.to.as_deref(), &p.options),
+    }
+}
+
+fn one_schema(ptype: &str, to: Option<&str>, options: &[String]) -> Value {
     match ptype {
         "int" => json!({"type": "integer"}),
+        "decimal" => json!({"type": ["number", "string"], "format": "decimal"}),
         "date" => json!({"type": "string", "format": "date"}),
         "check" => json!({"type": "boolean"}),
         "select" => json!({"type": "string", "enum": options}),
@@ -307,20 +334,7 @@ fn entity_capabilities(k: &Kernel, ctx: &Ctx, ent: &EffEntity) -> Vec<Capability
         let version = if origin == owner { version.clone() } else { version_of(k, ctx, origin) };
         let contract = a.contract.clone().unwrap_or_default();
         let effect = contract.effect.unwrap_or(if a.read_only { Effect::Query } else { Effect::TransactionalAction });
-        let mut params = Map::new();
-        let mut required = vec![];
-        for p in &a.params {
-            let mut s = param_schema(&p.ptype, p.to.as_deref(), &p.options);
-            s["description"] = json!(p.description.clone().unwrap_or_else(|| p.label.clone()));
-            if p.secret {
-                s["writeOnly"] = json!(true);
-            }
-            params.insert(p.name.clone(), s);
-            if p.required {
-                required.push(p.name.clone());
-            }
-        }
-        let input = by_id(&[("params", object_schema(params, required))]);
+        let input = by_id(&[("params", params_schema(&a.params))]);
         let completion = contract
             .completion
             .clone()
