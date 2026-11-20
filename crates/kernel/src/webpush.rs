@@ -365,7 +365,8 @@ impl Kernel {
             .body(sealed)
             .send()
             .await
-            .map_err(|e| Error::Unavailable(format!("push service unreachable: {e}")))?;
+            // Without its address: a device's endpoint is never kept in an error or logged.
+            .map_err(|e| Error::Unavailable(format!("push service unreachable: {}", e.without_url())))?;
         let status = res.status().as_u16();
         match status {
             200..=299 => Ok(()),

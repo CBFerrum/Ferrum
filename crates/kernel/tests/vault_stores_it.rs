@@ -212,6 +212,7 @@ fn channel_input(secret: &str) -> ChannelInput {
         },
         secrets: Some(BTreeMap::from([("inbound".to_string(), secret.to_string())])),
         enabled: true,
+        replace: false,
     }
 }
 
