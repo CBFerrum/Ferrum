@@ -182,6 +182,10 @@ pub struct PermSet {
     /// seen entity everything else here holds as it is; for any other, nothing does.
     #[serde(skip)]
     pub limit: Option<Arc<Limit>>,
+    /// A member's customer self (BD-89): their own records are those that name their address, never those they created
+    /// (as staff).
+    #[serde(skip)]
+    pub own_by_address: bool,
 }
 
 /// What a context reaches in a zone that limits staff to some apps (crate::zones, level 2): the
@@ -498,7 +502,7 @@ impl PermSet {
     /// app's own entities. Field groups only as declared; never administrator power.
     pub fn limited_to(&self, declared: &BTreeMap<String, BTreeSet<String>>, own: &BTreeSet<String>) -> PermSet {
         // A zone's limit holds on whatever is narrowed from it.
-        let mut out = PermSet { limit: self.limit.clone(), ..Default::default() };
+        let mut out = PermSet { limit: self.limit.clone(), own_by_address: self.own_by_address, ..Default::default() };
         let names: BTreeSet<&str> = self.entities.keys().chain(declared.keys()).chain(own).map(String::as_str).chain(["*"]).collect();
         for name in names {
             let decl: BTreeSet<&str> = [name, "*"].into_iter().filter_map(|k| declared.get(k)).flatten().map(String::as_str).collect();
@@ -1146,7 +1150,7 @@ fn scope_of(ctx: &Ctx, ent: &EffEntity, grants: Option<Vec<Grant>>) -> Result<Ro
             grants.push(Grant { owner: true, ..Default::default() });
         }
         if grants.iter().any(|g| g.owner) {
-            scope.owner = Some(ctx.user);
+            scope.owner = (!ctx.perms.own_by_address).then_some(ctx.user);
             scope.owner_email = (!ctx.email.is_empty()).then(|| ctx.email.to_lowercase());
             scope.owner_fields = owner_fields(ctx, ent);
         }

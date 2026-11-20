@@ -354,6 +354,9 @@ impl Catalog {
                 if role.name.trim().is_empty() {
                     return invalid(format!("{name}: role without a name"));
                 }
+                if role.portal_default && !role.portal {
+                    return invalid(format!("{name}: role {}: only a portal role is held by every portal person (portal_default needs portal)", role.name));
+                }
                 if role.visitor && role.portal {
                     return invalid(format!("{name}: role {}: a role is visitor or portal, never both", role.name));
                 }

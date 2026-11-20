@@ -211,7 +211,9 @@ pub fn origin_is_host(headers: &HeaderMap) -> bool {
 
 /// A path to go back to after signing in: on this host, and not a scheme-relative URL.
 pub fn safe_next(next: &str) -> String {
-    let ok = next.starts_with('/') && !next.starts_with("//") && !next.starts_with("/\\") && !next.contains(['\r', '\n']) && next.len() <= 2000;
+    // A browser drops tabs and line breaks in an address and reads `\` as `/`: none of them, nor any space, is let through.
+    let ok =
+        next.starts_with('/') && !next.starts_with("//") && !next.contains(|c: char| c == '\\' || c.is_control() || c.is_whitespace()) && next.len() <= 2000;
     if ok { next.to_string() } else { "/".to_string() }
 }
 
@@ -2387,7 +2389,21 @@ mod tests {
         let c = set_cookie(true, "t", Duration::from_secs(60));
         assert_eq!(c.to_str().unwrap(), "__Host-ferrum=t; Path=/; HttpOnly; SameSite=Lax; Max-Age=60; Secure");
         assert!(!set_cookie(false, "t", Duration::from_secs(60)).to_str().unwrap().contains("Secure"));
-        for (next, want) in [("/crm/deals/4?x=1", "/crm/deals/4?x=1"), ("//evil.com", "/"), ("/\\evil.com", "/"), ("https://evil.com", "/"), ("crm", "/")] {
+        for (next, want) in [
+            ("/crm/deals/4?x=1", "/crm/deals/4?x=1"),
+            ("//evil.com", "/"),
+            ("/\\evil.com", "/"),
+            ("https://evil.com", "/"),
+            ("crm", "/"),
+            ("/\t/evil.example", "/"),
+            ("/\t\\evil.example", "/"),
+            ("/ /evil.example", "/"),
+            ("/\u{b}/evil.example", "/"),
+            ("/a\\b", "/"),
+            ("/\u{a0}/evil.example", "/"),
+            ("/\u{7f}x", "/"),
+            ("/crm/a b", "/"),
+        ] {
             assert_eq!(safe_next(next), want, "{next}");
         }
     }

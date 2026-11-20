@@ -52,6 +52,8 @@ struct TokenSession {
     credential: Credential,
     /// When the browser session behind it last proved who its person is (crates/kernel/src/controls.rs).
     step_up_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The site host a site session works on alone (BD-89).
+    host: Option<String>,
 }
 
 impl TokenSession {
@@ -88,6 +90,9 @@ pub enum Door {
     /// Anywhere else: records, metadata, administration, apps' endpoints, files, the setup routes, sockets, co-editing,
     /// the assistant and shell pages, `/mcp`.
     Elsewhere,
+    /// A site host's own pages and its app's site routes (docs/builder/decisions.md BD-89): a site session alone works
+    /// there, and a site session works nowhere else.
+    Site,
 }
 
 /// A key narrowed to apps or operations, used at `door`: refused anywhere but the capability door.
@@ -105,6 +110,9 @@ fn narrowed_key_at(narrowed: bool, door: Door) -> Result<(), ApiError> {
 /// (a request is; a socket's recheck is not). `door`: where it is used ([`Door`]).
 async fn session_of(st: &crate::state::AppState, token: &str, address: &str, active: bool, door: Door) -> Result<TokenSession, ApiError> {
     if token.starts_with("fk_") {
+        if door == Door::Site {
+            return Err(ApiError(Error::Unauthorized(NOT_A_SITE_SESSION.into())));
+        }
         let (s, scope, narrowed) = st.kernel.api_key_session(token, address).await?;
         narrowed_key_at(narrowed, door)?;
         // Support keys go through like anyone's: the role behind them decides what they reach.
@@ -125,6 +133,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
             records,
             credential: Credential::ApiKey,
             step_up_at: None,
+            host: None,
         });
     }
     let data = st.sessions.validate(token).await.ok_or_else(|| ApiError(Error::Unauthorized("session expired or invalid; please sign in again".into())))?;
@@ -145,9 +154,14 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
     };
     let (sid, bound) = (claim("sid")?, claim("bsid")?);
     st.user_limiter.check_local(&net(address), &format!("{tenant}|{user}"))?;
-    let mut step_up_at = None;
+    let (mut step_up_at, mut host) = (None, None);
     if let Some(device) = sid.or(bound) {
-        step_up_at = st.kernel.check_session_as(tenant, user, device, active).await?.step_up_at;
+        let state = st.kernel.check_session_as(tenant, user, device, active).await?;
+        (step_up_at, host) = (state.step_up_at, state.host);
+    }
+    // A site session works on its site host alone, and nothing else works there (BD-89).
+    if (door == Door::Site) != host.is_some() {
+        return Err(ApiError(Error::Unauthorized(NOT_A_SITE_SESSION.into())));
     }
     let app = match claims.get("app") {
         None => None,
@@ -172,7 +186,24 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
         records: None,
         credential,
         step_up_at,
+        host,
     })
+}
+
+/// Why a session is refused at a door that is not its own (BD-89).
+const NOT_A_SITE_SESSION: &str = "this sign-in works only where it was made; sign in here";
+
+/// The customer a site host's own request comes from (docs/builder/decisions.md BD-89): the browser's site session, on the
+/// host it was opened for and of `tenant`, as its person's customer self. `None` for anyone else (no session, another
+/// kind of session, another host or workspace): a site's pages are public, so this is never an error. `.1`: the session.
+pub async fn site_person(st: &crate::state::AppState, headers: &HeaderMap, tenant: Uuid) -> Option<(Ctx, Uuid)> {
+    let token = crate::shell::session_cookie(headers, st.shell.secure)?;
+    let t = session_of(st, &token, &client_ip(headers), true, Door::Site).await.ok()?;
+    let here = crate::shell::request_host(headers).and_then(ferrum_kernel::shell::normalize_host)?;
+    let sid = t.sid.filter(|_| t.session.tenant == tenant && t.bound.is_none() && t.host.as_deref() == Some(here.as_str()))?;
+    let entry = crate::zone::entry(st, headers, t.credential).await;
+    let ctx = st.kernel.customer_ctx(tenant, t.session.user, Some(t.session.token_version), request_id(headers), Some(&entry)).await.ok()?;
+    Some((ctx, sid))
 }
 
 /// Who a request's credential names, from its token alone (signature and expiry; no database, nothing counted): the

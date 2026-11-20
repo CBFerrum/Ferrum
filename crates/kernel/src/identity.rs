@@ -841,6 +841,17 @@ impl Kernel {
     /// Takes a code minted for this host: the membership to open a session for. The membership
     /// must still be usable and, when an identity carried it, still joined to that identity.
     pub async fn redeem_host_code(&self, code: &str, host: &str) -> Result<Session> {
+        self.redeem_code_of(code, host, &["member"]).await
+    }
+
+    /// [`Kernel::redeem_host_code`] on a site host (docs/builder/decisions.md BD-89): the person a member or a portal
+    /// person, who is a customer there.
+    pub async fn redeem_site_code(&self, code: &str, host: &str) -> Result<Session> {
+        // A portal person's alone: a member of staff holds no site session (BD-89).
+        self.redeem_code_of(code, host, &["portal"]).await
+    }
+
+    async fn redeem_code_of(&self, code: &str, host: &str, kinds: &[&str]) -> Result<Session> {
         let expired = || Error::Unauthorized("this sign-in link has expired or was used; sign in again".into());
         let host = normalize_host(host).ok_or_else(expired)?;
         if code.is_empty() || code.len() > 100 {
@@ -858,11 +869,12 @@ impl Kernel {
             return Err(expired());
         };
         let member: Option<(i32, bool, Option<Uuid>)> = sqlx::query_as(
-            "select u.token_version, u.is_active and u.kind = 'member' and t.status = 'active', u.identity_id \
+            "select u.token_version, u.is_active and u.kind = any($3) and t.status = 'active', u.identity_id \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(tenant)
         .bind(user)
+        .bind(kinds)
         .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -870,6 +882,54 @@ impl Kernel {
             Some((token_version, true, joined)) if identity.is_none() || joined == identity => Ok(Session { tenant, user, token_version }),
             _ => Err(expired()),
         }
+    }
+}
+
+impl Kernel {
+    /// Whether `host` is a live site address of `tenant` (docs/builder/decisions.md BD-89): its target an app's site,
+    /// not released, a subdomain or verified, not forwarding. Only to such a host is a sign-in handed.
+    pub async fn is_site_host_of(&self, tenant: Uuid, host: &str) -> Result<bool> {
+        let Some(host) = normalize_host(host) else { return Ok(false) };
+        let mut tx = self.db.system_tx().await?;
+        let live: bool = sqlx::query_scalar(
+            "select exists (select 1 from tenant_host where host = $1 and tenant_id = $2 and target like 'site:%' and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) and not forward)",
+        )
+        .bind(&host)
+        .bind(tenant)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(live)
+    }
+
+    /// Where a site of `tenant` sends a customer to sign in: its primary live portal address, else its primary live
+    /// workspace address (BD-89).
+    /// The workspace's own address for its staff (a `shell` host), as [`Kernel::sign_in_host`] picks one.
+    pub async fn staff_host(&self, tenant: Uuid) -> Result<Option<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let host = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target = 'shell' and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) and not forward order by is_primary desc, host limit 1",
+        )
+        .bind(tenant)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(host)
+    }
+
+    pub async fn sign_in_host(&self, tenant: Uuid) -> Result<Option<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let host = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target in ('portal', 'shell') and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) and not forward order by target = 'portal' desc, is_primary desc, host limit 1",
+        )
+        .bind(tenant)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(host)
     }
 }
 

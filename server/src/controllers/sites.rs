@@ -145,6 +145,11 @@ pub(crate) async fn respond(
         if matches!(k.to_ascii_lowercase().as_str(), "content-length" | "transfer-encoding" | "connection") {
             continue;
         }
+        // The platform's own cookies (a session, a sign-in's state) are never an app's to set on its host.
+        let cookie = v.split('=').next().unwrap_or_default().trim().to_ascii_lowercase();
+        if k.eq_ignore_ascii_case("set-cookie") && (cookie.starts_with("__host-ferrum") || cookie.starts_with("ferrum_")) {
+            continue;
+        }
         if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {
             resp.headers_mut().append(name, value);
         }
@@ -198,11 +203,49 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
+    let user = site_user(&st, &headers, &method, tenant, Some(&package)).await?;
+    let signed_in = user.is_some();
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
-    let req = request(tenant, None, method, &uri, path, query, &headers, body)?;
+    let req = request(tenant, user, method, &uri, path, query, &headers, body)?;
     let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
     super::system::contain(res.headers_mut());
+    if signed_in {
+        private(res.headers_mut());
+    }
     Ok(res)
+}
+
+/// An answer made for a signed-in customer is that browser's alone, whatever the app said (BD-89): never kept by a
+/// cache for the next visitor.
+pub(crate) fn private(h: &mut axum::http::HeaderMap) {
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private"));
+    h.append(header::VARY, HeaderValue::from_static("Cookie"));
+}
+
+/// The customer a site session makes of this request (docs/builder/decisions.md BD-89): only on a site host of `tenant`,
+/// and only for `package` when it is one of that host's app's packages (another app's routes on the same host see
+/// nobody); a request that changes something must come from the site's own pages.
+pub(crate) async fn site_user(
+    st: &crate::state::AppState,
+    headers: &HeaderMap,
+    method: &Method,
+    tenant: Uuid,
+    package: Option<&str>,
+) -> Result<Option<Ctx>, ApiError> {
+    let Ok(crate::shell::Place::Site(t, app)) = st.shell.place(headers).await else { return Ok(None) };
+    if t != tenant {
+        return Ok(None);
+    }
+    if let Some(p) = package
+        && !st.apps.shell_apps(tenant).await?.iter().any(|a| a.id == app && a.manifest.packages.iter().any(|x| x == p))
+    {
+        return Ok(None);
+    }
+    let Some((ctx, _)) = crate::extract::site_person(st, headers, tenant).await else { return Ok(None) };
+    if !crate::shell::may_change(method, headers) {
+        return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
+    }
+    Ok(Some(ctx))
 }
 
 pub fn routes() -> Routes {

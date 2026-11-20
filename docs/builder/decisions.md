@@ -753,6 +753,9 @@ markup (a body is shown as its text).
 
 ## BD-26. An outside person's session on a site host (design only)
 
+**Superseded by [BD-89](#bd-89-one-customer-account-and-a-session-on-a-site-host)**, which builds it with a sign-in
+handed from the portal instead of a code sign-in on each site.
+
 Decided 12 November 2026 as a design; **not built** in this slice, because doing it safely needs a session kind the
 server does not have yet and a change to how every authenticated request is checked, which is wider than this slice.
 
@@ -2182,6 +2185,47 @@ Decided 19 November 2026.
   collection or read-only actions; a rule naming a collection action carries no record condition.
 * **Not yet served.** Nothing here opens a door; the declarations are checked so that the doors (API-2 onward) only
   honour what passed. Roles saved in a workspace carry no `visitor` flag yet (the role table has no column for it).
+
+## BD-89. One customer account, and a session on a site host
+
+Decided 20 November 2026 (S4-P4). Supersedes BD-26.
+
+**One account.** A customer is the portal person that exists today (`app_user.kind = 'portal'`). An app adds its part
+of the account by shipping a portal role marked `portal_default: true` (`RoleDef.portal_default`; only a portal role
+may be one: the catalog refuses it otherwise, and so does the database, `role_portal_default_is_portal`). Every portal
+person holds such a role without being given it, so a customer who signed up through one app sees what every app's
+customer role reaches. That is safe because a portal role's rules reach only records whose path ends at the person's
+own proven address (BD-02). An administrator sets it with `PUT /api/admin/roles/{role}/portal {portal, portal_default}`
+(`Kernel::set_role_portal_default`, audited); unmarking `portal` clears it. A package's mark is set when its role is
+first installed; after that it is the workspace's: an install, update or re-enable never marks again a role an
+administrator unmarked (it only clears the mark when the package unmarks `portal`). The role list shows it.
+
+**A session on a site host.** A site page links "Sign in" to `/_auth/sign-in?next=…` on its own host. That host keeps a
+state in a cookie of its own (10 minutes) and sends the browser to `/_auth/handoff?host=…&state=…` on the workspace's
+portal host (else its workspace host). There, signed in (the sign-in page comes back to the handoff), the person is sent
+to `https://{host}/_auth/callback?code=…&state=…` with a one-use code bound to that host (`mint_host_code`, a minute,
+only its hash kept), but only when `host` is a live `site:*` address of the same workspace (not released, a subdomain
+or verified, not forwarding); anything else is refused and nothing is minted. The site host's callback takes the code
+once (`update host_code … where used_at is null … returning`) only when the state matches this browser's cookie, and
+opens a session marked with the host (`user_session.host`). The handoff takes the browser's session cookie and
+nothing else (a request with an `Authorization` header is refused); a refused callback spends the code it names.
+
+**Where it works.** `session_of` (server/src/extract.rs) refuses a session with a host at every door but a site's, and
+at a site's door refuses every other credential (API keys, ordinary sessions, page tokens). On the site host it reaches
+the app only on that host's own requests: its pages and `/api/site/{workspace}/{package}/…` where the package is one of
+the host's app's; another app's routes on the same host get nobody. A request there that changes something must come
+from the site's own pages (`may_change`), else 403. The context is the person's customer self
+(`Kernel::customer_ctx`): `outside`, never an administrator, the portal roles alone, so a member who shops is a customer
+there and nothing more: a member's own records there are those that name their address (owner fields, `via`),
+never those they created as staff (`PermSet.own_by_address`). In this release a member of staff holds no site
+session at all: the handoff gives a code only to a portal person and sends a member to the workspace's own address
+(the callback, too, takes a portal person's code alone); members as customers wait for a separate customer identity.
+A role every portal person holds is named by no conflict rule and no `role:` recipient (refused when saved and when
+sent); the evidence pack and a person's data copy list it as `held_by_every_portal_person`. Whether a role is a portal
+role, or one every portal person holds, is changed by an administrator at a screen (`PUT …/portal`); a pack's install
+applies marks as before. An answer to a request carrying a site session is `Cache-Control: private`, `Vary: Cookie`,
+whatever the app set. `POST /_auth/sign-out` on the site ends that session; signing out everywhere ends it too (token
+version).
 
 ## BD-90. A connection's inbound call answered by its app
 

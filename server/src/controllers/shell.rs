@@ -125,6 +125,127 @@ async fn auth_callback(st: &AppState, headers: &HeaderMap, q: &[(String, String)
     Ok(res)
 }
 
+/// `/_auth/sign-in?next=…` on a site host (docs/builder/decisions.md BD-89): on to the workspace's portal host, which
+/// hands the sign-in back to this host; the state this browser keeps here makes sure the one that comes back is it.
+async fn site_sign_in(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(String, String)]) -> ApiResult<Response> {
+    use base64::Engine;
+    let Some(portal) = st.kernel.sign_in_host(tenant).await? else { return Ok(nowhere()) };
+    let state = Uuid::new_v4().simple().to_string();
+    let here = shell::request_host(headers).unwrap_or_default();
+    let next = query(q, "next").unwrap_or("/");
+    let to = format!("{}/_auth/handoff?host={}&state={state}", moved_origin(st, &portal, headers), seg(here));
+    let mut res = Redirect::to(&to).into_response();
+    let kept = format!("{state}.{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(if next.len() > 512 { "/" } else { next }));
+    if let Some(name) = shell::auth_cookie_for(st.shell.secure, &state) {
+        res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(st.shell.secure, &name, &kept, std::time::Duration::from_secs(600)));
+    }
+    Ok(res)
+}
+
+/// `/_auth/handoff?host=…&state=…` on the portal (or workspace) host (BD-89): signed in, the person is sent to `host` with
+/// a one-use code for it, when `host` is a live site address of this workspace; anything else mints nothing.
+async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, String)]) -> ApiResult<Response> {
+    let refused = || {
+        status_page(
+            StatusCode::BAD_REQUEST,
+            "This address is not one of this workspace's",
+            "Nothing was signed in. Go back to the site and try again.",
+            &[],
+            None,
+        )
+    };
+    let (Some(host), Some(state)) = (query(q, "host"), query(q, "state")) else { return Ok(refused()) };
+    if state.is_empty() || state.len() > 64 || !state.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(refused());
+    }
+    // Only the browser's own session cookie: a key or a program's token beside it is refused, never preferred.
+    if headers.contains_key(header::AUTHORIZATION) {
+        return Ok(refused());
+    }
+    // Not signed in here: the sign-in page, which comes back to this address.
+    let (ctx, _, _) = match person(st, headers, uri).await {
+        Ok(p) => p,
+        Err(r) => return Ok(r),
+    };
+    // A member of staff holds no site session (BD-89): sent to the workspace's own address instead, nothing minted.
+    if !ctx.outside {
+        let to = st.kernel.staff_host(ctx.tenant).await?.map(|h| format!("{}/", moved_origin(st, &h, headers))).unwrap_or_else(|| "/".into());
+        return Ok(status_page(
+            StatusCode::FORBIDDEN,
+            "Staff do not sign in on the workspace's sites",
+            &format!("Your account is a staff account: use the workspace at {to}"),
+            &[("Go to the workspace", &to)],
+            None,
+        ));
+    }
+    let Some(host) = ferrum_kernel::shell::normalize_host(host) else { return Ok(refused()) };
+    if !st.kernel.is_site_host_of(ctx.tenant, &host).await? {
+        return Ok(refused());
+    }
+    let session = ferrum_kernel::auth::Session { tenant: ctx.tenant, user: ctx.user, token_version: st.kernel.token_version(ctx.tenant, ctx.user).await? };
+    let code = st.kernel.mint_host_code(&session, None, &host).await?;
+    let mut res = Redirect::to(&format!("{}/_auth/callback?code={}&state={state}", moved_origin(st, &host, headers), seg(&code))).into_response();
+    res.headers_mut().insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
+/// `/_auth/callback?code=…&state=…` on a site host (BD-89): the code the portal minted for this host, taken once, by the
+/// browser that set off from here, becomes a session that works on this host alone, as its person's customer self.
+async fn site_callback(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(String, String)]) -> ApiResult<Response> {
+    use base64::Engine;
+    let secure = st.shell.secure;
+    let name = query(q, "state").and_then(|state| shell::auth_cookie_for(secure, state));
+    let failed = |message: &str| {
+        let mut res = status_page(StatusCode::BAD_REQUEST, "Signing in did not finish", message, &[("Sign in again", "/_auth/sign-in")], None);
+        if let Some(name) = &name {
+            res.headers_mut().append(header::SET_COOKIE, shell::host_cookie(secure, name, "", std::time::Duration::ZERO));
+        }
+        res
+    };
+    let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
+    let kept = name.as_deref().and_then(|n| shell::cookie(headers, n)).unwrap_or_default();
+    let (kept_state, next) = kept.split_once('.').unwrap_or_default();
+    // Only the browser that set off from here comes back; the code is spent either way.
+    if kept_state.is_empty() || !super::system::same_secret(kept_state, state) {
+        let _ = st.kernel.redeem_site_code(code, shell::request_host(headers).unwrap_or_default()).await;
+        return Ok(failed("It took too long, or was started in another browser. Sign in again."));
+    }
+    let next = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(next).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_else(|| "/".into());
+    let host = shell::request_host(headers).unwrap_or_default();
+    let s = match st.kernel.redeem_site_code(code, host).await {
+        Ok(s) if s.tenant == tenant => s,
+        _ => return Ok(failed("The link has expired or was used already. Sign in again.")),
+    };
+    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let ttl = st.shell.session_ttl();
+    st.kernel.record_sign_in(s.tenant, s.user, "signed_in", "site", &crate::zone::arrival(st, headers).await).await?;
+    let sid = st.kernel.open_site_session(&s, ttl, ua, &crate::extract::client_ip(headers), host).await?;
+    let mut res = Redirect::to(&shell::safe_next(&next)).into_response();
+    let h = res.headers_mut();
+    h.append(header::SET_COOKIE, shell::set_cookie(secure, &super::auth::device_token(st, &s, ttl.as_secs(), "sid", sid)?, ttl));
+    if let Some(name) = &name {
+        h.append(header::SET_COOKIE, shell::host_cookie(secure, name, "", std::time::Duration::ZERO));
+    }
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
+/// `POST /_auth/sign-out` on a site host (BD-89): ends this browser's site session there and clears its cookie.
+async fn site_sign_out(st: &AppState, headers: &HeaderMap) -> ApiResult<Response> {
+    let Place::Site(tenant, _) = st.shell.place(headers).await? else { return Ok(StatusCode::NOT_FOUND.into_response()) };
+    if !shell::may_change(&Method::POST, headers) {
+        return Err(ApiError(Error::Forbidden("this request did not come from this site's own pages".into())));
+    }
+    if let Some((_, sid)) = crate::extract::site_person(st, headers, tenant).await {
+        st.kernel.end_session(tenant, sid).await?;
+    }
+    let mut res = Redirect::to("/").into_response();
+    res.headers_mut().append(header::SET_COOKIE, shell::clear_cookie(st.shell.secure));
+    Ok(res)
+}
+
 /// Where a moved address leads: the new host as this request reaches the server, so a server on a port of its own
 /// (a development server, or an installation not on 443) redirects to that port and not to the default one.
 fn moved_origin(st: &AppState, to: &str, headers: &HeaderMap) -> String {
@@ -170,7 +291,7 @@ pub(crate) async fn page_bootstrap(
     let kind = st.shell.kind(ctx.tenant, ctx.user).await.map_err(err)?;
     let state = match device {
         Some(d) => st.kernel.check_session(ctx.tenant, ctx.user, d).await.map_err(err)?,
-        None => ferrum_kernel::shell::SessionState { actor: None, step_up_at: None },
+        None => ferrum_kernel::shell::SessionState { actor: None, step_up_at: None, host: None },
     };
     let host = shell::request_host(headers).unwrap_or_default();
     let mut boot = shell::bootstrap(&ws, host, ctx, &kind, &state, app, kind_of_page);
@@ -504,6 +625,16 @@ async fn page(
         "sw.js" if rest.is_none() => return Ok(core_worker()),
         "manifest.webmanifest" if rest.is_none() => return manifest(&st, &headers, &q).await,
         "login" if rest.is_none() => return login(&st, &headers, &uri, &q).await,
+        // A site's sign-in, handed from the portal (BD-89).
+        "_auth" if matches!(place, Place::Site(..)) => {
+            let Place::Site(tenant, _) = &place else { return Ok(not_found(uri.path())) };
+            return match rest {
+                Some("sign-in") => site_sign_in(&st, &headers, *tenant, &q).await,
+                Some("callback") => site_callback(&st, &headers, *tenant, &q).await,
+                _ => Ok(not_found(uri.path())),
+            };
+        }
+        "_auth" if rest == Some("handoff") => return handoff(&st, &headers, &uri, &q).await,
         "_auth" if rest == Some("callback") => return auth_callback(&st, &headers, &q).await,
         // Browsers ask for it on pages without an icon: the platform's.
         "favicon.ico" if rest.is_none() => return Ok(Redirect::permanent("/_shell/v1/icon.svg").into_response()),
@@ -1000,7 +1131,10 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     let Some((package, site)) = site else {
         return Ok(unavailable(StatusCode::NOT_FOUND, "Nothing is here", "This address has no site yet."));
     };
-    let mut req = super::sites::request(tenant, None, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
+    // A customer signed in on this host (BD-89), as their customer self.
+    let user = super::sites::site_user(st, headers, &Method::GET, tenant, None).await?;
+    let signed_in = user.is_some();
+    let mut req = super::sites::request(tenant, user, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
     let scheme = if st.shell.secure { "https" } else { "http" };
     let host = shell::request_host(headers).unwrap_or_default();
     req.headers.insert("x-ferrum-site-api".into(), json!(format!("/api/site/{}/{package}", ws.slug)));
@@ -1034,6 +1168,9 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
         if !h.contains_key(name) {
             h.insert(name, HeaderValue::from_static(value));
         }
+    }
+    if signed_in {
+        super::sites::private(h);
     }
     Ok(res)
 }
@@ -1672,6 +1809,9 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
 /// A POST to a page: only a published record page's count (controllers/lists.rs, BD-42); anything else is not there.
 async fn page_post(State(app): State<AppContext>, headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    if path == "_auth/sign-out" {
+        return site_sign_out(&st, &headers).await;
+    }
     let Some(("public", rest)) = path.split_once('/') else { return Ok(StatusCode::NOT_FOUND.into_response()) };
     // A host serving one workspace counts only that workspace's pages, as it shows only those.
     let slug = rest.split('/').next().unwrap_or_default().to_lowercase();

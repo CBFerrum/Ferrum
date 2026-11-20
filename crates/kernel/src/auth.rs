@@ -657,6 +657,12 @@ impl Kernel {
     }
 
     async fn load_core(&self, tenant: Uuid, user: Uuid) -> Result<CtxCore> {
+        self.load_core_as(tenant, user, false).await
+    }
+
+    /// [`Kernel::load_core`]; `customer`: the person as a customer whatever their kind (a site session, BD-89): outside,
+    /// never an administrator, the portal roles alone.
+    async fn load_core_as(&self, tenant: Uuid, user: Uuid, customer: bool) -> Result<CtxCore> {
         let schema = self.registry.schema(tenant).await?;
         let mut tx = self.db.tenant_tx(tenant).await?;
         let row: Option<(String, String, bool, bool, i32, serde_json::Value, String, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
@@ -677,15 +683,21 @@ impl Kernel {
         // people also hold the roles marked for the portal (docs/builder/decisions.md BD-02), which
         // reach only their own records; any other role given to them counts for nothing, as every
         // role does for a guest. Neither is ever an administrator.
+        // A member as a customer owns, by their address alone, nothing they made as staff (BD-89).
+        let own_by_address = customer && !matches!(kind.as_str(), "portal" | "guest");
+        let kind = if customer && kind != "guest" { "portal".to_string() } else { kind };
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
         let roles: Vec<(String, Option<DateTime<Utc>>)> =
             match kind.as_str() {
                 "guest" => vec![],
+                // The portal roles given, and those every portal person holds (BD-89).
                 "portal" => {
                     sqlx::query_as(
-                        "select ur.role, ur.expires_at from user_role ur join role r on r.tenant_id = ur.tenant_id and r.name = ur.role \
-                     where ur.tenant_id = $1 and ur.user_id = $2 and r.portal and (ur.expires_at is null or ur.expires_at > now()) order by ur.role",
+                        "select r.name, case when r.portal_default then null else ur.expires_at end from role r \
+                         left join user_role ur on ur.tenant_id = r.tenant_id and ur.role = r.name and ur.user_id = $2 \
+                         where r.tenant_id = $1 and r.portal \
+                           and (r.portal_default or (ur.user_id is not null and (ur.expires_at is null or ur.expires_at > now()))) order by r.name",
                     )
                     .bind(tenant)
                     .bind(user)
@@ -722,7 +734,8 @@ impl Kernel {
                 default_company = Some(*one);
             }
         }
-        let perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        let mut perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        perms.own_by_address = own_by_address;
         let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false, &schema).await?)) } else { None };
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
@@ -791,6 +804,27 @@ impl Kernel {
         admit_network(&core, tenant, user, entry)?;
         let made = if screen { crate::ctx::Made::Screen } else { crate::ctx::Made::Key };
         self.ctx_of(&core, tenant, user, request_id, Some(entry.clone()), made).await
+    }
+
+    /// The context of `user` as a customer (a site session, docs/builder/decisions.md BD-89): loaded as if a portal person
+    /// whatever their kind, so a member who shops is a customer there, nothing more; a person at a screen. Within `entry`
+    /// when a request made it. A portal person's comes from the cache; anyone else's is read for the request.
+    pub async fn customer_ctx(
+        &self,
+        tenant: Uuid,
+        user: Uuid,
+        token_version: Option<i32>,
+        request_id: String,
+        entry: Option<&Arc<crate::zones::Entry>>,
+    ) -> Result<Ctx> {
+        crate::sandbox::serving(tenant);
+        let mut core = self.core(tenant, user, token_version).await?;
+        // ponytail: a member's customer self is read for each request (members who shop are few); a cache of its own
+        // if that shows.
+        if core.kind != "portal" {
+            core = Arc::new(self.load_core_as(tenant, user, true).await?);
+        }
+        self.ctx_of(&core, tenant, user, request_id, entry.cloned(), crate::ctx::Made::Screen).await
     }
 
     /// Builds the context of `user` for work a request queued in zone `zone` (`None`: from inside, no
@@ -1170,6 +1204,13 @@ impl Kernel {
     pub async fn set_role_conflict(&self, ctx: &Ctx, a: &str, b: &str, reason: &str) -> Result<()> {
         Self::require_admin(ctx)?;
         let (a, b, reason) = (a.trim(), b.trim(), reason.trim());
+        {
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            for r in [a, b] {
+                not_held_by_every_portal_person(&mut tx, ctx.tenant, r, "a conflict rule").await?;
+            }
+            tx.commit().await?;
+        }
         if a == b {
             return Err(Error::field("role_b", "a role is never in conflict with itself"));
         }
@@ -1229,7 +1270,7 @@ impl Kernel {
     /// Drops a person's cached context and their cached browser sessions (a step-up, a sign-out).
     pub fn invalidate_user(&self, tenant: Uuid, user: Uuid) {
         self.users.remove(&(tenant, user));
-        self.sessions.retain(|k, v| k.0 != tenant || v.0.is_some_and(|(owner, _)| owner != user));
+        self.sessions.retain(|k, v| k.0 != tenant || v.0.as_ref().is_some_and(|(owner, _)| *owner != user));
     }
 
     pub fn invalidate_tenant_users(&self, tenant: Uuid) {
@@ -1604,7 +1645,49 @@ impl Kernel {
                 return Err(Error::field("portal", format!("its rules must change first: {}", problems.join("; "))));
             }
         }
-        sqlx::query("update role set portal = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(portal).execute(&mut **tx).await?;
+        // Unmarked, it is no longer held by every portal person either.
+        sqlx::query("update role set portal = $3, portal_default = portal_default and $3 where tenant_id = $1 and name = $2")
+            .bind(ctx.tenant)
+            .bind(role)
+            .bind(portal)
+            .execute(&mut **tx)
+            .await?;
+        notify_users(tx, ctx.tenant, None).await
+    }
+
+    /// Makes a portal role one every portal person holds without being given it, or not (docs/builder/decisions.md
+    /// BD-89). Administrators only; refused for a role that is not a portal role.
+    pub async fn set_role_portal_default(&self, ctx: &Ctx, role: &str, on: bool) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.set_role_portal_default_in(ctx, &mut tx, role, on).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
+    }
+
+    /// [`Kernel::set_role_portal_default`] in the caller's transaction (a pack's install).
+    pub(crate) async fn set_role_portal_default_in(&self, ctx: &Ctx, tx: &mut Tx, role: &str, on: bool) -> Result<()> {
+        Self::require_admin(ctx)?;
+        let portal: Option<bool> = sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2 for update")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_optional(&mut **tx)
+            .await?;
+        match portal {
+            None => return Err(Error::NotFound(format!("role {role}"))),
+            Some(false) if on => return Err(Error::field("portal_default", "only a portal role is held by every portal person")),
+            _ => {}
+        }
+        let in_conflict: bool = sqlx::query_scalar("select exists (select 1 from role_conflict where tenant_id = $1 and $2 in (role_a, role_b))")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_one(&mut **tx)
+            .await?;
+        if on && in_conflict {
+            return Err(Error::field("portal_default", "a conflict rule names this role, and no conflict rule names one every portal person holds"));
+        }
+        sqlx::query("update role set portal_default = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(on).execute(&mut **tx).await?;
+        crate::audit::record_admin(tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": on})).await?;
         notify_users(tx, ctx.tenant, None).await
     }
 }
@@ -1686,6 +1769,17 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(told)
+    }
+}
+
+/// Refused when `role` is one every portal person holds (BD-89): `what` (a conflict rule, a recipient) never names one,
+/// since who holds it is never written down person by person.
+pub(crate) async fn not_held_by_every_portal_person(tx: &mut Tx, tenant: Uuid, role: &str, what: &str) -> Result<()> {
+    let default: Option<bool> =
+        sqlx::query_scalar("select portal_default from role where tenant_id = $1 and name = $2").bind(tenant).bind(role).fetch_optional(&mut **tx).await?;
+    match default {
+        Some(true) => Err(Error::invalid(format!("{what} may not name {role}: it is held by every portal person"))),
+        _ => Ok(()),
     }
 }
 

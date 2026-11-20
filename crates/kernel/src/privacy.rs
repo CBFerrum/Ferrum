@@ -730,7 +730,9 @@ impl Kernel {
         let account: Option<Value> = sqlx::query_scalar(
             "select jsonb_build_object('id', id, 'email', email, 'full_name', full_name, 'is_active', is_active, 'is_admin', is_admin, \
                'created_at', created_at, 'last_login_at', last_login_at, \
-               'roles', coalesce((select jsonb_agg(role order by role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb)) \
+               'roles', coalesce((select jsonb_agg(role order by role) from user_role r where r.tenant_id = u.tenant_id and r.user_id = u.id), '[]'::jsonb), \
+               'held_by_every_portal_person', coalesce((select jsonb_agg(d.name order by d.name) from role d \
+                 where d.tenant_id = u.tenant_id and d.portal and d.portal_default and u.kind = 'portal'), '[]'::jsonb)) \
              from app_user u where tenant_id = $1 and lower(email::text) = any($2)",
         )
         .bind(ctx.tenant)
