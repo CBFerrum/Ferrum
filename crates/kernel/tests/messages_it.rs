@@ -101,12 +101,17 @@ fn to(phone: &str) -> Vec<Recipient> {
 
 /// A provider: answers each request with the next of `answers` (status, body) and keeps what it was sent.
 async fn provider(answers: Arc<Mutex<Vec<(u16, String)>>>, seen: Arc<Mutex<Vec<String>>>) -> u16 {
+    gated_provider(answers, seen, None).await
+}
+
+/// [`provider`], answering each request only once `gate` gives a permit.
+async fn gated_provider(answers: Arc<Mutex<Vec<(u16, String)>>>, seen: Arc<Mutex<Vec<String>>>, gate: Option<Arc<tokio::sync::Semaphore>>) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         loop {
             let Ok((mut s, _)) = listener.accept().await else { return };
-            let (answers, seen) = (answers.clone(), seen.clone());
+            let (answers, seen, gate) = (answers.clone(), seen.clone(), gate.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -128,6 +133,9 @@ async fn provider(answers: Arc<Mutex<Vec<(u16, String)>>>, seen: Arc<Mutex<Vec<S
                     }
                 }
                 seen.lock().unwrap().push(String::from_utf8_lossy(&buf).to_string());
+                if let Some(gate) = gate {
+                    gate.acquire().await.unwrap().forget();
+                }
                 let (status, body) = answers.lock().unwrap().remove(0);
                 let reply =
                     format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
@@ -167,6 +175,201 @@ fn a_temporary_refusal_keeps_no_secret_value() {
 #[test]
 fn a_mail_servers_refusal_names_no_recipient() {
     run(mail_refusal());
+}
+
+#[test]
+fn a_channel_request_carries_the_send_kept_text_and_category_on_every_attempt() {
+    run(request_variables());
+}
+
+#[test]
+fn a_report_naming_the_send_moves_it_before_the_delivery_settles() {
+    run(report_before_settle());
+}
+
+#[test]
+fn settle_never_moves_a_send_backward() {
+    run(settle_forward());
+}
+
+#[test]
+fn a_simulated_answer_or_report_marks_the_send_simulated() {
+    run(simulated_marks());
+}
+
+#[test]
+fn a_simulated_stop_records_its_source() {
+    run(simulated_stop());
+}
+
+#[test]
+fn a_provider_app_reads_the_workspaces_rules_the_platforms_way() {
+    run(public_reads());
+}
+
+/// The reads TP-0 makes public: the `messages` setting, quiet hours, and the marks an erased opt-out is kept under.
+async fn public_reads() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    let now = chrono::Utc::now();
+    let quiet =
+        json!({"from": (now - chrono::Duration::hours(1)).format("%H:%M").to_string(), "to": (now + chrono::Duration::hours(1)).format("%H:%M").to_string()});
+    k.update_tenant_settings(&admin, json!({"messages": {"calling_code": "+49", "quiet_hours": quiet}}).as_object().unwrap()).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let (cfg, _) = k.message_settings(&mut tx, admin.tenant).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(cfg.calling_code.as_deref(), Some("+49"));
+    assert!(messages::quiet_for(cfg.quiet_hours.as_ref(), "UTC", now).is_some_and(|s| s > 0 && s <= 3600), "inside the workspace's quiet hours");
+    assert!(messages::quiet_for(None, "UTC", now).is_none());
+    let mark = k.erased_mark(admin.tenant, "text", "+491701234567").await.unwrap();
+    assert!(mark.starts_with("erased:v") && !mark.contains("1701234567"), "{mark}");
+    assert!(k.erased_marks(admin.tenant, "text", "+491701234567").await.unwrap().contains(&mark), "the current mark is among those checked");
+}
+
+/// A provider channel as the Telecom app describes one (TP-0): the platform's send, the kept text and the category in
+/// the request; reports and replies naming the send, marked simulated.
+async fn provider_channel(answers: Vec<(u16, String)>, gate: Option<Arc<tokio::sync::Semaphore>>) -> (Arc<Kernel>, Ctx, uuid::Uuid, Arc<Mutex<Vec<String>>>) {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    k.update_tenant_settings(&admin, json!({"messages": {"calling_code": "+49", "trunk_prefix": "0"}}).as_object().unwrap()).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let port = gated_provider(Arc::new(Mutex::new(answers)), seen.clone(), gate).await;
+    let channel: ChannelInput = serde_json::from_value(json!({
+        "kind": "text",
+        "name": "Telecom",
+        "description": {
+            "url": format!("http://127.0.0.1:{port}/send"),
+            "body": r#"{"send": {{ send|json }}, "to": {{ to|json }}, "text": {{ text|json }}, "kept": {{ kept|json }}, "promotional": {{ promotional|json }}}"#,
+            "id_at": "/id",
+            "error_at": "/error",
+            "simulated_at": "/simulated",
+            "inbound": {"auth": "token", "header": "x-token", "secret": "hook", "send_at": "/send", "id_at": "/id", "status_at": "/state",
+                        "statuses": {"Sent": "sent", "Delivered": "delivered", "Undelivered": "failed"}, "error_at": "/error",
+                        "simulated_at": "/simulated", "from_at": "/from", "text_at": "/text", "stop": ["STOP"], "start": ["START"]}
+        },
+        "secrets": {"hook": "h00k-h00k"}
+    }))
+    .unwrap();
+    let id = k.save_message_channel(&admin, None, &channel).await.unwrap();
+    (k, admin, id, seen)
+}
+
+/// A report or reply to the channel, signed with its token.
+async fn report(k: &Kernel, channel: uuid::Uuid, body: Value) -> ferrum_kernel::Result<Value> {
+    let headers = BTreeMap::from([("x-token".to_string(), "h00k-h00k".to_string())]);
+    k.message_inbound(channel, &headers, &BTreeMap::new(), body.to_string().as_bytes()).await
+}
+
+/// The JSON body of a request the provider was sent.
+fn body_of(request: &str) -> Value {
+    serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap_or_default()).unwrap_or(Value::Null)
+}
+
+fn code_message(code: &str) -> Message {
+    Message {
+        template: "notes.code".into(),
+        to: to("0170 1234567"),
+        channels: vec!["text".into()],
+        values: serde_json::Map::from_iter([("code".to_string(), json!(code))]),
+        secret: vec!["code".into()],
+        ..Default::default()
+    }
+}
+
+async fn request_variables() {
+    let (k, admin, _, seen) = provider_channel(vec![(503, r#"{"error": "busy"}"#.into()), (200, r#"{"id": "m1"}"#.into())], None).await;
+    let s = send(&k, &admin, code_message("482913")).await;
+    run_jobs(&k).await;
+    run_jobs(&k).await;
+    assert_eq!(row(&k, &admin, s[0].id).await["state"], "sent");
+    let sent: Vec<Value> = seen.lock().unwrap().iter().map(|r| body_of(r)).collect();
+    assert_eq!(sent.len(), 2, "tried twice: {sent:?}");
+    for b in &sent {
+        assert_eq!(b["send"], json!(s[0].id), "the same send on every attempt: {b}");
+        assert_eq!(b["text"], "Your code is 482913", "what goes out: {b}");
+        assert_eq!(b["kept"]["text"], "Your code is ••••••", "the kept text, the code as dots: {b}");
+        // `values` is a chat template's parameters: a text message has none.
+        assert_eq!((b["kept"]["template_name"].clone(), b["kept"]["values"].clone()), (Value::Null, Value::Null), "{b}");
+        assert_eq!(b["promotional"], json!(false), "{b}");
+    }
+}
+
+async fn report_before_settle() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (k, admin, channel, seen) = provider_channel(vec![(200, r#"{"id": "m7"}"#.into())], Some(gate.clone())).await;
+    let s = send(&k, &admin, code_message("111222")).await;
+    let job = tokio::spawn({
+        let k = k.clone();
+        async move { run_jobs(&k).await }
+    });
+    while seen.lock().unwrap().is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // The provider took it and reports before its answer reaches the platform.
+    let r = report(&k, channel, json!({"send": s[0].id, "id": "m7", "state": "Delivered"})).await.unwrap();
+    assert_eq!(r, json!({"updated": 1}), "the report names the send, not yet its provider id");
+    gate.add_permits(1);
+    job.await.unwrap();
+    let r = row(&k, &admin, s[0].id).await;
+    assert_eq!((r["state"].clone(), r["provider_id"].clone(), r["pending"].clone()), (json!("delivered"), json!("m7"), Value::Null), "{r}");
+}
+
+async fn settle_forward() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let answers = vec![(200, r#"{"id": "m8"}"#.into()), (400, r#"{"error": "refused"}"#.into())];
+    let (k, admin, _, seen) = provider_channel(answers, Some(gate.clone())).await;
+    for (n, expect_id) in [(1usize, json!("m8")), (2, Value::Null)] {
+        let s = send(&k, &admin, code_message("333444")).await;
+        let job = tokio::spawn({
+            let k = k.clone();
+            async move { run_jobs(&k).await }
+        });
+        while seen.lock().unwrap().len() < n {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query("update message_send set state = 'delivered' where id = $1").bind(s[0].id).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        gate.add_permits(1);
+        job.await.unwrap();
+        let r = row(&k, &admin, s[0].id).await;
+        assert_eq!(r["state"], "delivered", "an answer ({n}) settles after a report: the send stays delivered: {r}");
+        assert_eq!((r["provider_id"].clone(), r["pending"].clone()), (expect_id, Value::Null), "{r}");
+    }
+}
+
+async fn simulated_marks() {
+    let answers = vec![(200, r#"{"id": "a", "simulated": true}"#.into()), (200, r#"{"id": "b"}"#.into()), (200, r#"{"id": "c"}"#.into())];
+    let (k, admin, channel, _) = provider_channel(answers, None).await;
+    let mut ids = vec![];
+    for _ in 0..3 {
+        ids.push(send(&k, &admin, code_message("555666")).await[0].id);
+        run_jobs(&k).await;
+    }
+    report(&k, channel, json!({"send": ids[1], "id": "b", "state": "Delivered", "simulated": true})).await.unwrap();
+    report(&k, channel, json!({"send": ids[2], "id": "c", "state": "Delivered"})).await.unwrap();
+    let log = k.message_log(&admin, None, Some("+491701234567"), 10).await.unwrap();
+    let simulated = |id: uuid::Uuid| log.iter().find(|l| l["id"] == json!(id)).map(|l| l["simulated"].clone());
+    assert_eq!(
+        ids.iter().map(|i| simulated(*i)).collect::<Vec<_>>(),
+        vec![Some(json!(true)), Some(json!(true)), Some(json!(false))],
+        "by its answer, by its report, neither: {log:?}"
+    );
+}
+
+async fn simulated_stop() {
+    let (k, admin, channel, _) = provider_channel(vec![], None).await;
+    report(&k, channel, json!({"from": "+491701234567", "text": "STOP", "simulated": true})).await.unwrap();
+    report(&k, channel, json!({"from": "+491709999999", "text": "STOP"})).await.unwrap();
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let sources: Vec<(String, String)> = sqlx::query_as("select email::text, source from contact_consent where tenant_id = $1 order by email")
+        .bind(admin.tenant)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        sources,
+        vec![("+491701234567".to_string(), "a simulated reply".to_string()), ("+491709999999".to_string(), "a reply to a message".to_string())]
+    );
 }
 
 /// An empty database, the vault open, a workspace with the notes package and its administrator.

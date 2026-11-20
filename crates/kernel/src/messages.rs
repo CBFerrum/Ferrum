@@ -140,8 +140,9 @@ pub(crate) async fn workspace(tx: &mut Tx, tenant: Uuid) -> Result<(Settings, Op
     Ok((s.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(), language))
 }
 
-/// Seconds until quiet hours end, when `now` is in them where the recipient is (`zone`, else the workspace's).
-fn quiet_for(q: Option<&QuietHours>, zone: &str, now: DateTime<Utc>) -> Option<u64> {
+/// Seconds until quiet hours end, when `now` is in them where the recipient is (`zone`, else the workspace's). Public so
+/// an app that sends by its own transport keeps the workspace's quiet hours the platform's way.
+pub fn quiet_for(q: Option<&QuietHours>, zone: &str, now: DateTime<Utc>) -> Option<u64> {
     let q = q?;
     let (from, to) = (clock(&q.from)?, clock(&q.to)?);
     let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
@@ -830,8 +831,19 @@ impl Kernel {
         opted_out(tx, tenant, address, channel, &self.erased_marks(tenant, channel, address).await?).await
     }
 
+    /// The workspace's `messages` setting and language, as the platform reads them before a send.
+    pub async fn message_settings(&self, tx: &mut Tx, tenant: Uuid) -> Result<(Settings, Option<String>)> {
+        workspace(tx, tenant).await
+    }
+
+    /// The mark an erased opt-out of `address` on `channel` is kept under now (the current key's).
+    pub async fn erased_mark(&self, tenant: Uuid, channel: &str, address: &str) -> Result<String> {
+        let (version, key) = self.making_key(Scope::Workspace(tenant), Keyed::ErasedOptOut).await?;
+        Ok(erased_mark(version, &key, tenant, channel, address))
+    }
+
     /// The marks an erased opt-out of `address` on `channel` may carry: under each key that may have made one.
-    pub(crate) async fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Result<Vec<String>> {
+    pub async fn erased_marks(&self, tenant: Uuid, channel: &str, address: &str) -> Result<Vec<String>> {
         let keys = self.checking_keys(Scope::Workspace(tenant), Keyed::ErasedOptOut).await?;
         Ok(keys.iter().map(|(v, k)| erased_mark(*v, k, tenant, channel, address)).collect())
     }
@@ -1253,6 +1265,9 @@ pub struct ChannelDesc {
     pub error_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary: Option<Vec<u16>>,
+    /// Where an answer says the message was simulated (`true`): the send is marked so, never back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inbound: Option<Inbound>,
 }
@@ -1285,6 +1300,14 @@ pub struct Inbound {
     pub stop: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub start: Vec<String>,
+    /// Where a report names the platform's own send (the request's `send`): applied to that send of this channel, whether
+    /// or not the provider's id is recorded yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_at: Option<String>,
+    /// Where a report or a reply says it was simulated (`true`): the send is marked so; a stop or start word is recorded
+    /// as "a simulated reply".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulated_at: Option<String>,
 }
 
 impl ChannelDesc {
@@ -1308,7 +1331,8 @@ impl ChannelDesc {
                 }
             }
         }
-        for p in [&self.id_at, &self.error_at].into_iter().flatten() {
+        let inbound = self.inbound.iter().flat_map(|i| [&i.send_at, &i.simulated_at]);
+        for p in [&self.id_at, &self.error_at, &self.simulated_at].into_iter().chain(inbound).flatten() {
             if !p.starts_with('/') {
                 return Some(format!("{p} is not a JSON pointer (/a/0/b)"));
             }
@@ -1408,11 +1432,24 @@ pub(crate) fn handler(kind: &str) -> Option<Arc<dyn JobHandler>> {
 }
 
 impl Kernel {
-    async fn settle(&self, tenant: Uuid, id: Uuid, state: &str, provider: Option<&str>, error: Option<&str>, content: Option<Value>) -> Result<()> {
+    /// The send as its delivery ended. Forward only: a report applied meanwhile (moving it on from `queued` or `held`)
+    /// keeps its state and error; the provider's id is added whatever the state, and `simulated` is never taken back.
+    #[allow(clippy::too_many_arguments)]
+    async fn settle(
+        &self,
+        tenant: Uuid,
+        id: Uuid,
+        state: &str,
+        provider: Option<&str>,
+        error: Option<&str>,
+        content: Option<Value>,
+        simulated: bool,
+    ) -> Result<()> {
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         sqlx::query(
-            "update message_send set state = $3, provider_id = coalesce($4, provider_id), error = $5, content = coalesce($6, content), pending = null, updated_at = now() \
-             where tenant_id = $1 and id = $2",
+            "update message_send set state = case when state in ('queued', 'held') then $3 else state end, provider_id = coalesce(provider_id, $4), \
+             error = case when state in ('queued', 'held') then $5 else error end, content = coalesce($6, content), pending = null, \
+             simulated = simulated or $7, updated_at = now() where tenant_id = $1 and id = $2",
         )
         .bind(tenant)
         .bind(id)
@@ -1420,6 +1457,7 @@ impl Kernel {
         .bind(provider)
         .bind(error.map(|e| e.chars().take(1000).collect::<String>()))
         .bind(content)
+        .bind(simulated)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1437,7 +1475,16 @@ impl Kernel {
                 .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some((Some(pending), channel_id, kind)) = row else { return Ok(json!({"done": "already"})) };
+        let Some((Some(pending), channel_id, kind)) = row else {
+            // Moved on by a report while its answer was awaited: what waited to go is kept no longer.
+            sqlx::query("update message_send set pending = null where tenant_id = $1 and id = $2 and state not in ('queued', 'held')")
+                .bind(tenant)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(json!({"done": "already"}));
+        };
         let (cfg, _) = workspace(&mut tx, tenant).await?;
         if pending["promotional"] == json!(true)
             && let Some(secs) = quiet_for(cfg.quiet_hours.as_ref(), pending["zone"].as_str().unwrap_or("UTC"), Utc::now())
@@ -1459,7 +1506,7 @@ impl Kernel {
                 .await?;
         tx.commit().await?;
         let Some((desc, has_secrets)) = channel else {
-            self.settle(tenant, id, "failed", None, Some("the channel was removed or turned off"), None).await?;
+            self.settle(tenant, id, "failed", None, Some("the channel was removed or turned off"), None, false).await?;
             return Ok(json!({"failed": "no channel"}));
         };
         let desc: ChannelDesc = serde_json::from_value(desc).map_err(Error::internal)?;
@@ -1481,7 +1528,7 @@ impl Kernel {
                 }
                 sink.push((tenant, to.to_string(), message.clone()));
             }
-            self.settle(tenant, id, "delivered", Some(&format!("test-{id}")), None, Some(json!({"to": to, "message": content}))).await?;
+            self.settle(tenant, id, "delivered", Some(&format!("test-{id}")), None, Some(json!({"to": to, "message": content})), false).await?;
             return Ok(json!({"delivered": "test"}));
         }
         let secrets: Value = match has_secrets {
@@ -1490,6 +1537,8 @@ impl Kernel {
         };
         // What an answer or an error may echo is kept and logged as dots: the message's secret values, the channel's own
         // secrets and the recipient's number (TP-S1).
+        // The message as the platform keeps it, each secret value as dots: what a provider app may store (TP-0).
+        let kept = masked(&json!({"text": message["text"], "template_name": message["template_name"], "values": message["values"]}), &mask);
         let mut mask = mask;
         let echoed: Vec<String> = secrets
             .as_object()
@@ -1504,7 +1553,8 @@ impl Kernel {
         mask.sort_by_key(|m| std::cmp::Reverse(m.len()));
         let hide = |s: String| masked(&Value::String(s), &mask).as_str().unwrap_or_default().to_string();
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
-                          "from": desc.from, "secret": secrets, "language": pending["language"]});
+                          "from": desc.from, "secret": secrets, "language": pending["language"],
+                          "send": id, "kept": kept, "promotional": pending["promotional"] == json!(true)});
         let r = |s: &str| render(s, false, &vars, false);
         // The described call goes through the connections' guard (BD-29): the address checked hop by hop, a time and size limit.
         let outcome = async {
@@ -1532,7 +1582,8 @@ impl Kernel {
         let last = job.attempts >= job.max_attempts;
         match outcome {
             Ok((status, answer)) if (200..300).contains(&status) => {
-                self.settle(tenant, id, "sent", at(&answer, desc.id_at.as_deref()).as_deref(), None, None).await?;
+                let simulated = at(&answer, desc.simulated_at.as_deref()).is_some_and(|v| v == "true");
+                self.settle(tenant, id, "sent", at(&answer, desc.id_at.as_deref()).as_deref(), None, None, simulated).await?;
                 Ok(json!({"sent": status}))
             }
             Ok((status, answer)) if temporary.contains(&status) && !last => {
@@ -1541,13 +1592,13 @@ impl Kernel {
             Ok((status, answer)) => {
                 let why =
                     hide(format!("{status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_else(|| answer.to_string().chars().take(300).collect())));
-                self.settle(tenant, id, "failed", None, Some(&why), None).await?;
+                self.settle(tenant, id, "failed", None, Some(&why), None, false).await?;
                 Ok(json!({"failed": status}))
             }
             Err(Error::Unavailable(m)) if !last => Err(Error::Unavailable(hide(m))),
             Err(e) => {
                 let why = hide(e.to_string());
-                self.settle(tenant, id, "failed", None, Some(&why), None).await?;
+                self.settle(tenant, id, "failed", None, Some(&why), None, false).await?;
                 Ok(json!({"failed": why}))
             }
         }
@@ -1685,25 +1736,38 @@ impl Kernel {
         };
         let mut tx = self.db.system_tenant_tx(tenant).await?;
         let status = at(&said, inbound.status_at.as_deref());
-        if let (Some(provider_id), Some(status)) = (at(&said, inbound.id_at.as_deref()), status) {
+        let provider_id = at(&said, inbound.id_at.as_deref());
+        let send = at(&said, inbound.send_at.as_deref()).and_then(|s| s.parse::<Uuid>().ok());
+        let simulated = at(&said, inbound.simulated_at.as_deref()).is_some_and(|v| v == "true");
+        if let Some(status) = status
+            && (send.is_some() || provider_id.is_some())
+        {
             let Some(state) = inbound.statuses.get(&status) else {
                 tx.commit().await?;
                 return Ok(json!({"ignored": status}));
             };
-            // Forward only: a late "sent" does not undo "delivered"; a failure is final.
-            let n = sqlx::query(
-                "update message_send set state = $4, error = coalesce($5, error), updated_at = now() where tenant_id = $1 and channel_id = $2 and provider_id = $3 \
-                 and state not in ('failed', 'skipped') and (case state when 'delivered' then 3 when 'sent' then 2 else 1 end) < (case $4 when 'sent' then 2 else 3 end)",
+            // Forward only: a late "sent" does not undo "delivered"; a failure is final. The send it names (else the one
+            // with its provider's id) takes the provider's id and the simulated mark whether or not it moves.
+            let moved: Vec<bool> = sqlx::query_scalar(
+                "with o as (select id, state not in ('failed', 'skipped') \
+                   and (case state when 'delivered' then 3 when 'sent' then 2 else 1 end) < (case $4 when 'sent' then 2 else 3 end) as forward \
+                   from message_send where tenant_id = $1 and channel_id = $2 and (id = $3 or ($3::uuid is null and provider_id = $6)) for update) \
+                 update message_send s set state = case when o.forward then $4 else s.state end, \
+                   error = case when o.forward then coalesce($5, s.error) else s.error end, provider_id = coalesce(s.provider_id, $6), \
+                   simulated = s.simulated or $7, updated_at = now() \
+                 from o where s.tenant_id = $1 and s.id = o.id returning o.forward",
             )
             .bind(tenant)
             .bind(channel)
-            .bind(&provider_id)
+            .bind(send)
             .bind(state)
             .bind(at(&said, inbound.error_at.as_deref()))
-            .execute(&mut *tx)
+            .bind(&provider_id)
+            .bind(simulated)
+            .fetch_all(&mut *tx)
             .await?;
             tx.commit().await?;
-            return Ok(json!({"updated": n.rows_affected()}));
+            return Ok(json!({"updated": moved.iter().filter(|m| **m).count()}));
         }
         if let (Some(from), Some(text)) = (at(&said, inbound.from_at.as_deref()), at(&said, inbound.text_at.as_deref())) {
             let (cfg, _) = workspace(&mut tx, tenant).await?;
@@ -1731,7 +1795,8 @@ impl Kernel {
                     tx.rollback().await?;
                     return refuse().await;
                 }
-                record_choice(&mut tx, tenant, None, &number, &kind, granted, "a reply to a message").await?;
+                let source = if simulated { "a simulated reply" } else { "a reply to a message" };
+                record_choice(&mut tx, tenant, None, &number, &kind, granted, source).await?;
             }
             tx.commit().await?;
             return Ok(json!({"reply": true, "opted_in": choice}));
@@ -1980,7 +2045,7 @@ impl Kernel {
     pub async fn message_log(&self, ctx: &Ctx, record: Option<(&str, Uuid)>, recipient: Option<&str>, limit: i64) -> Result<Vec<Value>> {
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let cols = "jsonb_build_object('id', id, 'template', template, 'channel', channel, 'recipient', recipient, 'user_id', user_id, 'entity', entity, \
-                    'record_id', record_id, 'language', language, 'state', state, 'reason', reason, 'provider_id', provider_id, 'error', error, 'content', content, \
+                    'record_id', record_id, 'language', language, 'state', state, 'reason', reason, 'provider_id', provider_id, 'error', error, 'content', content, 'simulated', simulated, \
                     'created_at', created_at, 'updated_at', updated_at)";
         let rows = match (record, recipient) {
             (Some((entity, id)), _) => {
