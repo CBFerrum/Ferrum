@@ -122,8 +122,15 @@ fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
             return false;
         }
     }
+    // A rule naming the action lets its holder run it, whatever the action's own permission asks (BD-02, A11 D1), as on
+    // the records path (`ctx::action_scope`); the action's roles still apply.
+    let named = match (&cap.operation, cap.entity.as_deref()) {
+        (Operation::Action(name), Some(entity)) => ctx.perms.action_grants(entity, name).is_some(),
+        _ => false,
+    };
     cap.permissions.iter().all(|p| match p.split_once(':') {
         Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
+        Some((entity, _)) if named && cap.entity.as_deref() == Some(entity) => true,
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),
         None => p == "admin" && (ctx.is_admin || granted),
     })
@@ -485,7 +492,8 @@ impl Kernel {
         let actions = [Action::Read, Action::Write, Action::Create, Action::Delete, Action::Submit, Action::Cancel];
         let mut out: Vec<Capability> = platform_capabilities();
         for ent in ctx.schema.entities.values() {
-            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) {
+            // An entity reached only through an action a rule names is listed too: its other operations are filtered out.
+            if actions.iter().any(|a| ctx.perms.access(&ent.def.name, *a) != Access::None) || !ctx.perms.named_actions(&ent.def.name).is_empty() {
                 out.extend(entity_capabilities(self, ctx, ent));
             }
         }
