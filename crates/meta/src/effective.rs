@@ -459,6 +459,13 @@ pub fn replaced_value(e: &EffEntity, op: &OverlayOp) -> Option<Value> {
 pub(crate) fn apply_op(def: &mut EntityDef, op: &OverlayOp, source: OverlaySource) -> Result<Option<String>, String> {
     match op {
         OverlayOp::AddAction { action } => {
+            if source == OverlaySource::Tenant
+                && action.contract.as_ref().is_some_and(|c| {
+                    c.audience != crate::api::Audience::Staff || !c.rate.is_empty() || c.guard.is_some() || c.handle.is_some() || !c.refusals.is_empty()
+                })
+            {
+                return Err(format!("action {}: a workspace's action faces its staff only: no audience, rate, guard, handle or refusals", action.name));
+            }
             if source == OverlaySource::Tenant && action.effects.is_empty() {
                 return Err(format!(
                     "action {}: a workspace's action says what it does (effects); one without effects needs code behind it, which only packages add",
