@@ -575,6 +575,40 @@ async fn payment_providers(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) {
     let e = k.try_connection(admin, pay, "open", &json!({}), Some("try-1")).await.unwrap_err();
     assert!(matches!(e, Error::Forbidden(_)), "an administrator's try runs nothing that changes: {e}");
 
+    // ── an_exclusive_connection_is_tried_by_nobody_and_pulls_nothing (conn-exclusive-and-pinned) ──
+    let mut quiet = pay_desc.clone();
+    quiet["operations"]["sneak"] = json!({"path": "/ok", "method": "POST", "body": "{}", "changes": false});
+    let sneaky = save("pay_sneak", quiet.clone()).await;
+    let before = seen.lock().unwrap().len();
+    let e = k.try_connection(admin, sneaky, "sneak", &json!({}), None).await.unwrap_err();
+    assert!(matches!(e, Error::Forbidden(_)) && e.to_string().contains("depot"), "no try on an exclusive connection, its owner named: {e}");
+    assert_eq!(seen.lock().unwrap().len(), before, "nothing sent");
+    quiet["operations"]["list"] = json!({"path": "/ok"});
+    quiet["pulls"] = json!([{"name": "all", "operation": "list", "every_minutes": 15, "items_at": "/data", "cursor": "time",
+        "map": {"entity": "Alert", "by": {"external_id": "/id"}, "set": {"title": "/title"}}}]);
+    let e = k.save_connection_def(admin, Some(sneaky), &input("pay_sneak", quiet, None)).await.unwrap_err();
+    assert!(e.to_string().contains("exclusive"), "pulls on an exclusive connection: {e}");
+
+    // ── a_pinned_call_refuses_a_changed_description (conn-exclusive-and-pinned) ──
+    let pinned_desc = json!({"base": base, "auth": {"type": "bearer", "secret": "api_key"}, "apps": ["depot"], "exclusive": true,
+        "operations": {"ok": {"path": "/ok"}, "other": {"path": "/ok"}}});
+    let pinned = save("pinned", pinned_desc.clone()).await;
+    let checked = connections::description_digest(&pinned_desc).unwrap();
+    let ok = call("pinned", "ok", json!({}), None);
+    connections::call_expecting(k, admin, Some("depot"), &ok, &checked).await.expect("the description checked: sent");
+    let mut moved = pinned_desc.clone();
+    moved["operations"]["other"] = json!({"path": "/ok/changed"});
+    k.save_connection_def(admin, Some(pinned), &input("pinned", moved.clone(), None)).await.unwrap();
+    let before = seen.lock().unwrap().len();
+    let e = connections::call_expecting(k, admin, Some("depot"), &ok, &checked).await.unwrap_err();
+    assert!(e.to_string().contains("description_changed"), "{e}");
+    let a = connections::call_answer_expecting(k, admin, Some("depot"), &ok, &checked).await.unwrap();
+    assert!(!a.sent && a.error.as_deref().is_some_and(|e| e.contains("description_changed")), "{a:?}");
+    assert_eq!(seen.lock().unwrap().len(), before, "the stand-in received nothing");
+    let now = connections::description_digest(&moved).unwrap();
+    connections::call_expecting(k, admin, Some("depot"), &ok, &now).await.expect("the right digest: sent");
+    assert_eq!(seen.lock().unwrap().len(), before + 1);
+
     // ── call_answer_tells_not_sent_refused_unknown_and_answered ──
     let ops = json!({
         "conflict": {"path": "/conflict", "method": "POST", "body": "{}"}, "down": {"path": "/gateway-down", "method": "POST", "body": "{}"},
