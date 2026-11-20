@@ -110,6 +110,7 @@ pub fn spec(ctx: &Ctx) -> Value {
                 format!("/api/v1/{n}/{{id}}/actions/{}", a.name),
                 json!({"post": {"tags": [n], "summary": a.label, "parameters": [
                 {"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+                "requestBody": {"content": {"application/json": {"schema": ferrum_kernel::capability::params_schema(&a.params)}}},
                 "responses": {"200": {"description": "Action result"}, "default": err}}}),
             );
         }

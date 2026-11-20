@@ -55,7 +55,7 @@ fn packages() -> Result<Vec<ferrum_meta::Package>, ferrum_meta::MetaError> {
         ("package.yaml", "package: doors\nversion: 0.1.0\ndepends: [core]\n"),
         (
             "entities/employee.yaml",
-            "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\nactions:\n  - {name: stamp, label: Stamp, permission: write}\n",
+            "name: DoorsEmployee\nlabel: Employee\nkind: master\ntitle_field: full_name\nfields:\n  - {name: full_name, type: data}\n  - {name: salary, type: data, perm_group: payroll}\nactions:\n  - {name: stamp, label: Stamp, permission: write, params: [{name: tags, label: Tags, type: list, of: data, max_items: 9}]}\n",
         ),
     ]
     .into_iter()
@@ -394,4 +394,11 @@ async fn scenario() {
     let (status, body) = write(Method::POST, format!("/api/v1/DoorsEmployee/{id}/actions/stamp"), None, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(last(), Some(None), "an action without a key");
+
+    // ── param-lists in the OpenAPI document: an action's body is its declared parameters, a list one as an array ──
+    let (status, spec) = answer(get(&r, ACME, "/api/openapi.json", Some(&key)).await);
+    assert_eq!(status, StatusCode::OK);
+    let body = &spec["paths"]["/api/v1/DoorsEmployee/{id}/actions/stamp"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+    assert_eq!((body["additionalProperties"].clone(), body["properties"]["tags"]["type"].clone()), (json!(false), json!("array")), "{body}");
+    assert_eq!((body["properties"]["tags"]["maxItems"].clone(), body["properties"]["tags"]["items"]["type"].clone()), (json!(9), json!("string")), "{body}");
 }

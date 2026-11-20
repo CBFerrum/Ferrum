@@ -1111,7 +1111,22 @@ pub struct ActionParam {
     pub max_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accept: Vec<String>,
+    /// A `list`'s item type, one of [`ITEM_TYPES`] (`options` and `to` then apply to each item); none for a list of rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<String>,
+    /// A `row`'s fields, or the fields of each row of a `list`: each declared as a parameter is, of a type in
+    /// [`ITEM_TYPES`]; a row has no key it does not declare.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<ActionParam>,
+    /// A `list`'s most items: [`MAX_LIST_ITEMS`] unless declared lower.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u32>,
 }
+
+/// The types a `list`'s items and a row's fields may have: one value each, never a file, a list or a row.
+pub const ITEM_TYPES: &[&str] = &["data", "text", "select", "int", "decimal", "date", "check", "link"];
+/// The most items a `list` parameter takes.
+pub const MAX_LIST_ITEMS: u32 = 500;
 
 /// The most files a `files` parameter takes, and the largest file.
 pub const MAX_PARAM_FILES: u32 = 10;

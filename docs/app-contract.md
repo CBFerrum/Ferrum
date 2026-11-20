@@ -103,6 +103,16 @@ extends, with a contract: `hidden`, so that it is no button, and in the catalog 
 An action a package adds to another package's entity is the adding package's: `{adder}.{entity}.{action}`, at the
 adder's version. Its `permission` is for whoever reaches it directly: a person through the API, an agent, a process.
 
+**Lists and rows as parameters.** An action's parameter may be a list of one value each,
+`{name: weekdays, label: Weekdays, type: list, of: select, options: [Monday, Sunday]}`, a list of rows,
+`{name: items, label: Items, type: list, max_items: 100, fields: [{name: item, label: Item, type: link, to: Item,
+required: true}, {name: qty, label: Quantity, type: decimal}]}`,
+or one row, `{name: address, label: Address, type: row, fields: [...]}`. Items and fields are one value of `data`, `text`, `select`,
+`int` (a whole JSON number), `decimal` (a number or a decimal in text), `date`, `check` or `link`; never secret, never
+a file, a list or a row. A list takes 500 items at most (`max_items` lowers it). Every door refuses, before the
+handler runs, a list over its length, an item of another type, a row key it does not declare and a required field
+missing; the handler gets the JSON as given. The catalog, MCP and the OpenAPI document show the same schema.
+
 **Declaring a use.** The package that needs another app's operation says so, within what it depends on:
 
 ```yaml

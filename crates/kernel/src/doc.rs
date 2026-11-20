@@ -996,6 +996,7 @@ impl Kernel {
         guard_kind(&ent)?;
         let def = ent.def.actions.iter().find(|a| a.name == action).ok_or_else(|| Error::NotFound(format!("action {action}")))?;
         let scope = crate::ctx::action_gate(ctx, &ent, def)?;
+        shaped(&def.params, params)?;
         let doc = self.load_marked(tx, ctx, &ent, id, !def.read_only).await?.ok_or_else(|| Error::NotFound(ent.def.label.clone()))?;
         if !scope.admits(tx, ctx.tenant, &doc).await? {
             return Err(Error::NotFound(ent.def.label.clone()));
@@ -2382,12 +2383,84 @@ pub(crate) fn given_params(action: &str, declared: &[ferrum_meta::ActionParam], 
     if !errors.is_empty() {
         return Err(Error::Validation(errors));
     }
+    shaped(declared, params)?;
     // One it asks for and was not given reads as null, so an expression may ask about it.
     let mut given = given;
     for p in declared {
         given.entry(p.name.clone()).or_insert(Value::Null);
     }
     Ok(Value::Object(given))
+}
+
+/// What `params` gives the list and row parameters `declared` (param-lists), refused before the action runs, by every door:
+/// a list of its declared type or of rows with only its declared fields, within its most items; a row likewise. The
+/// handler gets them as given. Other parameters are as they were.
+pub(crate) fn shaped(declared: &[ferrum_meta::ActionParam], params: &Value) -> Result<()> {
+    let Value::Object(given) = params else { return Ok(()) };
+    let mut errors = Vec::new();
+    for p in declared {
+        let Some(v) = given.get(&p.name).filter(|v| !v.is_null()) else { continue };
+        match (p.ptype.as_str(), v) {
+            ("list", Value::Array(items)) => {
+                let most = p.max_items.unwrap_or(ferrum_meta::MAX_LIST_ITEMS).min(ferrum_meta::MAX_LIST_ITEMS) as usize;
+                if items.len() > most {
+                    errors.push(FieldError::new(&p.name, format!("takes at most {most} items")));
+                    continue;
+                }
+                for (i, item) in items.iter().enumerate() {
+                    match &p.of {
+                        Some(of) => errors.extend(one_value(of, &p.options, item).map(|m| FieldError::new(&p.name, format!("item {}: {m}", i + 1)))),
+                        None => errors.extend(row_problems(&p.fields, item, &p.name).into_iter().map(|e| e.in_row(&p.name, i))),
+                    }
+                }
+            }
+            ("list", _) => errors.push(FieldError::new(&p.name, "is a list")),
+            ("row", Value::Object(_)) => {
+                errors.extend(row_problems(&p.fields, v, &p.name).into_iter().map(|e| FieldError { field: format!("{}.{}", p.name, e.field), ..e }))
+            }
+            ("row", _) => errors.push(FieldError::new(&p.name, "is an object of its declared fields")),
+            _ => {}
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(Error::Validation(errors)) }
+}
+
+/// What is wrong with `v` as one row of `fields` (the parameter `of`'s): not an object, a key it does not declare, a field
+/// it needs missing, a value of another type.
+fn row_problems(fields: &[ferrum_meta::ActionParam], v: &Value, of: &str) -> Vec<FieldError> {
+    let Value::Object(row) = v else { return vec![FieldError::new(of, "each is an object of its declared fields")] };
+    let mut errors: Vec<FieldError> = row.keys().filter(|k| !fields.iter().any(|f| &f.name == *k)).map(|k| FieldError::new(k, "is not asked for")).collect();
+    for f in fields {
+        match row.get(&f.name).filter(|v| !is_empty(v)) {
+            None if f.required => errors.push(FieldError::new(&f.name, "is needed")),
+            None => {}
+            Some(v) => errors.extend(one_value(&f.ptype, &f.options, v).map(|m| FieldError::new(&f.name, m))),
+        }
+    }
+    errors
+}
+
+/// Why `v` is not one value of `ptype` (one of [`ferrum_meta::ITEM_TYPES`]; `options` a select's).
+fn one_value(ptype: &str, options: &[String], v: &Value) -> Option<String> {
+    let text = v.as_str().map(str::trim);
+    let fine = match ptype {
+        "int" => v.is_i64() || v.is_u64(),
+        "decimal" => v.is_number() || text.is_some_and(|s| s.parse::<rust_decimal::Decimal>().is_ok()),
+        "check" => v.is_boolean(),
+        "date" => text.is_some_and(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()),
+        "link" => text.is_some_and(|s| s.parse::<Uuid>().is_ok()),
+        "select" => text.is_some_and(|s| options.iter().any(|o| o == s)),
+        _ => v.is_string(),
+    };
+    (!fine).then(|| match ptype {
+        "select" => format!("is one of {}", options.join(", ")),
+        "int" => "is a whole number".into(),
+        "decimal" => "is a number".into(),
+        "check" => "is true or false".into(),
+        "date" => "is a date, YYYY-MM-DD".into(),
+        "link" => "is a record's id".into(),
+        _ => "is text".into(),
+    })
 }
 
 /// Two field values alike, whether a number or decimal is held as text or as a number.
