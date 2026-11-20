@@ -1349,13 +1349,29 @@ impl ChannelDesc {
     }
 }
 
+/// The enabled channel of `kind` other than `id`, locked: `(id, name)`.
+async fn enabled_other(tx: &mut Tx, tenant: Uuid, kind: &str, id: Uuid) -> Result<Option<(Uuid, String)>> {
+    Ok(sqlx::query_as("select id, name from message_channel where tenant_id = $1 and kind = $2 and enabled and id <> $3 for update")
+        .bind(tenant)
+        .bind(kind)
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?)
+}
+
+/// Enabling a channel where `other` is enabled, without `replace`.
+fn refused_by(kind: &str, other: &str) -> Error {
+    Error::Conflict(format!("the {kind} channel \"{other}\" is enabled: turn it off first, or save this one with replace to turn it off"))
+}
+
 /// Where a channel's secrets are kept: the platform's, in the workspace.
 pub(crate) fn channel_place(tenant: Uuid, id: Uuid) -> crate::vault::kept::Place {
     crate::vault::kept::Place::platform(crate::vault::kept::Store::Channel, tenant, id)
 }
 
 /// What `POST /api/admin/messages/channels` takes. `secrets` are kept in the vault and never read back; left out, the
-/// ones there are stay.
+/// ones there are stay. Enabling it where another channel of its kind is enabled is refused naming that one, unless
+/// `replace` says to turn that one off (TP-2).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelInput {
@@ -1366,6 +1382,8 @@ pub struct ChannelInput {
     pub secrets: Option<BTreeMap<String, String>>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    #[serde(default)]
+    pub replace: bool,
 }
 
 fn yes() -> bool {
@@ -1626,15 +1644,17 @@ impl Kernel {
         if let Some(s) = &input.secrets {
             self.keep(&mut tx, &channel_place(ctx.tenant, id), &serde_json::to_string(s).map_err(Error::internal)?).await?;
         }
-        if input.enabled {
-            sqlx::query("update message_channel set enabled = false where tenant_id = $1 and kind = $2 and id <> $3")
-                .bind(ctx.tenant)
-                .bind(&input.kind)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+        let mut replaced = None;
+        if input.enabled
+            && let Some((other, other_name)) = enabled_other(&mut tx, ctx.tenant, &input.kind, id).await?
+        {
+            if !input.replace {
+                return Err(refused_by(&input.kind, &other_name));
+            }
+            sqlx::query("update message_channel set enabled = false where tenant_id = $1 and id = $2").bind(ctx.tenant).bind(other).execute(&mut *tx).await?;
+            replaced = Some(json!({"id": other, "name": other_name}));
         }
-        sqlx::query(
+        let saved = sqlx::query(
             "insert into message_channel (tenant_id, id, kind, name, description, has_secrets, enabled) values ($1, $2, $3, $4, $5, $6, $7) \
              on conflict (tenant_id, id) do update set kind = excluded.kind, name = excluded.name, description = excluded.description, \
              has_secrets = excluded.has_secrets or message_channel.has_secrets, enabled = excluded.enabled",
@@ -1647,9 +1667,28 @@ impl Kernel {
         .bind(input.secrets.is_some())
         .bind(input.enabled)
         .execute(&mut *tx)
+        .await;
+        // Another enabled meanwhile: the unique index `message_channel_kind` holds, and the refusal names it.
+        if let Err(e) = saved {
+            if e.as_database_error().and_then(|d| d.constraint()) == Some("message_channel_kind") {
+                drop(tx);
+                let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+                let other = enabled_other(&mut tx, ctx.tenant, &input.kind, id).await?;
+                tx.commit().await?;
+                return Err(refused_by(&input.kind, other.map(|o| o.1).as_deref().unwrap_or("another")));
+            }
+            return Err(e.into());
+        }
+        audit::record_admin(
+            &mut tx,
+            ctx,
+            "MessageChannel",
+            id,
+            "save",
+            None,
+            json!({"kind": input.kind, "name": name, "secrets": input.secrets.is_some(), "replaced": replaced}),
+        )
         .await?;
-        audit::record_admin(&mut tx, ctx, "MessageChannel", id, "save", None, json!({"kind": input.kind, "name": name, "secrets": input.secrets.is_some()}))
-            .await?;
         tx.commit().await?;
         Ok(id)
     }

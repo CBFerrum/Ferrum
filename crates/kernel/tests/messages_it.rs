@@ -225,6 +225,93 @@ async fn public_reads() {
     assert!(k.erased_marks(admin.tenant, "text", "+491701234567").await.unwrap().contains(&mark), "the current mark is among those checked");
 }
 
+#[test]
+fn enabling_a_channel_where_another_is_enabled_is_refused_naming_it() {
+    run(enable_refused());
+}
+
+#[test]
+fn replace_turns_the_other_off_and_the_audit_names_it() {
+    run(enable_replaces());
+}
+
+#[test]
+fn a_save_with_enabled_false_touches_no_other_channel() {
+    run(save_disabled());
+}
+
+#[test]
+fn two_channels_enabled_at_once_one_is_refused_naming_the_other() {
+    run(enable_at_once());
+}
+
+/// A test channel of `kind` named `name` (TP-2), `extra` merged into what is saved.
+fn named_channel(name: &str, extra: Value) -> ChannelInput {
+    let mut v = json!({"kind": "text", "name": name, "description": {"test": true}});
+    v.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+    serde_json::from_value(v).unwrap()
+}
+
+/// The channels as `(name, enabled)`, by name.
+async fn channels(k: &Kernel, admin: &Ctx) -> Vec<(String, bool)> {
+    let mut v: Vec<(String, bool)> =
+        k.message_channels(admin).await.unwrap().iter().map(|c| (c["name"].as_str().unwrap().to_string(), c["enabled"] == json!(true))).collect();
+    v.sort();
+    v
+}
+
+async fn enable_refused() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    k.save_message_channel(&admin, None, &named_channel("Carrier", json!({}))).await.unwrap();
+    let e = k.save_message_channel(&admin, None, &named_channel("Simulator", json!({}))).await.expect_err("another is enabled");
+    assert!(matches!(&e, ferrum_kernel::Error::Conflict(m) if m.contains("Carrier")), "a 409 naming the enabled channel: {e:?}");
+    assert_eq!(channels(&k, &admin).await, vec![("Carrier".to_string(), true)], "nothing saved, nothing turned off");
+    // Re-saving the enabled one is no conflict with itself.
+    let id = k.message_channels(&admin).await.unwrap()[0]["id"].as_str().unwrap().parse().unwrap();
+    k.save_message_channel(&admin, Some(id), &named_channel("Carrier", json!({}))).await.unwrap();
+}
+
+async fn enable_replaces() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    let carrier = k.save_message_channel(&admin, None, &named_channel("Carrier", json!({}))).await.unwrap();
+    let sim = k.save_message_channel(&admin, None, &named_channel("Simulator", json!({"replace": true}))).await.unwrap();
+    assert_eq!(channels(&k, &admin).await, vec![("Carrier".to_string(), false), ("Simulator".to_string(), true)]);
+    let mut tx = k.db.system_tx().await.unwrap();
+    let said: Vec<Value> = sqlx::query_scalar("select to_jsonb(a) from audit_event a where tenant_id = $1 and entity = 'MessageChannel' and record_id = $2")
+        .bind(admin.tenant)
+        .bind(sim)
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let said = serde_json::to_string(&said).unwrap();
+    assert!(said.contains(&carrier.to_string()) && said.contains("Carrier"), "the audit names the channel turned off: {said}");
+}
+
+async fn save_disabled() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    k.save_message_channel(&admin, None, &named_channel("Carrier", json!({}))).await.unwrap();
+    k.save_message_channel(&admin, None, &named_channel("Spare", json!({"enabled": false}))).await.unwrap();
+    assert_eq!(channels(&k, &admin).await, vec![("Carrier".to_string(), true), ("Spare".to_string(), false)]);
+}
+
+async fn enable_at_once() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    let save = |name: &'static str| {
+        let (k, admin) = (k.clone(), admin.clone());
+        tokio::spawn(async move { k.save_message_channel(&admin, None, &named_channel(name, json!({}))).await })
+    };
+    let (a, b) = (save("Carrier"), save("Simulator"));
+    let (a, b) = (a.await.unwrap(), b.await.unwrap());
+    let (won, lost, refused) = match (&a, &b) {
+        (Ok(_), Err(e)) => ("Carrier", "Simulator", e),
+        (Err(e), Ok(_)) => ("Simulator", "Carrier", e),
+        _ => panic!("exactly one is enabled: {a:?} {b:?}"),
+    };
+    assert!(matches!(refused, ferrum_kernel::Error::Conflict(m) if m.contains(won)), "{refused:?}");
+    assert_eq!(channels(&k, &admin).await, vec![(won.to_string(), true)], "{lost} was not saved");
+}
+
 /// A provider channel as the Telecom app describes one (TP-0): the platform's send, the kept text and the category in
 /// the request; reports and replies naming the send, marked simulated.
 async fn provider_channel(answers: Vec<(u16, String)>, gate: Option<Arc<tokio::sync::Semaphore>>) -> (Arc<Kernel>, Ctx, uuid::Uuid, Arc<Mutex<Vec<String>>>) {
@@ -425,6 +512,7 @@ async fn temporary_refusal() {
         .unwrap(),
         secrets: Some(BTreeMap::from([("token".to_string(), token.to_string())])),
         enabled: true,
+        replace: false,
     };
     k.save_message_channel(&admin, None, &channel).await.unwrap();
     let m = Message {
@@ -622,6 +710,7 @@ async fn scenario() {
         description: serde_json::from_value(json!({"test": true})).unwrap(),
         secrets: None,
         enabled: true,
+        replace: false,
     };
     k.save_message_channel(&admin, None, &test_channel).await.unwrap();
     let s = send(&k, &admin, text("text")).await;
@@ -749,6 +838,7 @@ async fn scenario() {
         .unwrap(),
         secrets: Some(BTreeMap::from([("token".to_string(), "t0ken".to_string()), ("hook".to_string(), "h00k".to_string())])),
         enabled: true,
+        replace: false,
     };
     let chat_id = k.save_message_channel(&admin, None, &chat).await.unwrap();
     let listed = k.message_channels(&admin).await.unwrap();

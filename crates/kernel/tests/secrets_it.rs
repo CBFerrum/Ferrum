@@ -180,6 +180,7 @@ async fn scenario() {
         description: serde_json::from_value(json!({"test": true})).unwrap(),
         secrets: None,
         enabled: true,
+        replace: false,
     };
     k.save_message_channel(&admin, None, &test_channel).await.unwrap();
     let card = k.insert(&admin, "Card", obj(json!({"label": "Gift"}))).await.unwrap();

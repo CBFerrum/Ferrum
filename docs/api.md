@@ -1785,8 +1785,10 @@ in the recipient's zone when known, else the workspace's. `per_hour` (500) and `
 chat-app messages.
 
 **Channel connections** (administrators): `GET|POST /api/admin/messages/channels`, `PUT|DELETE
-/api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?}`. One enabled for
-each kind; `secrets` (`{name: value}`) are kept in the vault and never read back (left out, they stay).
+/api/admin/messages/channels/{id}` with `{kind: text | chat, name, description, secrets?, enabled?, replace?}`. One
+enabled for each kind: enabling one where another of its kind is enabled is refused (409 naming that channel, also when
+the other was enabled at the same moment) unless `replace` is true, which turns the other off and names it in the audit
+trail; a save with `enabled: false` touches no other channel; `secrets` (`{name: value}`) are kept in the vault and never read back (left out, they stay).
 `description`: `url`, `method` (POST), `headers`, `body` (a JSON template) or `form` (fields), each a template over
 `to` (international form), `text`, `template_name`, `values`, `language`, `from`, `secret.<name>`, `send` (the
 platform's id of the send, the same on every attempt), `kept` (`{text, template_name, values}` as the platform keeps
