@@ -420,6 +420,7 @@ async fn from_ticket(st: &AppState, ticket: &str, kind: &str) -> Result<Session,
 async fn answer(st: &AppState, headers: &HeaderMap, outcome: AccountSignIn) -> ApiResult<Response> {
     match outcome {
         AccountSignIn::Signed(s) => session_response(st, &s, headers, true, "accounts").await,
+        AccountSignIn::SetupRequired(s) => crate::controllers::auth::setup_response(st, &s, headers, "accounts").await,
         AccountSignIn::SecondFactor { session, found } => {
             Ok(Json(json!({"second_factor": true, "ticket": ticket(st, &session, if found { "found" } else { "mfa" })?, "expires_in": TICKET_SECS}))
                 .into_response())

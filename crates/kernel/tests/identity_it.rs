@@ -163,6 +163,20 @@ async fn scenario() {
     // The identity has Acme's password now; Globex's is not it.
     assert_eq!(signed(k.account_sign_in("ana@x.test", "Acme-Pass-1").await.unwrap()).user, ana.user);
     assert!(k.account_sign_in("ana@x.test", "Globex-Pass-1").await.is_err());
+    // code_sign_in_and_the_accounts_host_ask_for_setup_the_same_way (API-K2): where the directory requires a second
+    // factor, the accounts host's password step asks for its setup, as a workspace's does, never a full session.
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set settings = coalesce(settings, '{}'::jsonb) || '{\"require_two_factor\": true}'::jsonb where id = $1")
+        .bind(dir)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let asked = k.account_sign_in("ana@x.test", "Acme-Pass-1").await.unwrap();
+    assert!(matches!(asked, AccountSignIn::SetupRequired(_)), "{asked:?}");
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query("update tenant set settings = settings - 'require_two_factor' where id = $1").bind(dir).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
     let list = k.identity_workspaces(&me).await.unwrap();
     let names: Vec<(String, bool)> = list.iter().map(|w| (w["slug"].as_str().unwrap().to_string(), w["joined"].as_bool().unwrap())).collect();
     assert_eq!(names, vec![("acme".into(), true), ("globex".into(), false), ("initech".into(), false)]);

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const PACKAGE: &str = "package: till\nversion: 0.1.0\ndepends: [core]\nuses:\n  - {capability: till.payout.stamp, version: '^0.1'}\nroles:\n  - name: Cashier\n    permissions:\n      - {entity: Payout, read: true, write: true, create: true}\n      - {entity: Note, read: true, create: true}\n\
-approvals:\n  - entity: Payout\n    on: {action: release}\n    policy: {steps: [{label: A second administrator, approvers: {administrators: true}}], people_at_screens: true}\n";
+approvals:\n  - entity: Payout\n    on: {action: release}\n    policy: {steps: [{label: A second administrator, approvers: {administrators: true}}], people_at_screens: true}\n  - entity: Payout\n    on: {action: settle}\n    policy: {steps: [{label: A second administrator, approvers: {administrators: true}}], people_at_screens: true, step_up_within: 600}\n";
 const ENTITIES: &str = r#"
 name: Payout
 label: Payout
@@ -28,6 +28,7 @@ fields:
   - {name: title, type: data, required: true}
 actions:
   - {name: release, label: Release, permission: write}
+  - {name: settle, label: Settle by Hand, permission: write}
   - name: stamp
     label: Stamp
     permission: write
@@ -287,4 +288,36 @@ async fn scenario() {
     let s = seen("note:by mapping");
     assert!(!s.is_empty() && s.iter().all(|x| *x == (Made::System, None, false)), "{}: {s:?}", "a mapping run as the system");
     let _ = ben;
+
+    // ── approval-step-up: a policy's step_up_within asks the asker and each decider for a sign-in check that recent ──
+    let fifth = payout("Settle the float").await;
+    let asha_screen = request(&kit, &asha, true).await;
+    let said = |r: ferrum_kernel::Result<Value>| match r {
+        Err(Error::Forbidden(m)) => m,
+        other => panic!("refused, not {other:?}"),
+    };
+    assert!(said(k.run_action(&asha_screen, "Payout", fifth, "settle", json!({})).await).contains("sign-in check"), "an asker without one");
+    let asked = k.run_action(&asha_screen.clone().proved(Some(chrono::Utc::now())), "Payout", fifth, "settle", json!({})).await.expect("asked");
+    assert!(asked.get("_approval").is_some(), "{asked}");
+    let carla_now = request(&kit, &carla, true).await;
+    assert!(
+        matches!(k.decide_approval(&carla_now, "Payout", fifth, true, None).await, Err(Error::Forbidden(m)) if m.contains("sign-in check")),
+        "a decider without one"
+    );
+    let stale = carla_now.clone().proved(Some(chrono::Utc::now() - chrono::Duration::seconds(601)));
+    assert!(matches!(k.decide_approval(&stale, "Payout", fifth, true, None).await, Err(Error::Forbidden(_))), "nor with one older than the policy says");
+    k.decide_approval(&carla_now.proved(Some(chrono::Utc::now())), "Payout", fifth, true, None).await.expect("decided with a fresh one");
+    // ── a_policy_with_step_up_within_and_without_people_at_screens_is_refused_at_load ──
+    let package = PACKAGE.replace("people_at_screens: true, step_up_within: 600", "step_up_within: 600");
+    assert_ne!(package, PACKAGE);
+    let files: BTreeMap<String, String> = [("package.yaml", package.as_str()), ("entities/payout.yaml", ENTITIES), ("entities/note.yaml", NOTE)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let core = ferrum_meta::catalog::load_package_dir(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).unwrap();
+    let refused = match ferrum_meta::catalog::load_package_files(&files) {
+        Err(e) => Some(e.to_string()),
+        Ok(p) => ferrum_meta::Catalog::from_packages(vec![core, p]).err().map(|e| e.to_string()),
+    };
+    assert!(refused.as_deref().is_some_and(|e| e.contains("people_at_screens")), "{refused:?}");
 }

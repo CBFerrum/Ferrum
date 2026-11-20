@@ -494,6 +494,9 @@ impl Kernel {
         if policy.people_at_screens && !ctx.at_screen() {
             return Err(Error::Forbidden(format!("{} is asked for by a person at a screen", ent.def.label)));
         }
+        if policy.step_up_within.is_some_and(|s| !ctx.stepped_up_within(i64::from(s))) {
+            return Err(Error::Forbidden(format!("{} needs a fresh sign-in check first: confirm who you are, then ask again", ent.def.label)));
+        }
         if let Some(r) = pending(tx, ctx.tenant, &ent.def.name, id).await? {
             return Err(Error::Conflict(format!(
                 "this {} is awaiting approval of '{}': it is decided or recalled first",
@@ -572,6 +575,9 @@ impl Kernel {
         let (policy, mut steps) = req.parts()?;
         if policy.people_at_screens && !ctx.at_screen() {
             return Err(Error::Forbidden("this approval is decided by a person at a screen".into()));
+        }
+        if policy.step_up_within.is_some_and(|s| !ctx.stepped_up_within(i64::from(s))) {
+            return Err(Error::Forbidden("this approval needs a fresh sign-in check first: confirm who you are, then decide again".into()));
         }
         let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or_default();
         // An action's request is not tied to where the record stands: the action's own conditions decide when it runs.

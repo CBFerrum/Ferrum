@@ -173,7 +173,9 @@ automation, an API key, a job, an approval completing later, the assistant, anot
 `ctx.made` says what made the context; `ctx.app` names the app whose `call_tx` this is (none inside its effects);
 `ctx.stepped_up_within(600)` asks for a fresh step-up as well. Code that elevates a context uses `Ctx::elevated` or
 `ferrum_domain::util::elevated`, never `is_system = true` alone: `scripts/check_contexts.py` refuses that, in every app.
-An approval policy with `people_at_screens: true` refuses asking and deciding by anyone not at a screen.
+An approval policy with `people_at_screens: true` refuses asking and deciding by anyone not at a screen. With `step_up_within: <seconds>`
+(60 to 86,400; only beside `people_at_screens`) the asker and each decider must also have confirmed who they are (a
+step-up) within that many seconds, or are told a fresh sign-in check is needed.
 
 **The key of a write.** `ctx.effect_key` is the effect key the write in hand was claimed under: the gate's key (an app's
 `call_tx` key as `{app}:{key}`), or the records door's `Idempotency-Key` on a create, an update or an action. It is

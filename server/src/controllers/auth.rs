@@ -106,7 +106,41 @@ pub(crate) async fn accounts_for(st: &AppState, headers: &HeaderMap) -> Result<O
 /// cookie alone, a bearer token bound to that session for the pages that still send one.
 /// `method` names how they signed in, for the audit trail (`password`, `passkey`, `sso`, `code`, `accounts`).
 pub(crate) async fn session_response(st: &AppState, s: &Session, headers: &HeaderMap, cookie_only: bool, method: &str) -> ApiResult<Response> {
-    session_response_with(st, s, headers, cookie_only, method, None, &[method]).await
+    session_response_with(st, s, headers, cookie_only, method, None, &[method], false).await
+}
+
+/// A sign-in that must set up a second factor first (API-K2, A11 T7): the sign-in page's cookie session, which may only
+/// set it up and lasts [`SETUP_SECS`]; never a bearer, and nothing for an API client. Every way of signing in answers
+/// so: password, code, the accounts host.
+pub(crate) async fn setup_response(st: &AppState, s: &Session, headers: &HeaderMap, method: &str) -> ApiResult<Response> {
+    session_response_with(st, s, headers, true, method, None, &[method], true).await
+}
+
+/// The browser session opened for `s` and the cookie carrying it; with `setup`, the setup-only one (API-K2).
+#[allow(clippy::too_many_arguments)]
+async fn open_browser_session(
+    st: &AppState,
+    s: &Session,
+    headers: &HeaderMap,
+    entry: Option<&str>,
+    saml: Option<&Value>,
+    proof: &[&str],
+    setup: bool,
+) -> Result<(Uuid, std::time::Duration, HeaderValue), ApiError> {
+    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let ttl = if setup { std::time::Duration::from_secs(SETUP_SECS) } else { st.shell.session_ttl() };
+    let sid = st.kernel.open_session_proved(s, ttl, ua, &client_ip(headers), None, entry, saml, proof).await?;
+    let token = if setup {
+        let mut claims = Map::new();
+        claims.insert("tenant".into(), json!(s.tenant.to_string()));
+        claims.insert("tv".into(), json!(s.token_version));
+        claims.insert("sid".into(), json!(sid.to_string()));
+        claims.insert("setup_2fa".into(), json!(true));
+        st.sessions.sign(ttl.as_secs(), s.user.to_string(), claims).map_err(ApiError)?
+    } else {
+        device_token(st, s, ttl.as_secs(), "sid", sid)?
+    };
+    Ok((sid, ttl, crate::shell::set_cookie(st.shell.secure, &token, ttl)))
 }
 
 /// [`session_response`], keeping on the browser session what a SAML sign-in's logout needs, and the steps by which its
@@ -119,6 +153,7 @@ async fn session_response_with(
     method: &str,
     saml: Option<&Value>,
     proof: &[&str],
+    setup: bool,
 ) -> ApiResult<Response> {
     // Zones (crate::zone): every way of signing in ends here, so a staff account gets no session and
     // no token where its zone admits no staff; refused as a wrong password is, before anything below
@@ -140,25 +175,25 @@ async fn session_response_with(
     }
     st.kernel.record_sign_in(s.tenant, s.user, "signed_in", method, &crate::zone::arrival(st, headers).await).await?;
     if !from_page(headers) {
-        if cookie_only {
+        if cookie_only || setup {
             return Err(ApiError(Error::Forbidden("sign in from a page of this site".into())));
         }
         let expiration = st.live_settings.now().jwt_expiration;
         return Ok(Json(json!({"token": token(st, s, expiration, None)?, "token_type": "Bearer", "expires_in": expiration})).into_response());
     }
     st.shell.check_host(headers, s.tenant).await?;
-    let ua = headers.get(axum::http::header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let ttl = st.shell.session_ttl();
-    let sid = st.kernel.open_session_proved(s, ttl, ua, &client_ip(headers), None, entry.name(), saml, proof).await?;
+    let (sid, ttl, cookie) = open_browser_session(st, s, headers, entry.name(), saml, proof, setup).await?;
     let mut body = json!({"cookie": true, "session_expires_in": ttl.as_secs()});
-    if !cookie_only {
+    if setup {
+        body["two_factor_setup"] = json!(true);
+    } else if !cookie_only {
         let expiration = st.live_settings.now().jwt_expiration;
         body["token"] = json!(device_token(st, s, expiration, "bsid", sid)?);
         body["token_type"] = json!("Bearer");
         body["expires_in"] = json!(expiration);
     }
     let mut res = Json(body).into_response();
-    res.headers_mut().append(axum::http::header::SET_COOKIE, crate::shell::set_cookie(st.shell.secure, &device_token(st, s, ttl.as_secs(), "sid", sid)?, ttl));
+    res.headers_mut().append(axum::http::header::SET_COOKIE, cookie);
     Ok(res)
 }
 
@@ -174,13 +209,7 @@ async fn login(State(app): State<AppContext>, headers: HeaderMap, Json(req): Jso
     match st.kernel.sign_in_at(&req.tenant, &req.email, &req.password, from).await? {
         SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password").await,
         SignIn::SecondFactor(s) => Ok(Json(json!({"second_factor": true, "ticket": ticket(&st, &s, "password")?, "expires_in": TICKET_SECS})).into_response()),
-        SignIn::SetupRequired(s) => Ok(Json(json!({
-            "two_factor_setup": true,
-            "token": token(&st, &s, SETUP_SECS, Some("setup_2fa"))?,
-            "token_type": "Bearer",
-            "expires_in": SETUP_SECS,
-        }))
-        .into_response()),
+        SignIn::SetupRequired(s) => setup_response(&st, &s, &headers, "password").await,
     }
 }
 
@@ -216,7 +245,7 @@ async fn login_second_factor(State(app): State<AppContext>, headers: HeaderMap, 
     let from = crate::zone::arrival(&st, &headers).await;
     let (s, given) = st.kernel.second_step(tenant, user, tv, &req.code, &from).await?;
     st.kernel.record_sign_in(tenant, user, "second_step", "authenticator", &from).await?;
-    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password", None, &steps(claims, given)).await
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "password", None, &steps(claims, given), false).await
 }
 
 #[derive(Deserialize)]
@@ -281,7 +310,8 @@ async fn sign_in_with_code(State(app): State<AppContext>, headers: HeaderMap, Js
     }
     match st.kernel.sign_in_with_code(&req.tenant, &req.email, &req.code).await? {
         SignIn::SecondFactor(s) => Ok(Json(json!({"second_factor": true, "ticket": ticket(&st, &s, "code")?, "expires_in": TICKET_SECS})).into_response()),
-        SignIn::Session(s) | SignIn::SetupRequired(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "code").await,
+        SignIn::Session(s) => session_response(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "code").await,
+        SignIn::SetupRequired(s) => setup_response(&st, &s, &headers, "code").await,
     }
 }
 
@@ -333,7 +363,7 @@ async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req)
         return Err(ApiError(Error::Unauthorized("sign in again".into())));
     }
     let (s, saml) = st.kernel.sso_finish_full(&req.state, &req.code, &req.binding).await?;
-    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso", saml.as_ref(), &["sso"]).await
+    session_response_with(&st, &s, &headers, req.session.as_deref() == Some("cookie"), "sso", saml.as_ref(), &["sso"], false).await
 }
 
 /// `GET /api/auth/saml/{workspace}`: the workspace's SAML metadata, for identity providers to load:
@@ -557,13 +587,15 @@ async fn two_factor_enable(
     let st = app_state(&app)?;
     kept_by_identity(&st, &headers, &ctx).await?;
     let codes = st.kernel.enable_two_factor(&ctx, &req.code).await?;
-    let mut out = json!({"recovery_codes": codes});
+    let mut res = Json(json!({"recovery_codes": codes})).into_response();
+    // The setup-only cookie gives way to a full browser session, proved by the second factor just set up (API-K2).
+    // ponytail: the setup session's row ends at its own 15 minutes; it reaches nothing but a setup now finished.
     if let Some(s) = setup_only {
-        let expiration = st.live_settings.now().jwt_expiration;
-        out["token"] = json!(token(&st, &s, expiration, None)?);
-        out["expires_in"] = json!(expiration);
+        let entry = crate::zone::sign_in(&st, &headers, s.tenant, s.user).await.map_err(|()| crate::zone::sign_in_failed())?;
+        let (_, _, cookie) = open_browser_session(&st, &s, &headers, entry.name(), None, &["authenticator"], false).await?;
+        res.headers_mut().append(axum::http::header::SET_COOKIE, cookie);
     }
-    Ok(Json(out).into_response())
+    Ok(res)
 }
 
 async fn two_factor_recovery_codes(Auth(ctx): Auth, State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<CodeReq>) -> ApiResult<Response> {

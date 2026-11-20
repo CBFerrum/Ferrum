@@ -419,8 +419,9 @@ impl Kernel {
             return Err(denied());
         }
         let mut tx = self.db.system_tx().await?;
-        let person: Option<(Uuid, Uuid, i32, bool, bool)> = sqlx::query_as(
-            "select u.tenant_id, u.id, u.token_version, coalesce(u.locked_until > now(), false), u.totp_enabled_at is not null \
+        let person: Option<(Uuid, Uuid, i32, bool, bool, bool)> = sqlx::query_as(
+            "select u.tenant_id, u.id, u.token_version, coalesce(u.locked_until > now(), false), u.totp_enabled_at is not null, \
+             coalesce(t.settings->'require_two_factor' = 'true'::jsonb, false) \
              from app_user u join tenant t on t.id = u.tenant_id \
              where t.slug = $1 and u.email = $2 and u.kind = 'portal' and u.is_active and t.status = 'active'",
         )
@@ -428,11 +429,20 @@ impl Kernel {
         .bind(&email)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((tenant, user, token_version, locked, two_factor)) = person else {
+        let Some((tenant, user, token_version, locked, two_factor, required)) = person else {
             // Someone outside confirming their sign-up: made a portal person now, and signed in.
             let made = crate::portal_signup::confirm(&mut tx, tenant_slug, &email, &code).await?;
+            let required: bool = match &made {
+                Some(s) => {
+                    sqlx::query_scalar("select coalesce(settings->'require_two_factor' = 'true'::jsonb, false) from tenant where id = $1")
+                        .bind(s.tenant)
+                        .fetch_one(&mut *tx)
+                        .await?
+                }
+                None => false,
+            };
             tx.commit().await?;
-            return made.map(SignIn::Session).ok_or_else(denied);
+            return made.map(if required { SignIn::SetupRequired } else { SignIn::Session }).ok_or_else(denied);
         };
         // Every failure answers alike (A11 D10): a locked person, an unknown address, a used or a wrong code.
         if locked {
@@ -474,7 +484,8 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(SignIn::Session(session))
+        // A workspace that requires a second factor asks for its setup here as at the password step (API-K2).
+        Ok(if required { SignIn::SetupRequired(session) } else { SignIn::Session(session) })
     }
 
     /// API keys look like `fk_<prefix>_<secret>`; only a SHA-256 of the secret is stored. A key

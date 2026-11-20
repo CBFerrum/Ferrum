@@ -45,6 +45,9 @@ const FOUND_MAX: i64 = 20;
 pub enum AccountSignIn {
     /// Signed in as the identity.
     Signed(Session),
+    /// The password was right and a second factor must be set up first (the directory requires one): the session may
+    /// only set it up (API-K2), as a workspace's sign-in that needs setting up.
+    SetupRequired(Session),
     /// A code from the authenticator app comes next: the identity's, or (`found`) that of the
     /// membership whose password is making an identity.
     SecondFactor { session: Session, found: bool },
@@ -228,7 +231,8 @@ impl Kernel {
         if has_identity {
             return match self.sign_in(DIRECTORY, &email, password).await {
                 Ok(SignIn::SecondFactor(s)) => Ok(AccountSignIn::SecondFactor { session: s, found: false }),
-                Ok(SignIn::Session(s) | SignIn::SetupRequired(s)) => Ok(AccountSignIn::Signed(s)),
+                Ok(SignIn::Session(s)) => Ok(AccountSignIn::Signed(s)),
+                Ok(SignIn::SetupRequired(s)) => Ok(AccountSignIn::SetupRequired(s)),
                 Err(Error::Unauthorized(_)) => Err(denied()),
                 Err(e) => Err(e),
             };

@@ -1518,7 +1518,9 @@ read: saving one is refused, saying why.
   its record deleted, a connection or channel deleted, a sign-in disconnected), and otherwise in the hourly upkeep (a
   decided approval's parameters, a disconnected connector's credentials, rows the database removed with others).
 - **Changing a connection's hosts asks for its secrets again**: they were given for the hosts its description reached
-  then, and are not sent anywhere else.
+  then, and are not sent anywhere else. A later change of one secret (an administrator's, or the platform's own: a
+  registered client, a DPoP key) keeps only the secrets given for the new hosts; the others are given again. A save
+  that keeps the hosts keeps the secrets, and its audit entry names each operation that changed by a digest of it.
 
 ### What the platform keys and seals
 

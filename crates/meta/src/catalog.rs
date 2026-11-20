@@ -1450,6 +1450,11 @@ pub(crate) fn validate_approval(e: &EntityDef, what: &str, wf: Option<(&Workflow
         }
         compile(e, at, a.expr.as_deref(), false)
     };
+    if let Some(secs) = p.step_up_within
+        && (!p.people_at_screens || !(60..=86_400).contains(&secs))
+    {
+        return Err(format!("{what}: step_up_within (60 to 86,400 seconds) asks a person at a screen: it needs people_at_screens"));
+    }
     for (i, s) in p.steps.iter().enumerate() {
         let at = format!("{what} step {}", i + 1);
         if s.label.trim().is_empty() {
