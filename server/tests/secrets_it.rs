@@ -337,6 +337,18 @@ async fn sessions(a: &AppState, b: &AppState, needles: &mut Vec<String>) {
     a.sessions.reload().await.unwrap();
     assert!(a.sessions.validate(&second).await.is_none(), "past its end");
     assert!(a.sessions.validate(&a.sessions.sign(60, "p3".into(), claims()).unwrap()).await.is_some());
+
+    // ── a_new_key_is_taken_at_once_by_a_replica_that_has_just_read_its_keys (session-key-race) ──
+    // The second replica reads its keys now (a token naming a key nobody holds); the first then makes a new key and signs
+    // with it: the second takes that token at once, not a second later.
+    let made_up = format!("{}.{}.{}", b64(json!({"typ": "JWT", "alg": "HS512", "kid": "4000"})), parts[1], parts[2]);
+    let read = std::time::Instant::now();
+    assert!(b.sessions.validate(&made_up).await.is_none(), "a key nobody holds");
+    let fourth = ferrum_server::sessions::rotate(&a.kernel, &a.vault, Duration::from_secs(3600), false).await.unwrap();
+    a.sessions.reload().await.unwrap();
+    let fresh = a.sessions.sign(600, "p4".into(), claims()).unwrap();
+    let after = read.elapsed();
+    assert!(b.sessions.validate(&fresh).await.is_some(), "key {fourth}'s token, {after:?} after the second replica read its keys");
     needles.push(second);
 }
 
