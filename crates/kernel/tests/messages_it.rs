@@ -145,10 +145,155 @@ fn hmac_hex(secret: &str, body: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
+/// The tests one at a time: each starts from an empty database.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn run<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
+    let _one = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
+    rt.block_on(async { tokio::spawn(f).await.unwrap() });
+}
+
 #[test]
 fn messages_from_templates_on_every_channel() {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().unwrap();
-    rt.block_on(async { tokio::spawn(scenario()).await.unwrap() });
+    run(scenario());
+}
+
+#[test]
+fn a_temporary_refusal_keeps_no_secret_value() {
+    run(temporary_refusal());
+}
+
+#[test]
+fn a_mail_servers_refusal_names_no_recipient() {
+    run(mail_refusal());
+}
+
+/// An empty database, the vault open, a workspace with the notes package and its administrator.
+async fn boot(mailer: Arc<dyn ferrum_kernel::Mailer>) -> (Arc<Kernel>, Ctx) {
+    let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
+    sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    let opener = Opener { database_url: url, file: PathBuf::from("/nonexistent/root.key"), transit: None, command: None, kdf: Kdf { m_kib: 64, t: 1, p: 1 } };
+    vault::open(&db, opener, false).await.expect("the vault opens");
+    let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
+    let files: BTreeMap<String, String> =
+        [("package.yaml", PACKAGE), ("entities/note.yaml", ENTITIES)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let notes = ferrum_meta::catalog::load_package_files(&files).expect("package");
+    let settings = KernelSettings { webhooks_allow_private: true, public_url: Some("https://ferrum.test".into()), ..Default::default() };
+    let k = Kernel::boot(db, Catalog::from_packages(vec![core, notes]).unwrap(), HookRegistry::default(), settings, Some(mailer)).await.expect("boot");
+    let tenant = k
+        .create_tenant(NewTenant {
+            slug: "msg".into(),
+            name: "msg".into(),
+            admin_email: "admin@msg.test".into(),
+            admin_password: "Correct-Horse-9".into(),
+            admin_name: None,
+            packages: vec!["notes".into()],
+            settings: None,
+        })
+        .await
+        .unwrap();
+    let session = k.login("msg", "admin@msg.test", "Correct-Horse-9").await.unwrap();
+    let admin = k.load_ctx(tenant, session.user, None, "it".into()).await.unwrap();
+    (k, admin)
+}
+
+/// A provider's answer that echoes what it was sent (TP-S1): the message's secret value, the channel's credential and the
+/// recipient's number are dots in the job's error, whether the refusal is temporary (the job's `last_error`, the server's
+/// log) or final (the send's `error`).
+async fn temporary_refusal() {
+    let (k, admin) = boot(Arc::new(Captured)).await;
+    k.update_tenant_settings(&admin, json!({"messages": {"calling_code": "+49", "trunk_prefix": "0"}}).as_object().unwrap()).await.unwrap();
+    let (code, token, number) = ("482913", "s3cr3t-t0ken", "+491701234567");
+    let echo = format!(r#"{{"error": {{"message": "you sent 'Your code is {code}' to {number} as Bearer {token} (digits 491701234567)"}}}}"#);
+    let answers = Arc::new(Mutex::new(vec![(503, echo.clone()), (400, echo)]));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let port = provider(answers, seen.clone()).await;
+    let channel = ChannelInput {
+        kind: "text".into(),
+        name: "Gateway".into(),
+        description: serde_json::from_value(json!({
+            "url": format!("http://127.0.0.1:{port}/send"),
+            "headers": {"Authorization": "Bearer {{ secret.token }}"},
+            "body": r#"{"to": {{ to|json }}, "text": {{ text|json }}}"#,
+            "error_at": "/error/message"
+        }))
+        .unwrap(),
+        secrets: Some(BTreeMap::from([("token".to_string(), token.to_string())])),
+        enabled: true,
+    };
+    k.save_message_channel(&admin, None, &channel).await.unwrap();
+    let m = Message {
+        template: "notes.code".into(),
+        to: to("0170 1234567"),
+        channels: vec!["text".into()],
+        values: serde_json::Map::from_iter([("code".to_string(), json!(code))]),
+        secret: vec!["code".into()],
+        ..Default::default()
+    };
+    let s = send(&k, &admin, m).await;
+    let job_error = || {
+        let k = k.clone();
+        async move {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let e: Option<String> =
+                sqlx::query_scalar("select last_error from job where kind = $1").bind(messages::DELIVER_KIND).fetch_one(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+            e.unwrap_or_default()
+        }
+    };
+    let clear = |said: &str, what: &str| {
+        for secret in [code, token, number, "491701234567"] {
+            assert!(!said.contains(secret), "{what} holds {secret}: {said}");
+        }
+        assert!(said.contains("••••••"), "{what}: {said}");
+    };
+    run_jobs(&k).await;
+    let request = seen.lock().unwrap()[0].clone();
+    assert!(request.contains(token) && request.contains(code) && request.contains(number), "what went out carried them: {request}");
+    let r = row(&k, &admin, s[0].id).await;
+    assert_eq!(r["state"], "queued", "a temporary refusal is tried again: {r}");
+    let temporary = job_error().await;
+    assert!(temporary.starts_with("the provider answered 503"), "{temporary}");
+    clear(&temporary, "the job's error after a temporary refusal");
+    run_jobs(&k).await;
+    let r = row(&k, &admin, s[0].id).await;
+    assert_eq!(r["state"], "failed", "{r}");
+    clear(r["error"].as_str().unwrap_or_default(), "the send's error after a final refusal");
+}
+
+/// A mailer that refuses as a mail server does, quoting the address.
+struct Refusing;
+
+#[async_trait::async_trait]
+impl ferrum_kernel::Mailer for Refusing {
+    async fn send(&self, to: &str, _subject: &str, _html: &str) -> ferrum_kernel::Result<()> {
+        Err(ferrum_kernel::Error::Unavailable(format!("mail delivery failed: permanent error (550): 5.1.1 <{to}>: Recipient address rejected")))
+    }
+}
+
+/// A mail server's refusal quotes the recipient; the outbox's error (shown to administrators, and the server's log)
+/// keeps none of it.
+async fn mail_refusal() {
+    let (k, admin) = boot(Arc::new(Refusing)).await;
+    let note = k.insert(&admin, "Note", obj(json!({"title": "Ann", "email": "Ann.Lee@Example.com"}))).await.unwrap();
+    let m = Message {
+        template: "notes.welcome".into(),
+        entity: Some("Note".into()),
+        record: Some(note["id"].as_str().unwrap().parse().unwrap()),
+        to: vec![Recipient { email: Some("Ann.Lee@Example.com".into()), ..Default::default() }],
+        channels: vec!["email".into()],
+        ..Default::default()
+    };
+    assert_eq!(send(&k, &admin, m).await[0].state, "queued");
+    drain(&k).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    let said: Option<String> = sqlx::query_scalar("select last_error from outbox where topic = 'ferrum.mail'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let said = said.unwrap_or_default();
+    assert!(said.contains("Recipient address rejected"), "the refusal is kept: {said}");
+    assert!(!said.to_lowercase().contains("ann.lee@example.com"), "the address is not: {said}");
 }
 
 async fn scenario() {

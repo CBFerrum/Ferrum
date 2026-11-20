@@ -144,6 +144,31 @@ pub trait Mailer: Send + Sync {
     }
 }
 
+/// The server's mailer, its refusals without the recipient's address: a mail server's answer often quotes it, and a
+/// refusal is kept in the outbox's error and the server's log (TP-S1).
+struct Unaddressed(Arc<dyn Mailer>);
+
+impl Unaddressed {
+    fn hide(e: Error, to: &str) -> Error {
+        e.redact(&[to.to_string(), to.to_lowercase()])
+    }
+}
+
+#[async_trait]
+impl Mailer for Unaddressed {
+    async fn send(&self, to: &str, subject: &str, html: &str) -> Result<()> {
+        self.0.send(to, subject, html).await.map_err(|e| Self::hide(e, to))
+    }
+
+    fn can_attach(&self) -> bool {
+        self.0.can_attach()
+    }
+
+    async fn send_with(&self, to: &str, subject: &str, html: &str, attachments: &[MailAttachment]) -> Result<()> {
+        self.0.send_with(to, subject, html, attachments).await.map_err(|e| Self::hide(e, to))
+    }
+}
+
 /// A file attached to an e-mail.
 #[derive(Debug, Clone)]
 pub struct MailAttachment {
@@ -504,7 +529,7 @@ impl Kernel {
             registry,
             hooks,
             settings,
-            mailer,
+            mailer: mailer.map(|m| Arc::new(Unaddressed(m)) as Arc<dyn Mailer>),
             users: DashMap::new(),
             sessions: DashMap::new(),
             hosts: DashMap::new(),

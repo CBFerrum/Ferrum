@@ -101,6 +101,10 @@ impl PushService {
                     }
                     let body = buf[head_end..].to_vec();
                     let status = s.answers.lock().unwrap().get(&path).copied().unwrap_or(201);
+                    // 0: hangs up without an answer.
+                    if status == 0 {
+                        return;
+                    }
                     s.received.lock().unwrap().push(Received { path, headers, body });
                     let _ = sock.write_all(format!("HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes()).await;
                 });
@@ -327,6 +331,26 @@ async fn notifications_reach_subscribed_devices() {
     let retried = svc.take();
     assert_eq!(retried.len(), 1);
     assert_eq!(on_laptop.open(&retried[0].body)["title"], "Cy mentioned you");
+
+    // ── A push service that hangs up: the device's address is in no error kept or logged. ──
+    svc.answer("/push/laptop2", 0);
+    mention(&k, acme, ana_id, "Ed mentioned you", record).await;
+    drain(&k).await;
+    let said = {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let e: Option<String> =
+            sqlx::query_scalar("select last_error from outbox where topic = 'ferrum.notification.push' and processed_at is null and attempts = 1 and not dead")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        e.unwrap_or_default()
+    };
+    assert!(said.contains("unreachable") && !said.contains("/push/laptop2") && !said.contains("127.0.0.1"), "{said}");
+    svc.answer("/push/laptop2", 201);
+    sql(&k, "update outbox set available_at = now() where topic = 'ferrum.notification.push' and processed_at is null").await;
+    drain(&k).await;
+    assert_eq!(svc.take().len(), 1, "sent once the service answers");
 
     // ── Read in the bar before it went out: not pushed. ──
     let read = mention(&k, acme, ana_id, "Di mentioned you", record).await;

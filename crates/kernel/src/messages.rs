@@ -1488,6 +1488,21 @@ impl Kernel {
             true => serde_json::from_str(&self.kept_alone(&channel_place(tenant, channel_id.unwrap_or_default())).await?).map_err(Error::internal)?,
             false => json!({}),
         };
+        // What an answer or an error may echo is kept and logged as dots: the message's secret values, the channel's own
+        // secrets and the recipient's number (TP-S1).
+        let mut mask = mask;
+        let echoed: Vec<String> = secrets
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, v)| v.as_str())
+            .chain([to, to.trim_start_matches('+')])
+            .filter(|v| v.chars().count() >= 4)
+            .map(str::to_string)
+            .collect();
+        mask.extend(encodings(&echoed));
+        mask.sort_by_key(|m| std::cmp::Reverse(m.len()));
+        let hide = |s: String| masked(&Value::String(s), &mask).as_str().unwrap_or_default().to_string();
         let vars = json!({"to": to, "text": message["text"], "template_name": message["template_name"], "values": message["values"],
                           "from": desc.from, "secret": secrets, "language": pending["language"]});
         let r = |s: &str| render(s, false, &vars, false);
@@ -1521,18 +1536,18 @@ impl Kernel {
                 Ok(json!({"sent": status}))
             }
             Ok((status, answer)) if temporary.contains(&status) && !last => {
-                Err(Error::Unavailable(format!("the provider answered {status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_default())))
+                Err(Error::Unavailable(hide(format!("the provider answered {status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_default()))))
             }
             Ok((status, answer)) => {
-                let why = format!("{status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_else(|| answer.to_string().chars().take(300).collect()));
-                let why = masked(&Value::String(why), &mask);
-                self.settle(tenant, id, "failed", None, why.as_str(), None).await?;
+                let why =
+                    hide(format!("{status}: {}", at(&answer, desc.error_at.as_deref()).unwrap_or_else(|| answer.to_string().chars().take(300).collect())));
+                self.settle(tenant, id, "failed", None, Some(&why), None).await?;
                 Ok(json!({"failed": status}))
             }
-            Err(e @ Error::Unavailable(_)) if !last => Err(e),
+            Err(Error::Unavailable(m)) if !last => Err(Error::Unavailable(hide(m))),
             Err(e) => {
-                let why = masked(&Value::String(e.to_string()), &mask);
-                self.settle(tenant, id, "failed", None, why.as_str(), None).await?;
+                let why = hide(e.to_string());
+                self.settle(tenant, id, "failed", None, Some(&why), None).await?;
                 Ok(json!({"failed": why}))
             }
         }
