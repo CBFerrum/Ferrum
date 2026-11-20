@@ -452,6 +452,35 @@ async fn answering(k: &Kernel, admin: &Ctx) {
     assert_eq!(labels("voice:S1%").await, 1, "the job handled it, once");
 }
 
+/// TP-3c, a_calls_secret_input_never_reaches_a_capture_or_an_unkeyed_digest: a value the caller marks secret is sent,
+/// masked in the debug capture (the carrier's debug is on), and the digest its key is checked by is keyed: not the one
+/// the same inputs give unmarked, and the same again for a repeat.
+async fn secret_inputs(k: &Kernel, admin: &Ctx, seen: &Seen) {
+    const PIN: &str = "pin-4417-kept";
+    let inputs = json!({"weight": 2, "ref": PIN});
+    let marked = [PIN.to_string()];
+    let r = connections::call_with_secrets(k, admin, None, &call("carrier", "create_label", inputs.clone(), Some("parcel-pin")), &marked).await.unwrap();
+    let before = seen.lock().unwrap().len();
+    assert!(seen.lock().unwrap().last().unwrap().ends_with(&format!("\"ref\": \"{PIN}\"}}")), "the service gets it");
+    let again = connections::call_with_secrets(k, admin, None, &call("carrier", "create_label", inputs.clone(), Some("parcel-pin")), &marked).await;
+    assert_eq!((again.unwrap(), seen.lock().unwrap().len()), (r, before), "a repeat of the key is the same keyed digest: answered, nobody called");
+    connections::call(k, admin, None, &call("carrier", "create_label", inputs, Some("parcel-plain"))).await.unwrap();
+    let row = |key: &'static str| async move {
+        let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+        let r: (String, Option<Value>) = sqlx::query_as("select input_digest, debug from conn_call where tenant_id = $1 and key = $2 and debug is not null")
+            .bind(admin.tenant)
+            .bind(key)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        r
+    };
+    let ((secret_digest, capture), (plain_digest, _)) = (row("parcel-pin").await, row("parcel-plain").await);
+    assert!(!capture.unwrap().to_string().contains(PIN), "the capture masks it");
+    assert_ne!(secret_digest, plain_digest, "never the digest anyone can make from the inputs");
+}
+
 fn sign(secret: &str, ts: i64, body: &str) -> String {
     use hmac::Mac;
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
@@ -1752,6 +1781,7 @@ async fn scenario() {
     assert_eq!(captured["debug"]["request"]["headers"]["authorization"], "••••••");
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
+    secret_inputs(&k, &admin, &seen).await;
     being_called(&k, &admin).await;
     answering(&k, &admin).await;
     payment_providers(&k, &admin, &base, &seen).await;

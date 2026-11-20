@@ -1440,6 +1440,8 @@ pub(crate) struct Extra<'a> {
     pub range: Option<(Uuid, u64, u64)>,
     /// The public addresses made for the call (`public_files`, BD-64).
     pub public: Option<&'a Value>,
+    /// Values of the inputs the caller marked secret ([`call_with_secrets`]): masked as the connection's own secrets are.
+    pub secrets: &'a [String],
 }
 
 /// Calls an operation of a connection and gives its mapped result: for apps (docs/api.md, "Connections"). `app` is the
@@ -1448,6 +1450,14 @@ pub(crate) struct Extra<'a> {
 /// the connection's `limit`) asked to wait, else `Unavailable`; any other, `Invalid`.
 pub async fn call(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
     k.call_connection(ctx, app, c).await
+}
+
+/// [`call`] with values of its inputs the caller marks secret (a card's PIN, a password it relays): sent as given,
+/// masked in the debug capture and in error texts as the connection's own secrets are, and the digest a key's inputs
+/// are checked by is keyed with the workspace's key for receipts. One request only: an operation made of steps refuses
+/// them.
+pub async fn call_with_secrets(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call, secrets: &[String]) -> Result<Value> {
+    k.call_waiting(ctx, app, c, None, secrets).await
 }
 
 /// What a money caller needs of a call's answer: whether a request left the server (`sent`), the service's status, the
@@ -1481,7 +1491,7 @@ pub fn description_digest(description: &Value) -> Result<String> {
 /// [`call`], made only while the stored description is the one whose [`description_digest`] is `expect`; otherwise
 /// refused (`description_changed`) with nothing sent and no attempt counted.
 pub async fn call_expecting(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call, expect: &str) -> Result<Value> {
-    k.call_waiting(ctx, app, c, Some(expect)).await
+    k.call_waiting(ctx, app, c, Some(expect), &[]).await
 }
 
 /// [`call_answer`], pinned as [`call_expecting`] is.
@@ -1526,12 +1536,12 @@ impl Kernel {
     /// A temporary failure is `RetryAfter` when the service (or the connection's limit) said when to come back, else
     /// `Unavailable` (BD-57).
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
-        self.call_waiting(ctx, app, c, None).await
+        self.call_waiting(ctx, app, c, None, &[]).await
     }
 
-    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<Value> {
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>, secrets: &[String]) -> Result<Value> {
         // Boxed: an app's future that awaits a call stays within the compiler's depth for layouts.
-        let (outcome, ..) = Box::pin(self.call_outcome(ctx, app, c, expect)).await?;
+        let (outcome, ..) = Box::pin(self.call_outcome(ctx, app, c, expect, secrets)).await?;
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
             Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
@@ -1541,7 +1551,7 @@ impl Kernel {
     }
 
     async fn call_answered(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<CallAnswer> {
-        let (outcome, status, sent, exists) = match Box::pin(self.call_outcome(ctx, app, c, expect)).await {
+        let (outcome, status, sent, exists) = match Box::pin(self.call_outcome(ctx, app, c, expect, &[])).await {
             Ok(o) => o,
             // Refused before anything was sent: the connection's checks, its inputs, its rights, a key in use.
             Err(e @ (Error::Db(_) | Error::Internal(_))) => return Err(e),
@@ -1558,7 +1568,14 @@ impl Kernel {
 
     /// One call made, as `call` and `call_answer` both make it: the outcome, the status the service answered, and whether
     /// a request left the server.
-    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<(Outcome, Option<u16>, bool, bool)> {
+    async fn call_outcome(
+        &self,
+        ctx: &Ctx,
+        app: Option<&str>,
+        c: &Call,
+        expect: Option<&str>,
+        secrets: &[String],
+    ) -> Result<(Outcome, Option<u16>, bool, bool)> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
         // Pinned: only under the description the caller checked, read with the secrets the call uses; nothing sent and no
         // attempt counted otherwise.
@@ -1590,7 +1607,17 @@ impl Kernel {
         if changes && key.is_none() {
             return Err(Error::invalid(format!("{} changes something at the service, so it needs a key", c.operation)));
         }
-        let given = digest(&inputs);
+        if !secrets.is_empty() && !more.steps.is_empty() {
+            return Err(Error::invalid(format!("{} is made of steps: values marked secret go in one request", c.operation)));
+        }
+        // Keyed when the caller marked values secret (TP-3c), so that a digest kept with the key cannot be used to try
+        // them.
+        let given = if secrets.is_empty() {
+            digest(&inputs)
+        } else {
+            let (_, receipts) = self.making_key(crate::vault::Scope::Workspace(ctx.tenant), crate::vault::Keyed::Receipt).await?;
+            receipts.fingerprint("connection call inputs", &format!("{}|{inputs}", ctx.tenant))
+        };
         // One worker makes a key at a time, and a key that went through answers what it gave; its clock is fixed at
         // its first attempt.
         let (mut held, mut clock) = (None, Utc::now());
@@ -1614,7 +1641,7 @@ impl Kernel {
         let about = about.as_ref().map(|(e, r)| (e.as_str(), *r));
         let public = self.public_files(ctx, &conn, &c.operation, (&inputs, key), about, more).await?;
         let (outcome, status, sent, exists) = if more.steps.is_empty() {
-            let extra = Extra { now: Some(clock), public: Some(&public.vars), ..Default::default() };
+            let extra = Extra { now: Some(clock), public: Some(&public.vars), secrets, ..Default::default() };
             let (o, status, sent, exists) =
                 Box::pin(self.perform_full(ctx, &conn, &c.operation, &inputs, key, extra, about, changes.then_some(given.as_str()))).await?;
             // No status and a refusal: the guard or the request's making refused it before anything left.
@@ -1709,6 +1736,7 @@ impl Kernel {
         let bare = conn.desc.signs_in_with(name);
         let started = Instant::now();
         let mut mask = conn.mask();
+        mask.extend(extra.secrets.iter().cloned());
         let mut debug = None;
         let answered = if conn.desc.test {
             let f = op.fixture.clone().unwrap_or_else(|| json!({"status": 200, "body": {}}));
@@ -2778,7 +2806,7 @@ impl JobHandler for Queued {
             ctx.user = u;
         }
         // A "later" with the service's own Retry-After comes back when it said, capped.
-        let result = k.call_waiting(&ctx, None, &c, None).await?;
+        let result = k.call_waiting(&ctx, None, &c, None, &[]).await?;
         Ok(json!({"result": result}))
     }
 

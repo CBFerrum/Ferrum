@@ -387,6 +387,10 @@ async fn steps(k: &Arc<Kernel>, admin: &Ctx, base: &str, store: &Memory) {
     k.save_connection_def(admin, None, &input("net", desc, Some(json!({"token": SECRET})))).await.unwrap();
     let publish = |key: &str, text: &str| call("net", "publish", json!({"owner": "urn:person:1", "text": text, "file": photo}), Some(key));
 
+    // TP-3c: values a caller marks secret go in one request, never across steps (each would be captured).
+    let e = connections::call_with_secrets(k, admin, None, &publish("p-0", "Hello"), &["Hello".into()]).await.unwrap_err();
+    assert!(e.to_string().contains("one request"), "{e}");
+
     // The post is "not now" once: the register and the upload are not made again.
     fail_once("/v1/posts", 503);
     let e = connections::call(k, admin, None, &publish("p-1", "Hello")).await.unwrap_err();

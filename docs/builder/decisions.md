@@ -2195,6 +2195,11 @@ undone with its transaction, the app's `fallback` is answered, and the job hands
 Handlers get the inbound address's query through `InboundHandler::handle_call` (defaulting to `handle`), never the
 parameter that carries the connection's secret; it is dropped with the payload once the call is processed.
 
+A call's own secret values (TP-3c) go through `connections::call_with_secrets`, beside `call`, since apps build `Call`
+as a full literal: they join the connection's secrets in what masks the debug capture and error texts, and the input
+digest kept with a key is a fingerprint under the workspace's key for receipts instead of a bare hash. A repeat after
+that key rotates is told apart from the first, as a receipt's is, and refused as "other inputs" (a new key).
+
 **Why.** Telecom providers ask for a call's next instructions in the answer to their webhook (TP-3). The answer is
 the app's, not the description's, so that descriptions and apps building an `Inbound` keep compiling.
 

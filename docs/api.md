@@ -1425,7 +1425,11 @@ refused (409, naming the app and the reason); turning it off stays possible (its
 **Calling** — an app: `ferrum_kernel::connections::call(&kernel, &ctx, Some("erp"), &Call { connection: "carrier".into(),
 operation: "create_label".into(), inputs: json!({"weight": 2, "ref": "P-9"}), key: Some(format!("label:{id}")),
 entity: Some("Shipment".into()), record: Some(id) })` gives the mapped result; `Unavailable` means "later", `Invalid` the
-service's "no" in its words. The effect, on buttons, transitions, approvals and automations:
+service's "no" in its words. `connections::call_with_secrets(&k, &ctx, app, &call, &[pin])` is the same call with
+values of its inputs the caller marks secret (a card's PIN, a password it relays): sent as given, masked in the debug
+capture and in error texts as the connection's own secrets are, and the digest a key's inputs are checked by is keyed
+with the workspace's key for receipts (TP-3c). An operation made of steps refuses them. The effect, on buttons,
+transitions, approvals and automations:
 
 ```json
 {"type": "call", "connection": "carrier", "operation": "create_label", "inputs": {"weight": "doc.weight", "ref": "doc.number"},
