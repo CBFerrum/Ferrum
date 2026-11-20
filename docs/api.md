@@ -2227,6 +2227,46 @@ these). Off unless the server has `FERRUM_ASSISTANT_API_KEY`.
   looking at (`{entity, id, title}`); `/api/shell` says `assistant: true` and lists the panel when
   the person may use it.
 
+## Agents — `/api/agents`
+
+An agent is a record one member owns; every request it makes is its owner's as they stand now, narrowed by its grants:
+never more than its owner, never an administrator. Agents do not sign in yet (the build refuses every agent credential
+until their checks have landed); their records, keys and settings are managed here. Every change is a person's at a
+screen: the browser's session, never a key or a token (the owner's own included) → `403` with `"error": "at_screen"`. An
+administrator sees and manages every agent; anyone else their own (another's answers `404`).
+
+* `GET /api/agents?owner=&state=` → `{"agents": [{id, name, state, revision, owner: {id, name, email}, created_at,
+  expires_at, last_used_at, oauth_client}]}`; `owner` other than oneself is an administrator's.
+* `POST /api/agents {name, owner?, grants?, classes?, limits?, data_policy?, networks?, expires_at?, approver_role?,
+  oauth_client?}` → `201` and the agent. A member makes one for themselves, where the workspace lets members
+  (`agents.members_may_create`); an administrator for any active member. `grants`: `{"entities": {"*" | Entity: [verbs as
+  a records key names them: read, write, create, delete, submit, cancel, export, import, "<verb> (own records)", "read
+  field group <g>", "write field group <g>"]}, "operations": [capability ids or "prefix.*"]}` (default: read everything,
+  at most 200 of each). `classes`: per class (`transactional`, `external`, `money`, `destructive`, `decides`,
+  `unclassified`), `allowed`, `needs_person` or `forbidden`; `decides` and `unclassified` are never `allowed`; an owner
+  only makes a class stricter than the workspace's, and a class an owner set counts at least as the workspace's does now.
+  `limits`: `calls_per_minute`, `rows_per_minute`, `records_per_call` (1 to 200), `asks_per_day`, `upload_mb_per_day`
+  (each within the workspace's caps) and `money` (per currency `{per_call, per_day}`). `data_policy` (what it may read of
+  field groups and internal entities), `approver_role`, `money` and `oauth_client` are an administrator's. At most 20 live
+  agents per person; a name once per person (`409`).
+* `GET /api/agents/{id}` → the agent: `owner`, `connected`, `keys`, `grants`, `classes: {set, set_by_administrator,
+  effective}`, `limits` (in force), `data_policy`, `approver_role`, `networks`, `usage_30d`.
+* `PATCH /api/agents/{id} {revision, …the fields above but owner…}` → the agent, its `revision` moved on; a stale
+  `revision` → `409`; a revoked agent → `409`. An owner changes what they could set when making it.
+* `POST /api/agents/{id}/pause`, `/resume`, `/revoke` → the agent. The same state again does nothing; a revoked agent
+  stays revoked (`409`). Revoking revokes its keys at once.
+* `GET /api/agents/{id}/keys` → `{"keys": [{id, name, created_at, expires_at, last_used_at, revoked_at}]}`;
+  `POST …/keys {name, expires_at?}` → `201 {id, key}`, the key shown this once (at most 5 live keys); `DELETE
+  …/keys/{key}` → `204`. An agent's key never opens its owner's account, and is not among the owner's API keys.
+* `GET /api/agents/{id}/usage?days=30` (1 to 400) → `{"days": [{day, calls, refused, asked, upload_bytes}]}`, newest first.
+* `GET /api/agents/{id}/activity?before=&limit=50` (1 to 200) → `{"items": [{kind: "audit", at, action, by, details}],
+  "next_before"}`, newest first.
+
+The workspace's `agents` setting (`PUT /api/admin/settings {"agents": …}`, an administrator at a screen):
+`{"enabled": true, "members_may_create": true, "classes": {"transactional": "allowed", …: "needs_person"},
+"approver_role": null, "caps": {"calls_per_minute": 300, "owner_calls_per_minute": 600, "rows_per_minute": 5000,
+"asks_per_day": 100, "upload_mb_per_day": 200}}`. Off, every agent is refused at its next request.
+
 ## AI agents (MCP)
 
 `POST /mcp` — Model Context Protocol, Streamable HTTP, stateless (JSON responses, no session id is minted, and

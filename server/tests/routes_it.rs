@@ -42,6 +42,19 @@ async fn every_controller_mounts_once_and_is_reached() {
         (Method::DELETE, format!("/api/admin/connections/{id}")),
         (Method::POST, format!("/api/admin/connections/{id}/try")),
         (Method::GET, format!("/api/admin/connections/{id}/pulls")),
+        // The agents' console (agents.rs).
+        (Method::GET, "/api/agents".to_string()),
+        (Method::POST, "/api/agents".to_string()),
+        (Method::GET, format!("/api/agents/{id}")),
+        (Method::PATCH, format!("/api/agents/{id}")),
+        (Method::POST, format!("/api/agents/{id}/pause")),
+        (Method::POST, format!("/api/agents/{id}/resume")),
+        (Method::POST, format!("/api/agents/{id}/revoke")),
+        (Method::GET, format!("/api/agents/{id}/keys")),
+        (Method::POST, format!("/api/agents/{id}/keys")),
+        (Method::DELETE, format!("/api/agents/{id}/keys/{{key}}")),
+        (Method::GET, format!("/api/agents/{id}/usage")),
+        (Method::GET, format!("/api/agents/{id}/activity")),
     ] {
         assert_eq!(listed.iter().filter(|(m, p)| *m == method && *p == path).count(), 1, "{method} {path} mounted once");
     }
