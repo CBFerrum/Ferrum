@@ -432,6 +432,7 @@ mod tests {
                     of: None,
                     fields: vec![],
                     max_items: None,
+                    ask: true,
                 }],
             )],
             code: Some(("Enter the code".into(), "Send me a code".into())),

@@ -176,7 +176,7 @@ fn checked_params(declared: &[ActionParam], given: &Map<String, Value>, fixed: &
         if fixed.contains_key(name) {
             continue;
         }
-        let p = declared.iter().find(|p| &p.name == name).ok_or_else(|| Error::field(name, "this link asks for no such value"))?;
+        let p = declared.iter().find(|p| &p.name == name && p.ask).ok_or_else(|| Error::field(name, "this link asks for no such value"))?;
         if p.ptype == "files" {
             // Files come as uploads (BD-44), never as text naming stored ones.
             return Err(Error::field(name, "files are uploaded, not named"));
@@ -481,7 +481,9 @@ impl Kernel {
             .actions
             .iter()
             .filter_map(|a| ent.def.actions.iter().find(|d| &d.name == a))
-            .map(|d| (d.name.clone(), d.label.clone(), d.params.iter().filter(|p| !fixed.contains_key(&p.name) && p.ptype != "link").cloned().collect()))
+            .map(|d| {
+                (d.name.clone(), d.label.clone(), d.params.iter().filter(|p| p.ask && !fixed.contains_key(&p.name) && p.ptype != "link").cloned().collect())
+            })
             .collect();
         let brand = self.public_brand(tenant, None, None).await?;
         Ok(Some(LinkPage {
@@ -787,6 +789,7 @@ mod tests {
             of: None,
             fields: vec![],
             max_items: None,
+            ask: true,
         };
         let declared = [p("rating", "int", true), p("note", "text", false), p("price", "data", false)];
         let fixed = Map::from_iter([("price".to_string(), json!("100"))]);

@@ -853,6 +853,9 @@ fn shaped(p: &crate::ActionParam) -> Result<(), String> {
         _ if !p.fields.is_empty() => return Err("fields are a list's or a row's".into()),
         _ => {}
     }
+    if !p.ask && p.required {
+        return Err("a parameter not asked for is given by code or a caller, so it cannot be required".into());
+    }
     let mut seen = std::collections::HashSet::new();
     for f in &p.fields {
         if !one(&f.ptype)
@@ -1696,6 +1699,21 @@ mod tests {
         assert!(refused(&format!("[{{name: issue, label: Issue, {}}}]", once.replace("[code]", "[pin]"))).contains("answer_once"));
         let unknown = serde_yaml::from_str::<ActionDef>("{name: place, label: Place, contract: {effect: query, sideways: true}}");
         assert!(unknown.unwrap_err().to_string().contains("sideways"), "unknown keys are refused when the package is read");
+    }
+
+    /// param-not-asked: a parameter code or a caller gives, which no dialog asks for, is optional and says so in the
+    /// metadata screens read.
+    #[test]
+    fn a_parameter_not_asked_for_is_optional_and_in_the_metadata() {
+        let items = "{name: items, label: Lines, type: list, of: data, ask: false}";
+        assert!(with_actions(&format!("[{{name: order, label: Order, params: [{items}]}}]")).is_ok());
+        let required = items.replace("ask: false", "ask: false, required: true");
+        let e = with_actions(&format!("[{{name: order, label: Order, params: [{required}]}}]")).unwrap_err().to_string();
+        assert!(e.contains("not asked for"), "{e}");
+        let p: crate::ActionParam = serde_yaml::from_str(items).unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap()["ask"], serde_json::json!(false));
+        let asked: crate::ActionParam = serde_yaml::from_str("{name: supplier, label: Supplier}").unwrap();
+        assert!(asked.ask && serde_json::to_value(&asked).unwrap().get("ask").is_none(), "asked unless declared otherwise");
     }
 
     /// param-lists: a list of one declared type or of rows with declared fields, and a row; nothing free-form.

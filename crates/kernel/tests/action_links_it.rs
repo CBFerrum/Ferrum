@@ -78,7 +78,8 @@ fn quotation() -> Vec<NewCustomization> {
         ],
         "actions": [
             {"name": "accept", "label": "Accept the quotation", "permission": "write", "condition": "doc.status == 'Open'",
-             "params": [{"name": "signed_by", "label": "Your full name", "type": "data", "required": true}],
+             "params": [{"name": "signed_by", "label": "Your full name", "type": "data", "required": true},
+                        {"name": "batch", "label": "Batch", "type": "data", "ask": false}],
              "effects": [{"type": "set_fields", "values": {"status": "'Accepted'", "accepted_by": "params.signed_by"}}]},
             {"name": "rate", "label": "Rate us", "permission": "write",
              "params": [{"name": "rating", "label": "Rating", "type": "int", "required": true}, {"name": "note", "label": "Comment", "type": "text"}],
@@ -183,6 +184,8 @@ async fn scenario() {
         k.use_link("acme", &t, "accept", &given(json!({"signed_by": "Ann", "status": "Lost"})), None).await.is_err(),
         "a value the action does not ask for"
     );
+    // param-not-asked: a parameter no dialog asks for is neither on the page (above: one) nor taken from a visitor.
+    assert!(k.use_link("acme", &t, "accept", &given(json!({"signed_by": "Ann", "batch": "B-7"})), None).await.is_err(), "a value the page does not ask for");
     assert_eq!(get(q1).await["status"], json!("Open"), "nothing changed yet");
     k.use_link("acme", &t, "accept", &given(json!({"signed_by": "Ann Buyer"})), None).await.unwrap().expect("accepted");
     let q = get(q1).await;
