@@ -115,7 +115,7 @@ async fn serve_in(ctx: &AppContext, environment: Environment, zones: &str) -> Se
 }
 
 /// A zone that has the operator's routes, which every [`call`] is in by its address.
-const OPERATIONS: &str = r#"{"operations": {"operator": true, "networks": ["10.9.8.0/24"]}}"#;
+const OPERATIONS: &str = r#"{"operations": {"operator": true, "networks": ["10.9.0.0/16"]}}"#;
 
 /// [`serve_in`] the test environment and [`OPERATIONS`].
 async fn serve(ctx: &AppContext) -> Served {
@@ -370,17 +370,17 @@ async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &
         assert_eq!(answer(&r), as_unknown("/api/operator/settings/session_days"), "from {from}: {}", r.body);
     }
     // Tries are counted by address before the token is compared, as sign-ins are: 20 a minute, then refused whatever
-    // the token; another address has its own.
+    // the token; another network (an IPv4 /24) has its own.
     let from = |ip: &'static str, t: &str| {
         let (sa, t) = (&sa, t.to_string());
         async move { call(sa, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", &t), ("x-forwarded-for", ip)], None).await.status }
     };
     for _ in 0..20 {
-        assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::FORBIDDEN);
+        assert_eq!(from("10.9.66.66", "a-guess-of-a-token").await, StatusCode::FORBIDDEN);
     }
-    assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::TOO_MANY_REQUESTS, "the 21st in a minute");
-    assert_eq!(from("10.9.8.66", &one).await, StatusCode::TOO_MANY_REQUESTS, "the right one too, from there");
-    assert_eq!(from("10.9.8.67", &one).await, StatusCode::OK, "another address");
+    assert_eq!(from("10.9.66.66", "a-guess-of-a-token").await, StatusCode::TOO_MANY_REQUESTS, "the 21st in a minute");
+    assert_eq!(from("10.9.66.66", &one).await, StatusCode::TOO_MANY_REQUESTS, "the right one too, from there");
+    assert_eq!(from("10.9.67.67", &one).await, StatusCode::OK, "another network");
     let status = operator(&one, &sb).await;
     assert_eq!((status.status, status.json()["open"].clone()), (StatusCode::OK, json!(true)), "the other replica takes it at once");
     let two = made(600).await;

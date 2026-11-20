@@ -116,6 +116,13 @@ for kv in "${DBS[@]}"; do psql "$PG/postgres" -q -c "drop database if exists ${k
 [ "${NO_DEBUG:-}" = 1 ] && clippy
 
 step ui
+# An app with no interface of its own (Intelligence) has no step to run: said, not failed. One with a ui/ still fails
+# when its checks do.
+if [ ! -d "$APP_DIR/ui" ]; then
+  echo "no ui/: no interface to check"
+  echo "== $( [ $fail = 0 ] && echo PASS || echo FAIL ): $APP"
+  exit $fail
+fi
 # The interface builds the kit from ../../ferrum/web, so it is built in a layout that has one.
 W=$(mktemp -d "${TMPDIR:-/tmp}/app-ci-ui.XXXXXX")
 mkdir -p "$W/ferrum" "$W/app" && ln -s "$FRONTEND" "$W/ferrum/web"

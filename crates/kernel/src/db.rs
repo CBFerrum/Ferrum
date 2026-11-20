@@ -506,7 +506,8 @@ impl Db {
     pub async fn count_hit(&self, key: &str, window: Duration) -> Result<i64> {
         let key: String = key.chars().take(300).collect();
         let n: i32 = sqlx::query_scalar(
-            "insert into rate_window (key, window_start, hits) values ($1, to_timestamp(floor(extract(epoch from now()) / $2) * $2), 1) \
+            "insert into rate_window (key, window_start, ends_at, hits) \
+             values ($1, to_timestamp(floor(extract(epoch from now()) / $2) * $2), to_timestamp((floor(extract(epoch from now()) / $2) + 1) * $2), 1) \
              on conflict (key, window_start) do update set hits = rate_window.hits + 1 returning hits",
         )
         .bind(key)
@@ -516,9 +517,11 @@ impl Db {
         Ok(n.into())
     }
 
-    /// Forgets rate-limit windows that ended over an hour ago.
+    /// Forgets rate-limit windows that ended, each by its own length (BD-86); one kept before windows said when they end,
+    /// an hour after it began.
     pub async fn sweep_rate_windows(&self) -> Result<u64> {
-        Ok(sqlx::query("delete from rate_window where window_start < now() - interval '1 hour'").execute(&self.pool).await?.rows_affected())
+        let ended = "delete from rate_window where coalesce(ends_at, window_start + interval '1 hour') < now()";
+        Ok(sqlx::query(ended).execute(&self.pool).await?.rows_affected())
     }
 
     /// A tenant transaction on the side pool, for a short autonomous write while another

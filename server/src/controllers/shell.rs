@@ -715,8 +715,10 @@ async fn public_page(st: &AppState, headers: &HeaderMap, uri: &Uri, app_id: &str
         )
     };
     let slug = rest.split('/').next().unwrap_or_default();
-    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), slug.to_ascii_lowercase())).await?;
-    let Some(tenant) = st.shell.workspace_by_slug(slug).await? else { return Ok(gone()) };
+    // Counted per network and workspace once found; one that does not exist counts on the network alone (BD-86).
+    let tenant = st.shell.workspace_by_slug(slug).await?;
+    st.public_limiter.check_from(headers, &tenant.map(|t| t.to_string()).unwrap_or_default()).await?;
+    let Some(tenant) = tenant else { return Ok(gone()) };
     match st.shell.place(headers).await? {
         Place::Workspace(t) if t != tenant => return Ok(gone()),
         Place::Moved(Some(to)) => {
@@ -947,7 +949,7 @@ const SITE_CSP: &str = "default-src 'self'; img-src 'self' data: https:; style-s
 async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMap, uri: &Uri, path: &str, q: Vec<(String, String)>) -> ApiResult<Response> {
     let unavailable = |status: StatusCode, title: &str, message: &str| status_page(status, title, message, &[], None);
     let ws = st.shell.workspace(tenant).await?;
-    st.public_limiter.check(&format!("{}|{}", crate::extract::client_ip(headers), ws.slug)).await?;
+    st.public_limiter.check_from(headers, &tenant.to_string()).await?;
     if ws.status != "active" {
         return Ok(unavailable(StatusCode::SERVICE_UNAVAILABLE, "This site is closed for now", "Try again later."));
     }
@@ -1218,7 +1220,7 @@ fn query<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {
 /// workspace's current host for that audience ([`shell::Shell::go_target`]), `302`; else 404.
 /// Rate-limited per client address like other public addresses.
 async fn go(st: &AppState, headers: &HeaderMap, uri: &Uri) -> ApiResult<Response> {
-    st.public_limiter.check(&format!("{}|go", crate::extract::client_ip(headers))).await?;
+    st.public_limiter.check_from(headers, "go").await?;
     let rest = uri.path().strip_prefix("/go/").unwrap_or_default();
     let Some(to) = st.shell.go_target(rest, uri.query()).await? else { return Ok(not_found(uri.path())) };
     let Ok(location) = HeaderValue::from_str(&to) else { return Ok(not_found(uri.path())) };

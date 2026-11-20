@@ -12,7 +12,7 @@
 //! The word `links` is kept from plugins (`ferrum_plugins::RESERVED_NAMES`).
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, client_ip};
+use crate::extract::Auth;
 use crate::shell::esc;
 use crate::state::app_state;
 use axum::Json;
@@ -182,7 +182,7 @@ fn footer_of(b: &PublicBrand) -> String {
 }
 
 async fn limited(st: &crate::state::AppState, headers: &HeaderMap, workspace: &str) -> Result<(), Response> {
-    st.public_limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await.map_err(|e| ApiError(e).into_response())
+    st.public_limiter.check_from(headers, &crate::extract::named_workspace(&st.kernel, workspace).await).await.map_err(|e| ApiError(e).into_response())
 }
 
 /// A link that does not work: one answer, the same for a workspace that is not there as for an unknown link in one

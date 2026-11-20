@@ -3,7 +3,7 @@
 //! follow the link that opts them out.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, client_ip};
+use crate::extract::Auth;
 use crate::state::app_state;
 use axum::Json;
 use axum::body::Bytes;
@@ -137,7 +137,7 @@ async fn inbound(
     body: Bytes,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.public_limiter.check(&format!("{}|messages", client_ip(&headers))).await?;
+    st.public_limiter.check_from(&headers, "messages").await?;
     let names: BTreeMap<String, String> = headers.iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
     Ok(Json(st.kernel.message_inbound(id, &names, &query, &body).await?).into_response())
 }
@@ -180,7 +180,7 @@ async fn opt_out_page(Query(t): Query<Token>) -> Response {
 /// `POST /api/messages/opt-out?token=`: the recipient's word, recorded.
 async fn opt_out_by_link(State(app): State<AppContext>, Query(t): Query<Token>, headers: HeaderMap) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.public_limiter.check(&format!("{}|opt-out", client_ip(&headers))).await?;
+    st.public_limiter.check_from(&headers, "opt-out").await?;
     st.kernel.opt_out_by_link(&t.token).await?;
     Ok(page("You will no longer receive these messages here."))
 }

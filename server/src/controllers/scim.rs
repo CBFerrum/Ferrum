@@ -4,7 +4,7 @@
 //! is in the kernel (crates/kernel/src/scim.rs); this is the protocol's shape: its media type, its
 //! error messages and its discovery endpoints. See docs/identity-lifecycle.md.
 
-use crate::extract::{bearer, client_ip, request_id};
+use crate::extract::{bearer, request_id};
 use crate::state::app_state;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -75,7 +75,7 @@ async fn signed_in(app: &AppContext, headers: &HeaderMap) -> ferrum_kernel::Resu
         if scope.as_deref() != Some("scim") {
             return Err(refused());
         }
-        st.user_limiter.check_local(&format!("{}|{}", session.tenant, session.user))?;
+        st.user_limiter.check_local(&crate::extract::client_net(headers), &format!("{}|{}", session.tenant, session.user))?;
         let entry = crate::zone::entry(&st, headers, ferrum_kernel::zones::Credential::Scim).await;
         st.kernel.request_ctx(session.tenant, session.user, Some(session.token_version), request_id(headers), &entry).await
     };
@@ -84,7 +84,7 @@ async fn signed_in(app: &AppContext, headers: &HeaderMap) -> ferrum_kernel::Resu
         Ok(_) => Err(Error::Forbidden("this key's owner is no longer an administrator".into())),
         Err(e @ Error::Unauthorized(_)) => {
             // Wrong keys count against the address, like failed sign-ins.
-            st.login_limiter.check(&format!("{}|scim", client_ip(headers))).await?;
+            st.login_limiter.check_from(headers, "scim").await?;
             Err(e)
         }
         Err(e) => Err(e),
