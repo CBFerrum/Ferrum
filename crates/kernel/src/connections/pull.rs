@@ -96,6 +96,10 @@ const MAX_EACH: usize = 50;
 impl Pull {
     pub(crate) fn problem(&self, desc: &super::Description) -> Option<String> {
         let at = |m: String| Some(format!("pull {}: {m}", self.name));
+        // A pull runs as the system with the connection's secrets: never on one only its apps call.
+        if desc.exclusive {
+            return at("an exclusive connection is called by its apps alone: it has no pulls".into());
+        }
         if !is_name(&self.name) || !is_name(&self.cursor_input) {
             return at("its name and cursor_input are lower case letters, digits and _".into());
         }
@@ -236,7 +240,9 @@ impl Kernel {
         let name = job.payload["pull"].as_str().unwrap_or_default().to_string();
         let user: Uuid = job.payload["user"].as_str().and_then(|s| s.parse().ok()).unwrap_or_default();
         let conn = self.load_connection(tenant, &conn_id.to_string()).await?;
-        let Some(pull) = conn.desc.pulls.iter().find(|p| p.name == name).cloned().filter(|_| conn.enabled) else { return Ok(json!({"done": "gone"})) };
+        let Some(pull) = conn.desc.pulls.iter().find(|p| p.name == name).cloned().filter(|_| conn.enabled && !conn.desc.exclusive) else {
+            return Ok(json!({"done": "gone"}));
+        };
         let map = pull.map(&conn.desc).ok_or_else(|| Error::invalid("the pull has no mapping"))?;
         let ctx = if user.is_nil() {
             Ctx::system(tenant, self.registry.schema(tenant).await?)

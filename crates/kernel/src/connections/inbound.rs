@@ -192,6 +192,46 @@ pub enum RunAs {
 #[async_trait]
 pub trait InboundHandler: Send + Sync {
     async fn handle(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, connection: &str, payload: &Value) -> Result<()>;
+    /// [`InboundHandler::handle`] with the inbound address's query, its verifying parameter taken out (TP-3): a status
+    /// address that names what it is about (`?ours=…`). Defaults to `handle`.
+    async fn handle_call(&self, k: &Kernel, tx: &mut Tx, ctx: &Ctx, connection: &str, payload: &Value, query: &BTreeMap<String, String>) -> Result<()> {
+        let _ = query;
+        self.handle(k, tx, ctx, connection, payload).await
+    }
+}
+
+/// What a call to a connection is answered in its own request, when its app answers it (TP-3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundAnswer {
+    pub status: u16,
+    pub content_type: String,
+    pub body: String,
+}
+
+/// The longest an app's answer may keep a caller waiting.
+pub const MAX_ANSWER_WAIT: Duration = Duration::from_secs(10);
+
+/// An app that answers some calls its connections accept in the caller's own request (a provider that asks for its next
+/// instructions in the answer to its webhook). The call is verified and recorded first, as every call is; then
+/// [`InboundResponder::respond`] runs in the transaction that marks it processed, within [`InboundResponder::deadline`]
+/// (at most [`MAX_ANSWER_WAIT`]). Its answer is kept and given again to a repeat of the delivery. `None`: this call is
+/// not answered here (accepted, and handled by the app's [`InboundHandler`] later, as before). Past the deadline or on
+/// an error what it wrote is undone, [`InboundResponder::fallback`] is answered, and the handler takes the call later.
+#[async_trait]
+pub trait InboundResponder: Send + Sync {
+    fn deadline(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+    fn fallback(&self, connection: &str) -> InboundAnswer;
+    async fn respond(
+        &self,
+        k: &Kernel,
+        tx: &mut Tx,
+        ctx: &Ctx,
+        connection: &str,
+        payload: &Value,
+        query: &BTreeMap<String, String>,
+    ) -> Result<Option<InboundAnswer>>;
 }
 
 /// The three parts of a mapping, by the name its values are bound under.
@@ -418,6 +458,19 @@ impl Kernel {
     /// A call from outside to connection `id` (no session): verified, refused when replayed, recorded, and queued to be
     /// processed once. Every refusal is the same `Unauthorized`. `query`: the inbound address's query parameters.
     pub async fn connection_inbound(&self, id: Uuid, headers: &BTreeMap<String, String>, query: &BTreeMap<String, String>, body: &[u8]) -> Result<Value> {
+        self.connection_inbound_answered(id, headers, query, body).await.map(|_| json!({"accepted": true}))
+    }
+
+    /// [`Kernel::connection_inbound`], answered by the connection's app when it answers this call ([`InboundResponder`],
+    /// TP-3): `None` is today's `{accepted: true}`. The query is kept with the call for its handler, its verifying
+    /// parameter taken out.
+    pub async fn connection_inbound_answered(
+        &self,
+        id: Uuid,
+        headers: &BTreeMap<String, String>,
+        query: &BTreeMap<String, String>,
+        body: &[u8],
+    ) -> Result<Option<InboundAnswer>> {
         let mut tx = self.db.system_tx().await?;
         let tenant: Option<Uuid> = sqlx::query_scalar("select tenant_id from conn where id = $1 and enabled").bind(id).fetch_optional(&mut *tx).await?;
         tx.commit().await?;
@@ -432,7 +485,7 @@ impl Kernel {
         let header = |h: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(h)).map(|(_, v)| v.trim().to_string());
         let fits = body.len() as u64 <= inbound.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
         let stands_for = if fits { verified(&conn, &inbound, query, &header, body, chrono::Utc::now().timestamp()) } else { None };
-        let Some(stands_for) = stands_for else { return self.refuse_inbound(&conn).await };
+        let Some(stands_for) = stands_for else { return self.refuse_inbound(&conn).await.map(|_| None) };
         let form = header("content-type").is_some_and(|c| c.starts_with("application/x-www-form-urlencoded"));
         let payload: Value = if form {
             let mut url = reqwest::Url::parse("http://form/").map_err(Error::internal)?;
@@ -450,27 +503,101 @@ impl Kernel {
             .unwrap_or(stands_for);
         // Signed without a timestamp: the body is taken once too, whatever delivery id comes beside it.
         let untimed = matches!(inbound.verify, Verify::Signature { timestamp_header: None, parts: None, .. });
+        // The query as its handler sees it: never the parameter that carries the connection's secret.
+        let mut kept = query.clone();
+        if let Verify::Query { param, .. } = &inbound.verify {
+            kept.remove(param);
+        }
+        let responder = inbound.handler.as_ref().filter(|a| conn.desc.apps.contains(*a)).and_then(|a| self.hooks.inbound_responder(a).cloned());
         let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
-        let fresh =
-            sqlx::query("insert into conn_inbound (tenant_id, conn_id, delivery, payload, body_digest) values ($1, $2, $3, $4, $5) on conflict do nothing")
-                .bind(conn.tenant)
-                .bind(conn.id)
-                .bind(&delivery)
-                .bind(&payload)
-                .bind(untimed.then(|| hex::encode(Sha256::digest(body))))
-                .execute(&mut *tx)
-                .await?
-                .rows_affected()
-                == 1;
+        let fresh = sqlx::query(
+            "insert into conn_inbound (tenant_id, conn_id, delivery, payload, body_digest, query) values ($1, $2, $3, $4, $5, $6) on conflict do nothing",
+        )
+        .bind(conn.tenant)
+        .bind(conn.id)
+        .bind(&delivery)
+        .bind(&payload)
+        .bind(untimed.then(|| hex::encode(Sha256::digest(body))))
+        .bind((!kept.is_empty()).then(|| json!(kept)))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
         if !fresh {
+            // A repeat of a call its app answered gets that answer again; any other repeat is refused, as before.
+            let stored: Option<Value> = match responder {
+                Some(_) => sqlx::query_scalar("select answer from conn_inbound where tenant_id = $1 and conn_id = $2 and delivery = $3")
+                    .bind(conn.tenant)
+                    .bind(conn.id)
+                    .bind(&delivery)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten(),
+                None => None,
+            };
             tx.rollback().await?;
-            return self.refuse_inbound(&conn).await;
+            return match stored.and_then(|a| serde_json::from_value(a).ok()) {
+                Some(answer) => Ok(Some(answer)),
+                None => self.refuse_inbound(&conn).await.map(|_| None),
+            };
         }
         let mut job = NewJob::new(INBOUND_KIND, json!({"connection": conn.id, "delivery": delivery}));
         job.max_attempts = 8;
         crate::jobs::enqueue(&mut tx, conn.tenant, None, job).await?;
         tx.commit().await?;
-        Ok(json!({"accepted": true}))
+        let Some(responder) = responder else { return Ok(None) };
+        let fallback = responder.fallback(&conn.name);
+        let answering = self.answer_inbound(responder.as_ref(), &conn, &delivery, &payload, &kept);
+        Ok(match tokio::time::timeout(responder.deadline().min(MAX_ANSWER_WAIT), answering).await {
+            Ok(Ok(Some(answered))) => answered,
+            Ok(Ok(None)) => Some(fallback),
+            Ok(Err(e)) => {
+                tracing::warn!(connection = %conn.name, "answering a call: {}", super::masked_text(&e.to_string(), &conn.mask()));
+                Some(fallback)
+            }
+            // What it wrote is undone with its transaction; the job handles the call.
+            Err(_) => Some(fallback),
+        })
+    }
+
+    /// The app's answer to call `delivery`, in the transaction that marks it processed, its answer kept with it.
+    /// `None`: the job holds the call already; `Some(None)`: the app does not answer this one.
+    async fn answer_inbound(
+        &self,
+        responder: &dyn InboundResponder,
+        conn: &Loaded,
+        delivery: &str,
+        payload: &Value,
+        query: &BTreeMap<String, String>,
+    ) -> Result<Option<Option<InboundAnswer>>> {
+        let ctx = Ctx::system(conn.tenant, self.registry.schema(conn.tenant).await?);
+        let mut tx = self.db.system_tenant_tx(conn.tenant).await?;
+        let held: Option<i32> = sqlx::query_scalar(
+            "select 1 from conn_inbound where tenant_id = $1 and conn_id = $2 and delivery = $3 and state = 'accepted' for update skip locked",
+        )
+        .bind(conn.tenant)
+        .bind(conn.id)
+        .bind(delivery)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if held.is_none() {
+            return Ok(None);
+        }
+        let Some(answer) = responder.respond(self, &mut tx, &ctx, &conn.name, payload, query).await? else {
+            tx.rollback().await?;
+            return Ok(Some(None));
+        };
+        sqlx::query(
+            "update conn_inbound set state = 'done', payload = null, query = null, error = null, answer = $4 where tenant_id = $1 and conn_id = $2 and delivery = $3",
+        )
+        .bind(conn.tenant)
+        .bind(conn.id)
+        .bind(delivery)
+        .bind(json!(answer))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(Some(answer)))
     }
 
     /// Answers a service's check before it delivers (BD-78): the challenge, or the same refusal as any other.
@@ -545,26 +672,26 @@ impl Kernel {
         let inbound = conn.desc.inbound.clone().ok_or_else(|| Error::invalid("the connection no longer takes calls"))?;
         let ctx = Ctx::system(tenant, self.registry.schema(tenant).await?);
         let mut tx = self.db.system_tenant_tx(tenant).await?;
-        let payload: Option<Value> =
-            sqlx::query_scalar("select payload from conn_inbound where tenant_id = $1 and conn_id = $2 and delivery = $3 and state = 'accepted' for update")
+        let row: Option<(Option<Value>, Option<Value>)> =
+            sqlx::query_as("select payload, query from conn_inbound where tenant_id = $1 and conn_id = $2 and delivery = $3 and state = 'accepted' for update")
                 .bind(tenant)
                 .bind(conn_id)
                 .bind(&delivery)
                 .fetch_optional(&mut *tx)
-                .await?
-                .flatten();
-        let Some(payload) = payload else { return Ok(json!({"done": "already"})) };
+                .await?;
+        let Some((Some(payload), query)) = row else { return Ok(json!({"done": "already"})) };
+        let query: BTreeMap<String, String> = query.and_then(|q| serde_json::from_value(q).ok()).unwrap_or_default();
         let done = match (&inbound.map, &inbound.handler) {
             (Some(map), _) => self.apply_mapping(&ctx, &mut tx, map, &payload, &conn).await.map(|n| json!({"items": n})),
             (None, Some(app)) if conn.desc.apps.contains(app) => match self.hooks.inbound_handler(app) {
-                Some(h) => h.handle(self, &mut tx, &ctx, &conn.name, &payload).await.map(|()| json!({"handled": app})),
+                Some(h) => h.handle_call(self, &mut tx, &ctx, &conn.name, &payload, &query).await.map(|()| json!({"handled": app})),
                 None => Err(Error::invalid(format!("{app} has not registered for calls"))),
             },
             _ => Err(Error::invalid("the connection says nothing to do with calls")),
         };
         match done {
             Ok(out) => {
-                sqlx::query("update conn_inbound set state = 'done', payload = null, error = null where tenant_id = $1 and conn_id = $2 and delivery = $3")
+                sqlx::query("update conn_inbound set state = 'done', payload = null, query = null, error = null where tenant_id = $1 and conn_id = $2 and delivery = $3")
                     .bind(tenant)
                     .bind(conn_id)
                     .bind(&delivery)

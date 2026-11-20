@@ -75,6 +75,11 @@ pub trait DocHook: Send + Sync {
     async fn action(&self, hc: &mut HookCtx<'_>, name: &str, doc: &Doc, params: &Value) -> Result<Option<Value>> {
         Ok(None)
     }
+    /// Collection action `name` of this entity (A11 2.4): bound to no record, with its declared `params` only. Return
+    /// `Some` when handled. What it writes goes through the kernel's record pipeline, in `hc.tx`.
+    async fn collection(&self, hc: &mut HookCtx<'_>, name: &str, params: &Value) -> Result<Option<Value>> {
+        Ok(None)
+    }
     /// After any hook handled action `name`, in the same transaction, with the document as the
     /// action left it: lets an app extend a platform action (re-costing a BOM's operations when
     /// "Update Cost" re-costs its materials) and add to its `result`.
@@ -240,6 +245,7 @@ pub struct HookRegistry {
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
     inbound_handlers: HashMap<String, Arc<dyn crate::connections::inbound::InboundHandler>>,
+    inbound_responders: HashMap<String, Arc<dyn crate::connections::inbound::InboundResponder>>,
     connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     resources: Option<Arc<dyn crate::resources::Resources>>,
@@ -637,6 +643,16 @@ impl HookRegistry {
 
     pub fn inbound_handler(&self, app: &str) -> Option<&Arc<dyn crate::connections::inbound::InboundHandler>> {
         self.inbound_handlers.get(app)
+    }
+
+    /// Registers `app` to answer some of the calls its connections accept in the caller's own request (TP-3).
+    pub fn add_inbound_responder(&mut self, app: &str, responder: Arc<dyn crate::connections::inbound::InboundResponder>) -> &mut Self {
+        self.inbound_responders.insert(app.to_string(), responder);
+        self
+    }
+
+    pub fn inbound_responder(&self, app: &str) -> Option<&Arc<dyn crate::connections::inbound::InboundResponder>> {
+        self.inbound_responders.get(app)
     }
 
     /// Adds a provider a workspace can connect to (crate::connect).

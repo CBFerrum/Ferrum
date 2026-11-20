@@ -166,14 +166,84 @@ impl Kernel {
                 secret
             }
         };
+        let mailed = self.mailer.is_some();
+        if mailed {
+            self.mail_setup_code(&mut tx, ctx, &email, &workspace).await?;
+        }
         tx.commit().await?;
         let uri = otpauth_uri(&format!("Ferrum {workspace}"), &email, &secret);
-        Ok(json!({"secret": secret, "uri": uri, "qr_svg": qr_svg(&uri)?}))
+        Ok(json!({"secret": secret, "uri": uri, "qr_svg": qr_svg(&uri)?, "mailed": mailed}))
+    }
+
+    /// Mails the person a code that confirms their first second factor, unless one mailed earlier still works (a page shown
+    /// twice mails once). Kept hashed with the sign-in codes, apart from them by purpose: neither does the other's work.
+    async fn mail_setup_code(&self, tx: &mut crate::db::Tx, ctx: &Ctx, email: &str, workspace: &str) -> Result<()> {
+        let live: bool = sqlx::query_scalar(
+            "select exists (select 1 from sign_in_code where tenant_id = $1 and user_id = $2 and purpose = 'second_factor' and used_at is null and expires_at > now())",
+        )
+        .bind(ctx.tenant)
+        .bind(ctx.user)
+        .fetch_one(&mut **tx)
+        .await?;
+        if live {
+            return Ok(());
+        }
+        let id = Uuid::new_v4();
+        let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
+        sqlx::query(
+            "insert into sign_in_code (id, tenant_id, user_id, code_hash, expires_at, purpose) values ($1, $2, $3, $4, now() + make_interval(mins => $5), 'second_factor')",
+        )
+        .bind(id)
+        .bind(ctx.tenant)
+        .bind(ctx.user)
+        .bind(crate::auth::code_hash(id, &code))
+        .bind(crate::auth::CODE_MINUTES)
+        .execute(&mut **tx)
+        .await?;
+        let mut name = String::new();
+        crate::coedit::esc(workspace, &mut name);
+        let minutes = crate::auth::CODE_MINUTES;
+        let html = format!(
+            "<p>Your code to turn on two-factor sign-in for {name}:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:4px\">{code}</p>\
+             <p>It works once, for {minutes} minutes. If you are not setting up an authenticator app, someone has your password: \
+             do not give them this code, and change your password.</p>"
+        );
+        self.queue_mail(tx, ctx.tenant, email, &format!("{code} to turn on two-factor sign-in"), &html).await
+    }
+
+    /// Whether `given` is the live code mailed for the caller's setup: used up when it is, and a wrong try counted (five
+    /// use it up).
+    async fn used_mailed_code(&self, tx: &mut crate::db::Tx, ctx: &Ctx, given: &str) -> Result<bool> {
+        let live: Option<(Uuid, String)> = sqlx::query_as(
+            "select id, code_hash from sign_in_code where tenant_id = $1 and user_id = $2 and purpose = 'second_factor' and used_at is null \
+             and expires_at > now() order by created_at desc limit 1 for update",
+        )
+        .bind(ctx.tenant)
+        .bind(ctx.user)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((id, hash)) = live else { return Ok(false) };
+        let given: String = given.chars().filter(|c| !c.is_whitespace()).collect();
+        let right = crate::auth::code_hash(id, &given) == hash;
+        sqlx::query("update sign_in_code set attempts = attempts + 1, used_at = case when $2 or attempts + 1 >= $3 then now() end where id = $1")
+            .bind(id)
+            .bind(right)
+            .bind(crate::auth::CODE_TRIES)
+            .execute(&mut **tx)
+            .await?;
+        Ok(right)
     }
 
     /// Turns two-factor sign-in on once `code` comes from the new secret; returns the recovery codes
     /// (shown once).
     pub async fn enable_two_factor(&self, ctx: &Ctx, code: &str) -> Result<Vec<String>> {
+        self.enable_two_factor_mailed(ctx, code, None).await
+    }
+
+    /// [`Kernel::enable_two_factor`], with the code [`Kernel::begin_two_factor`] mailed to the person: required where this
+    /// server sends mail (DECISIONS, API-K2 part b), so a password alone cannot put someone else's authenticator on the
+    /// account. A server without mail skips it, and the setup is audited as made without one.
+    pub async fn enable_two_factor_mailed(&self, ctx: &Ctx, code: &str, mailed: Option<&str>) -> Result<Vec<String>> {
         ctx.changing_sign_in()?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let (set, enabled): (bool, bool) =
@@ -190,6 +260,12 @@ impl Kernel {
         }
         let secret = self.open_secret(&mut tx, ctx.tenant, ctx.user).await?;
         let step = matching_step(&secret, code, now_seconds()).ok_or_else(|| Error::field("code", "not the code your app shows now"))?;
+        let by_mail = self.mailer.is_some();
+        if by_mail && !self.used_mailed_code(&mut tx, ctx, mailed.unwrap_or("")).await? {
+            // The try is counted even though the setup is refused.
+            tx.commit().await?;
+            return Err(Error::field("mailed_code", "not the code we mailed you, or it has ended; start the setup again for a new one"));
+        }
         sqlx::query("update app_user set totp_enabled_at = now(), totp_last_step = $3, updated_at = now() where tenant_id = $1 and id = $2")
             .bind(ctx.tenant)
             .bind(ctx.user)
@@ -197,7 +273,7 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
         let codes = self.replace_recovery_codes(&mut tx, ctx.tenant, ctx.user).await?;
-        audit::record_admin(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({})).await?;
+        audit::record_admin(&mut tx, ctx, "User", ctx.user, "enable_two_factor", None, json!({"mailed": by_mail})).await?;
         tx.commit().await?;
         Ok(codes)
     }

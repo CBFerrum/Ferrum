@@ -744,14 +744,45 @@ async fn scenario() {
             ids
         }
     };
+    // The sender reads only events of transactions older than every transaction still running on the PostgreSQL server
+    // (any database of it), so a turn that sends nothing does not mean all is sent: wait for that first.
+    let settled = || {
+        let k = k.clone();
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+            loop {
+                let mut tx = k.db.system_tx().await.unwrap();
+                let waiting: bool = sqlx::query_scalar("select exists (select 1 from audit_event where xid >= pg_snapshot_xmin(pg_current_snapshot()) and xid < pg_snapshot_xmax(pg_current_snapshot()))")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+                if !waiting {
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "a transaction on the database server kept the audit events back for five minutes");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    };
+    // An event behind a transaction still running waits for it, and goes once it ends: held back, never skipped.
+    settled().await;
+    while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    let mut running = k.db.system_tx().await.unwrap();
+    let _: String = sqlx::query_scalar("select pg_current_xact_id()::text").fetch_one(&mut *running).await.unwrap();
+    let held = write(2).await;
+    assert_eq!(k1.audit_sink_once().await.unwrap(), ferrum_kernel::audit_sink::Turn::Sent(0), "behind a running transaction");
+    assert!(k1.audit_sink_behind().await.unwrap().unwrap() >= 0.0, "and said to be behind");
+    running.commit().await.unwrap();
     let first = write(5).await;
+    settled().await;
     let mut sent = 0;
     while let ferrum_kernel::audit_sink::Turn::Sent(n @ 1..) = k1.audit_sink_once().await.unwrap() {
         sent += n;
     }
-    assert!(sent >= 5, "{sent}");
+    assert!(sent >= 7, "{sent}");
     let got = rx.ids("/sink");
-    assert!(first.iter().all(|i| got.contains(i)), "every event: {first:?} in {got:?}");
+    assert!(held.iter().chain(&first).all(|i| got.iter().filter(|g| *g == i).count() == 1), "every event once: {held:?} {first:?} in {got:?}");
     let mut sorted = got.clone();
     sorted.sort();
     assert_eq!(got, sorted, "in order");
@@ -777,6 +808,7 @@ async fn scenario() {
     };
     let before = cursor(None).await;
     let second = write(2).await;
+    settled().await;
     while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
     cursor(Some(before)).await;
     while let ferrum_kernel::audit_sink::Turn::Sent(1..) = k2.audit_sink_once().await.unwrap() {}
@@ -787,6 +819,7 @@ async fn scenario() {
     // The receiver down: nothing moves, and it is said; up again: it goes on from where it was.
     rx.set_failing(true);
     let third = write(1).await;
+    settled().await;
     assert!(k1.audit_sink_once().await.is_err(), "the receiver refused");
     assert!(k1.audit_sink_behind().await.unwrap().unwrap() >= 0.0);
     assert!(!rx.ids("/sink").contains(&third[0]));
@@ -795,8 +828,9 @@ async fn scenario() {
     assert_eq!(rx.ids("/sink").iter().filter(|g| **g == third[0]).count(), 1, "sent once it answers");
     assert_eq!(k1.audit_sink_behind().await.unwrap(), Some(0.0), "nothing waits");
     // Two replicas at once: one sends, the other finds the cursor taken; never the same batch twice.
-    rx.set_delay(1500);
+    rx.set_delay(4000);
     let fourth = write(3).await;
+    settled().await;
     let (a, b) = tokio::join!(k1.audit_sink_once(), k2.audit_sink_once());
     let turns = [a.unwrap(), b.unwrap()];
     assert!(turns.contains(&ferrum_kernel::audit_sink::Turn::Busy), "{turns:?}");
@@ -822,22 +856,69 @@ async fn scenario() {
     assert_eq!(k2.audit_sink_once().await.unwrap(), Turn::Held);
     assert!(fifth.iter().all(|i| !rx.ids("/sink").contains(i)), "nothing sent while held or fenced");
     k.cancel_move("test over").await.unwrap();
+    settled().await;
     while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
     for id in &fifth {
         assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id}: sent once released");
     }
     // A copy restored from a dump: its transaction counter is behind the cursor. Simulated by a cursor far ahead,
     // with every event so far sent: the next turn notices and goes on above the ids it sent; nothing again, no gap.
-    let sent_before = rx.ids("/sink").len();
-    let high = *rx.ids("/sink").iter().max().unwrap();
+    let before = rx.ids("/sink");
+    let high = *before.iter().max().unwrap();
     cursor(Some(format!("999999999999/0/0/{high}"))).await;
     let sixth = write(2).await;
+    settled().await;
     while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
     while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
     for id in &sixth {
         assert_eq!(rx.ids("/sink").iter().filter(|g| *g == id).count(), 1, "{id}: on the copy, once");
     }
-    assert_eq!(rx.ids("/sink").len(), sent_before + sixth.len(), "nothing sent before is sent again");
+    let after = rx.ids("/sink");
+    for id in &before {
+        assert_eq!(after.iter().filter(|g| *g == id).count(), before.iter().filter(|g| *g == id).count(), "{id}: nothing sent before is sent again");
+    }
+    // A copy restored while the source still had events to send: committed before the dump, they keep the source's
+    // transaction ids, ahead of the copy's counter, and one has an id below the highest the source sent. They go first,
+    // in order, once each, and the copy's own events after them: nothing lost, nothing out of order.
+    let high = *rx.ids("/sink").iter().max().unwrap();
+    let ahead: i64 = 999_999_999_990;
+    // The floor below every id: a first copy's (0), with this test's ids below it.
+    cursor(Some(format!("{ahead}/{high}/-100/{high}"))).await;
+    let mut tx = k.db.system_tx().await.unwrap();
+    let mut source = vec![];
+    for (xid, id) in [(ahead + 5, Some(-5_i64)), (ahead + 7, None)] {
+        let made: i64 = match id {
+            Some(id) => sqlx::query_scalar(
+                "insert into audit_event (tenant_id, id, entity, record_id, action, hash, xid, category) overriding system value \
+                 values ($1, $3, 'Tenant', $1, 'copied', '\\x00', $2::text::xid8, 'administration') returning id",
+            )
+            .bind(acme)
+            .bind(xid.to_string())
+            .bind(id),
+            None => sqlx::query_scalar(
+                "insert into audit_event (tenant_id, entity, record_id, action, hash, xid, category) \
+                 values ($1, 'Tenant', $1, 'copied', '\\x00', $2::text::xid8, 'administration') returning id",
+            )
+            .bind(acme)
+            .bind(xid.to_string()),
+        }
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        source.push(made);
+    }
+    tx.commit().await.unwrap();
+    let own = write(1).await;
+    settled().await;
+    for _ in 0..3 {
+        while let Turn::Sent(1..) = k1.audit_sink_once().await.unwrap() {}
+    }
+    let got = rx.ids("/sink");
+    let at = |id: i64| got.iter().position(|g| *g == id);
+    for id in source.iter().chain(&own) {
+        assert_eq!(got.iter().filter(|g| *g == id).count(), 1, "{id}: the copy's unsent events once each: {got:?}");
+    }
+    assert!(at(source[0]) < at(source[1]) && at(source[1]) < at(own[0]), "the source's events first, in order: {source:?} {own:?} in {got:?}");
     let (_, metrics) = call(&r, Method::GET, "/metrics", INSIDE, Cred::None, None).await;
     assert!(!metrics.contains("ferrum_audit_sink_behind_seconds"), "only where the sink is set");
     assert!(k1.doctor(10).await.unwrap().iter().any(|f| f.check == "audit.sink"), "the doctor reports it");

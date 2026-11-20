@@ -19,8 +19,8 @@ const MAX_FAILED_LOGINS: i32 = 5;
 pub(crate) const LOCK_MINUTES: i32 = 15;
 /// An emailed sign-in code works for this long, takes this many wrong tries, and a person is sent
 /// at most this many in an hour.
-const CODE_MINUTES: i32 = 10;
-const CODE_TRIES: i32 = 5;
+pub(crate) const CODE_MINUTES: i32 = 10;
+pub(crate) const CODE_TRIES: i32 = 5;
 const CODES_PER_HOUR: i64 = 5;
 
 /// What is kept of a sign-in code: salted with its row's id, so equal codes hash apart.
@@ -381,7 +381,7 @@ impl Kernel {
             return Ok(());
         }
         // Only the newest code works.
-        sqlx::query("update sign_in_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null")
+        sqlx::query("update sign_in_code set used_at = now() where tenant_id = $1 and user_id = $2 and used_at is null and purpose = 'sign_in'")
             .bind(tenant)
             .bind(user)
             .execute(&mut *tx)
@@ -452,7 +452,7 @@ impl Kernel {
         // Locked, so two tries at once cannot both use it.
         let live: Option<(Uuid, String, i32)> = sqlx::query_as(
             "select id, code_hash, attempts from sign_in_code where tenant_id = $1 and user_id = $2 and used_at is null and expires_at > now() \
-             order by created_at desc limit 1 for update",
+             and purpose = 'sign_in' order by created_at desc limit 1 for update",
         )
         .bind(tenant)
         .bind(user)
@@ -1538,6 +1538,14 @@ impl Kernel {
             }
         }
         let p = &PermissionDef { if_owner: p.if_owner || via.is_some(), via, ..p.clone() };
+        // A rule naming a collection action reaches no record, so it narrows to none (API-2, as packages are checked).
+        let scoped = !p.condition.is_empty() || p.via.is_some() || p.if_owner || p.shared.is_some();
+        if scoped
+            && let Some(ent) = ctx.schema.entity(&p.entity)
+            && let Some(a) = ent.def.actions.iter().find(|a| a.collection && p.actions.contains(&a.name))
+        {
+            return Err(Error::field("actions", format!("{} is bound to no record: a rule naming it takes no where, via, owner or sharing", a.name)));
+        }
         let condition = (!p.condition.is_empty()).then(|| serde_json::to_value(&p.condition).unwrap_or_default());
         sqlx::query("insert into role (tenant_id, name) values ($1, $2) on conflict do nothing").bind(ctx.tenant).bind(role).execute(&mut **tx).await?;
         let portal: bool =
