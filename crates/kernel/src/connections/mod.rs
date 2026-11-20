@@ -36,6 +36,7 @@ use uuid::Uuid;
 
 mod fns;
 pub mod inbound;
+pub mod jwt;
 pub mod oauth;
 pub(crate) mod personal;
 pub mod public;
@@ -417,6 +418,27 @@ pub enum Auth {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         not_secret: Vec<String>,
     },
+    /// A token the connection signs itself (TP-1): a JWT under its `key` secret (a PKCS#8 private key in PEM), `kid` in
+    /// its header, `claims` as given with `iat` and `exp` added, reused for `reuse_seconds` (1 to
+    /// [`jwt::MAX_REUSE`]). With `exchange`, that operation is given it (`inputs.assertion`) and the access token it
+    /// answers (`/access_token`, for `/expires_in` seconds) is kept and renewed as a session's is. The token goes in
+    /// `header` (`authorization`) after `prefix` (`Bearer `).
+    Jwt {
+        alg: jwt::Alg,
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kid: Option<String>,
+        #[serde(default, skip_serializing_if = "Map::is_empty")]
+        claims: Map<String, Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        #[serde(default = "jwt::default_reuse")]
+        reuse_seconds: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exchange: Option<String>,
+    },
 }
 
 impl Auth {
@@ -791,6 +813,7 @@ impl Description {
     pub(crate) fn signs_in_with(&self, name: &str) -> bool {
         match &self.auth {
             Auth::Session { login, refresh, .. } => login == name || refresh.as_deref() == Some(name),
+            Auth::Jwt { exchange, .. } => exchange.as_deref() == Some(name),
             Auth::Oauth { provider, .. } => {
                 provider.after.iter().any(|a| a == name) || provider.refresh.as_deref() == Some(name) || provider.registration.as_deref() == Some(name)
             }
@@ -855,7 +878,7 @@ impl Description {
         if plain.iter().any(|n| !keep.contains(n)) {
             return Some("auth: not_secret names fields it keeps".into());
         }
-        let token = matches!(&self.auth, Auth::Bearer { .. } | Auth::Session { header: None, .. })
+        let token = matches!(&self.auth, Auth::Bearer { .. } | Auth::Session { header: None, .. } | Auth::Jwt { header: None, .. })
             || matches!(&self.auth, Auth::Oauth { provider, .. } if !provider.dpop);
         if !token && let Some(n) = self.operations.keys().find(|n| self.more(n).auth_scheme.is_some()) {
             return Some(format!("{n}: auth_scheme is for a connection whose auth is a token (bearer, oauth, a session's)"));
@@ -897,6 +920,23 @@ impl Description {
                     provider.after.iter().chain(provider.refresh.iter()).chain(provider.registration.iter()).find(|o| !self.operations.contains_key(*o))
                 {
                     return Some(format!("auth: there is no operation {op}"));
+                }
+            }
+            Auth::Jwt { key, claims, header, reuse_seconds, exchange, .. } => {
+                if key.is_empty() {
+                    return Some("auth.key names one of the connection's secrets".into());
+                }
+                if !(1..=jwt::MAX_REUSE).contains(reuse_seconds) {
+                    return Some(format!("auth.reuse_seconds is 1 to {}", jwt::MAX_REUSE));
+                }
+                if claims.contains_key("iat") || claims.contains_key("exp") {
+                    return Some("auth.claims: iat and exp are the platform's".into());
+                }
+                if let Some(op) = exchange.as_ref().filter(|o| !self.operations.contains_key(*o)) {
+                    return Some(format!("auth: there is no operation {op}"));
+                }
+                if let Some(p) = header.as_deref().and_then(header_problem) {
+                    return Some(p);
                 }
             }
             Auth::Session { login, refresh, token_at, refresh_at, expires_at, header, .. } => {
@@ -1798,7 +1838,7 @@ impl Kernel {
                 if tries == 1
                     && !bare
                     && matches!(&got, Ok(a) if a.status == 401)
-                    && matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. })
+                    && matches!(conn.desc.auth, Auth::Oauth { .. } | Auth::Session { .. } | Auth::Jwt { exchange: Some(_), .. })
                     && self.access_token(conn, ctx, true).await.is_ok()
                 {
                     continue;
@@ -2217,7 +2257,7 @@ impl Kernel {
             };
             let auth_header = match &conn.desc.auth {
                 Auth::Header { header, .. } | Auth::Signed { header, .. } => Some(header.as_str()),
-                Auth::Session { header, .. } => header.as_deref(),
+                Auth::Session { header, .. } | Auth::Jwt { header, .. } => header.as_deref(),
                 _ => None,
             };
             for (h, v) in given {
@@ -2260,6 +2300,15 @@ impl Kernel {
         use base64::Engine as _;
         match &conn.desc.auth {
             Auth::None => {}
+            Auth::Jwt { alg, key, kid, claims, header, prefix, reuse_seconds, exchange } => {
+                let token = match exchange {
+                    Some(_) => self.access_token(conn, ctx, false).await?,
+                    None => jwt::token(conn.id, *alg, conn.secret(key)?, kid.as_deref(), claims, *reuse_seconds)?,
+                };
+                let (header, prefix) = (header.as_deref().unwrap_or("authorization"), prefix.as_deref().unwrap_or("Bearer "));
+                headers.push((header.to_string(), format!("{prefix}{token}")));
+                return Ok(vec![token]);
+            }
             Auth::Oauth { provider, .. } => {
                 let token = self.access_token(conn, ctx, false).await?;
                 if provider.dpop {
@@ -2412,6 +2461,11 @@ impl Kernel {
         {
             return Err(Error::field("secrets", "at most 20, each named as an input is, of at most 16 KB"));
         }
+        if let (Auth::Jwt { alg, key, .. }, Some(s)) = (&input.description.auth, &input.secrets)
+            && let Some(p) = s.get(key).and_then(|pem| jwt::key_problem(*alg, pem))
+        {
+            return Err(Error::field("secrets", format!("{key}: {p}")));
+        }
         let id = id.unwrap_or_else(Uuid::now_v7);
         let source = self.packaged_connections(ctx).into_iter().find(|(_, c)| c.name == input.name).map(|(p, _)| format!("package:{p}"));
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -2487,7 +2541,7 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         // A session signs in again with secrets given anew.
-        if input.secrets.is_some() && matches!(input.description.auth, Auth::Session { .. }) {
+        if input.secrets.is_some() && matches!(input.description.auth, Auth::Session { .. } | Auth::Jwt { exchange: Some(_), .. }) {
             self.forget_session(ctx, id).await?;
         }
         Ok(id)

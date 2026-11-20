@@ -1500,6 +1500,15 @@ header `Bearer {{ inputs.refresh_token }}`); they are never called as operations
 needing reconnecting and tells the administrators once. On `auth: oauth`, `provider.dpop: true` binds tokens to the
 connection's own key (DPoP), and `provider.registration_url` without `client_id` registers the platform's client once.
 
+**Signed tokens** ([BD-91](builder/decisions.md#bd-91-connections-that-sign-a-token)): `"auth": {"type": "jwt", "alg":
+"ES256", "key": "signing_key", "kid": "K-1", "claims": {"iss": "team-7"}, "reuse_seconds": 3000}` signs a JWT under the
+connection's secret `signing_key` (a PKCS#8 private key in PEM; `ES256` a P-256 key, `RS256` an RSA key of 2048 bits or
+more, checked when saved), `kid` in its header, the claims as given with `iat` and `exp` (its reuse and five minutes)
+added, and reuses it for `reuse_seconds` (1 to 3300; 3000 unless said). With `"exchange": "token"`, that operation is
+given it as `inputs.assertion` and the access token it answers (`/access_token`, for `/expires_in` seconds) is kept
+and renewed as a session's is; the exchange is never called as an operation. The token goes in `header`
+(`authorization`) after `prefix` (`Bearer `); neither the key nor a token reaches a log or a capture.
+
 **Operating**: `meta` on a description is an object (16 KB at most) the platform keeps and gives back without reading.
 A mapping's `"outside": true` marks what it writes as fetched from outside: the change's events carry `origin:
 "outside"`, automations read `origin` (empty otherwise), hooks `ctx.origin`; an app's effect for new records that

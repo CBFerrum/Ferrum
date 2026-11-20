@@ -145,6 +145,12 @@ async fn service(seen: Seen) -> u16 {
                     "/v1/hop-private" => (302, "location: http://10.0.0.1/v1/ok\r\n".into(), String::new()),
                     "/v1/hop-localhost" => (302, format!("location: http://localhost:{}/v1/ok\r\n", s.local_addr().unwrap().port()), String::new()),
                     "/v1/ok" => (200, String::new(), json!({"ok": true}).to_string()),
+                    "/v1/jwt/token" => {
+                        (200, String::new(), json!({"access_token": format!("Xc-{}", seen.lock().unwrap().len()), "expires_in": 3600}).to_string())
+                    }
+                    "/v1/jwt/short" => {
+                        (200, String::new(), json!({"access_token": format!("Xs-{}", seen.lock().unwrap().len()), "expires_in": 30}).to_string())
+                    }
                     "/v1/dup400" => (400, String::new(), json!({"error": {"code": "HE_01", "message": "Duplicate payment_id"}}).to_string()),
                     "/v1/dup422" => (422, String::new(), json!({"error": {"code": "HE_01", "message": "Duplicate refund_id"}}).to_string()),
                     "/v1/conflict" => (409, String::new(), json!({"error": {"message": "idempotency_key_in_use"}}).to_string()),
@@ -479,6 +485,157 @@ async fn secret_inputs(k: &Kernel, admin: &Ctx, seen: &Seen) {
     let ((secret_digest, capture), (plain_digest, _)) = (row("parcel-pin").await, row("parcel-plain").await);
     assert!(!capture.unwrap().to_string().contains(PIN), "the capture masks it");
     assert_ne!(secret_digest, plain_digest, "never the digest anyone can make from the inputs");
+}
+
+/// A test key (RSA, 2048 bits, PKCS#8) made for this suite alone and used nowhere else: RS256 cannot be generated in a
+/// test by the libraries the kernel has.
+const RSA_TEST_KEY: &str = "\
+-----BEGIN PRIVATE KEY-----\n\
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCYZa+Es0yjrD2w\n\
+H+Kj6A4XdDtyPCnTidrSbxjuFZaVYw5b/lwmfGsYkJN6qcIgZFTTmO/41iAkuz0n\n\
+v8RfZfFVGnxS2Xq8vQ447ejAeRjMtASOkhU1TVVQs1Mc8dAAXw1hVJs4+KPMp1GY\n\
+lWqXxw6FHzhl71J04hwRBuna86JK5tDl/2cR+MBvSmkn1eJK+iAvYOD0qisBIzfi\n\
+qGcVdkDUazvabkUN5vs4nCNn6lA9FTfoI4C/nZyrGfy3qB3if3PZmOzxUHujFpww\n\
+UZbKsx57zc2ksqhomS9L8Dsr4TZjx2HZeut0ctZK1ll3l3eJurt9JkqNzOYsVjOI\n\
+sBOwdk8jAgMBAAECggEAEk+hg8XRbxcagGeMYVpYGxxVqjetZOP6/W7o5W6FneR9\n\
+jLMm2l73tUdl2Qa9swurH5OQPetoiFFRG04Q58+FbE7W4lOMSlJC+7cmUL4cKzh0\n\
+FbdawgFNP3mUgnVRo0HIh0nVrsY9VDFEfhtx59O8nGUwbxsO4slqSud0QOEmPm6G\n\
+3QFxRaDdyDbDXVT1ssbTjuHP5ZDjYDSKWScM8jQCAxGzHM3lbAng8FlWQKNlLD6y\n\
+0yuD7NuIX8ZxLJMegBQRfTCrOBA44ZdzrA3YHeZsAJPiCh8/QQFviwLvZqMvv/41\n\
+9aOoX4wRvWIgP4rmuXGmL+5hUoO/2f60fG/PpYJwIQKBgQDRutXEazN+fWYzUNy7\n\
+uN++aV6EbOnOPt9rPR5qBGv6Z8bEyLZgSKdnRtIEsCxcLgAY/k4xTBQIQpS7ytrf\n\
+6mJwmNUDVz+pI6wXgwSY0f/G6iV8Fgm9iGa6ucyPGnD+qKwzu1DJXOrc4L2DdZQ5\n\
+mRZdfJGVmDV4KXqb+Xqbqt+WQwKBgQC6BM6hfrrfoc00+aJ2NmhlIai9EpvOhklf\n\
+hUKHQiG5XGm/A4LcyppMPH0RZ9wxnK8aI4LcpXlh2GCNLTodmVxXCgNoUXkI7O5z\n\
+l77/xJHLf+kn7ZRoX1Zo6vDtR+PHNTs0PA3AZIhvtCBsOykPBFCRgwJB4JqevFd8\n\
+/n9Hs5iFoQKBgHy1JNETkV4AQJn41hfFeT1muC3z+R6LIhxJDmGp2W7e8EEou9EK\n\
+wofVg6IIA4iYTbSO2n3TqAG1XW1A1N7aJsifB+Jhqdfv/y9H157rF7T2m21qSUZq\n\
+6fLT8f+RkGjMcQCdvA7P8lN+SxH1AzswfSz/mi2igQC/YUmHkdEoTKSzAoGAX6dB\n\
+KcIlDgIBp5AGfosTu41HW5JKFDTxXfEEeNEEznA64EJJ9IcqOLGSDnU9wTU0xVgl\n\
+Xpiohivh2ja7f6Tw2sEHZ4kdl/1d0IrjaFoILoCjwChm/BSqNmE5aophEnrI6t9G\n\
+ovwPPIF/eqghQNuTIoAflQiN+boXsuqbQJ+VeoECgYBMHfN136xpCxa9oSDOQ7k5\n\
+F4jrHsu3RE0bpZrhw7b0XiH/qJxpy0t+Afbzd71ugym3VpEK6nu6xOvbN7HKvI46\n\
+25fWZxtLAbiG5uc46rYZ7hQ7Ju9WB71y7wHIrNCDDWWLsSKOK+t85SK8E1+cS9+J\n\
+oyLqmDKSpBCni7QLG9PbGQ==\n\
+-----END PRIVATE KEY-----\n\
+";
+
+/// The body of a PEM, as DER.
+fn der_of(pem: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.decode(pem.lines().filter(|l| !l.starts_with("-----")).collect::<String>()).unwrap()
+}
+
+/// A JWT's header and claims, its signature checked under `public` by `alg`.
+fn opened(token: &str, alg: &'static dyn ring::signature::VerificationAlgorithm, public: &[u8]) -> (Value, Value) {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let (signing, sig) = token.rsplit_once('.').unwrap();
+    ring::signature::UnparsedPublicKey::new(alg, public).verify(signing.as_bytes(), &b64.decode(sig).unwrap()).expect("signed by the key");
+    let (h, c) = signing.split_once('.').unwrap();
+    (serde_json::from_slice(&b64.decode(h).unwrap()).unwrap(), serde_json::from_slice(&b64.decode(c).unwrap()).unwrap())
+}
+
+/// TP-1, connections that sign a token: refused when saved with a wrong alg or key; ES256 signed and reused within its
+/// life; RS256 exchanged for an access token that is kept, and renewed before it ends; the key and the tokens in no
+/// log. What must rest nowhere.
+async fn signing_tokens(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<String> {
+    use base64::Engine as _;
+    use ring::signature::{ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair, RSA_PKCS1_2048_8192_SHA256, RsaKeyPair};
+    let rng = ring::rand::SystemRandom::new();
+    let p8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+    let ec_public = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, p8.as_ref(), &rng).unwrap().public_key().as_ref().to_vec();
+    let ec_body = base64::engine::general_purpose::STANDARD.encode(p8.as_ref());
+    let ec_pem = format!("-----BEGIN PRIVATE KEY-----\n{ec_body}\n-----END PRIVATE KEY-----\n");
+    let rsa_public = RsaKeyPair::from_pkcs8(&der_of(RSA_TEST_KEY)).unwrap().public().as_ref().to_vec();
+    let save = |name: &str, auth: Value, pem: &str| {
+        let ops = json!({"send": {"path": "/ok"}, "token": {"path": "/jwt/token", "method": "POST", "changes": false, "body": "{\"assertion\": {{ inputs.assertion | json }}}"},
+                         "short": {"path": "/jwt/short", "method": "POST", "changes": false, "body": "{\"assertion\": {{ inputs.assertion | json }}}"}});
+        let desc = json!({"base": base, "auth": auth, "operations": ops});
+        let input = input(name, desc, Some(json!({"key": pem})));
+        async move { k.save_connection_def(admin, None, &input).await }
+    };
+    let bearer = || seen.lock().unwrap().last().unwrap().lines().find_map(|l| l.strip_prefix("authorization: Bearer ")).unwrap().to_string();
+    let asked = |path: &str| seen.lock().unwrap().iter().filter(|s| s.starts_with(&format!("POST /v1{path} "))).count();
+
+    // ── a_wrong_alg_or_key_is_refused_when_saved ──
+    let hs = serde_json::from_value::<ConnectionInput>(json!({"name": "hs", "label": "hs", "enabled": true,
+        "description": {"base": base, "auth": {"type": "jwt", "alg": "HS256", "key": "key"}}}));
+    assert!(hs.is_err(), "an alg of its own is no alg");
+    let es = json!({"type": "jwt", "alg": "ES256", "key": "key"});
+    let e = save("wrong", es.clone(), RSA_TEST_KEY).await.unwrap_err().to_string();
+    assert!(e.contains("ES256") && !e.contains("MII"), "an RSA key for ES256, and never the key in the refusal: {e}");
+    let e = save("wrong", json!({"type": "jwt", "alg": "RS256", "key": "key"}), "not a key").await.unwrap_err().to_string();
+    assert!(e.contains("RS256"), "{e}");
+    let e = save("wrong", json!({"type": "jwt", "alg": "ES256", "key": "key", "reuse_seconds": 4000}), &ec_pem).await.unwrap_err().to_string();
+    assert!(e.contains("reuse_seconds"), "{e}");
+    let e = save("wrong", json!({"type": "jwt", "alg": "ES256", "key": "key", "claims": {"exp": 1}}), &ec_pem).await.unwrap_err().to_string();
+    assert!(e.contains("exp"), "{e}");
+    let e = save("wrong", json!({"type": "jwt", "alg": "ES256", "key": "key", "exchange": "nothing"}), &ec_pem).await.unwrap_err().to_string();
+    assert!(e.contains("nothing"), "{e}");
+
+    // ── a_jwt_auth_signs_es256_and_reuses_the_token_within_its_life ──
+    let push = save("push", json!({"type": "jwt", "alg": "ES256", "key": "key", "kid": "K-1", "claims": {"iss": "team-7"}}), &ec_pem).await.unwrap();
+    k.debug_connection(admin, push, 10).await.unwrap();
+    connections::call(k, admin, None, &call("push", "send", json!({}), None)).await.unwrap();
+    let first = bearer();
+    connections::call(k, admin, None, &call("push", "send", json!({}), None)).await.unwrap();
+    assert_eq!(bearer(), first, "reused within its life");
+    let (header, claims) = opened(&first, &ECDSA_P256_SHA256_FIXED, &ec_public);
+    assert_eq!((header["alg"].clone(), header["kid"].clone()), (json!("ES256"), json!("K-1")));
+    assert_eq!(claims["iss"], "team-7");
+    assert_eq!(claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap(), 3300, "its reuse and five minutes");
+    save("quick", json!({"type": "jwt", "alg": "ES256", "key": "key", "reuse_seconds": 1}), &ec_pem).await.unwrap();
+    connections::call(k, admin, None, &call("quick", "send", json!({}), None)).await.unwrap();
+    let quick = bearer();
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+    connections::call(k, admin, None, &call("quick", "send", json!({}), None)).await.unwrap();
+    assert_ne!(bearer(), quick, "signed again past its reuse");
+
+    // ── an_exchanged_token_is_kept_and_renewed_before_it_ends ──
+    let fcm = |exchange: &str| json!({"type": "jwt", "alg": "RS256", "key": "key", "claims": {"iss": "svc@sender.test", "aud": format!("{base}/jwt")}, "exchange": exchange});
+    let kept = save("kept", fcm("token"), RSA_TEST_KEY).await.unwrap();
+    k.debug_connection(admin, kept, 10).await.unwrap();
+    let before = asked("/jwt/token");
+    connections::call(k, admin, None, &call("kept", "send", json!({}), None)).await.unwrap();
+    assert_eq!(asked("/jwt/token"), before + 1, "exchanged once");
+    let exchange = seen.lock().unwrap().iter().rev().find(|s| s.starts_with("POST /v1/jwt/token ")).cloned().unwrap();
+    let assertion: Value = serde_json::from_str(exchange.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    let (header, claims) = opened(assertion["assertion"].as_str().unwrap(), &RSA_PKCS1_2048_8192_SHA256, &rsa_public);
+    assert_eq!((header["alg"].clone(), claims["iss"].clone()), (json!("RS256"), json!("svc@sender.test")));
+    let access = bearer();
+    assert!(access.starts_with("Xc-"), "the access token it answered: {access}");
+    connections::call(k, admin, None, &call("kept", "send", json!({}), None)).await.unwrap();
+    assert_eq!((asked("/jwt/token"), bearer()), (before + 1, access.clone()), "kept while it lasts");
+    let e = connections::call(k, admin, None, &call("kept", "token", json!({"assertion": "x"}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("signs in"), "the exchange is no operation of its own: {e}");
+    let renewed = save("renewed", fcm("short"), RSA_TEST_KEY).await.unwrap();
+    connections::call(k, admin, None, &call("renewed", "send", json!({}), None)).await.unwrap();
+    let ending = bearer();
+    connections::call(k, admin, None, &call("renewed", "send", json!({}), None)).await.unwrap();
+    assert_eq!(asked("/jwt/short"), 2, "renewed before it ends");
+    assert_ne!(bearer(), ending);
+
+    // ── a_jwt_key_never_reaches_a_log_or_the_call_log ──
+    let mut logged = k.connection_log(admin, push, 100).await.unwrap();
+    logged.extend(k.connection_log(admin, kept, 100).await.unwrap());
+    assert!(logged.iter().any(|l| !l["debug"].is_null()), "captured while debug is on");
+    let text = Value::Array(logged).to_string();
+    for never in [&first, &access, &ec_body[..40], "MII"] {
+        assert!(!text.contains(never), "{never} in the log");
+    }
+    // Disconnected as a session is: the kept tokens gone, and nothing left for the refreshing job.
+    for id in [kept, renewed] {
+        assert!(!k.connect_remove(admin, id).await.unwrap());
+    }
+    let left = count(k, admin.tenant, &format!("select count(*) from conn_token where tenant_id = $1 and conn_id in ('{kept}', '{renewed}')")).await;
+    assert_eq!(left, 0);
+    vec![first, access, ec_body[..40].to_string(), der_tail()]
+}
+
+/// A line of the RSA test key's body, which rests nowhere.
+fn der_tail() -> String {
+    RSA_TEST_KEY.lines().nth(5).unwrap().to_string()
 }
 
 fn sign(secret: &str, ts: i64, body: &str) -> String {
@@ -1782,6 +1939,7 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     secret_inputs(&k, &admin, &seen).await;
+    let signed = signing_tokens(&k, &admin, &base, &seen).await;
     being_called(&k, &admin).await;
     answering(&k, &admin).await;
     payment_providers(&k, &admin, &base, &seen).await;
@@ -1796,5 +1954,6 @@ async fn scenario() {
     // ── secrets rest nowhere: not the log, the capture, the audit trail, the jobs ──
     let mut never: Vec<&str> = vec![SECRET, SIGNING, INBOUND, TOKEN, CLIENT, REFRESH, "Xy9-access", "wh-Ee42-merged"];
     never.extend(signed_in.iter().map(String::as_str));
+    never.extend(signed.iter().map(String::as_str));
     assert_eq!(rests(&k, &never).await, nowhere);
 }
