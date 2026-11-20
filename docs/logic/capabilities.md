@@ -79,7 +79,10 @@ person's request takes, so every hook, rule, row scope, field permission and aud
 Receipts are kept per workspace and environment, for as long as their capability says (`retention_days`: 400 days
 unless an action's contract says otherwise); the hourly maintenance deletes them after that, and the key is then free
 again. An erasure takes the record out of the receipts of operations on it, keeping its id and version: a repeat of
-the key still answers which record it was, as it may be seen now.
+the key still answers which record it was, as it may be seen now. What a receipt keeps of its input is a digest; a
+`secret` field's value (a record's, a child row's) and a secret action parameter are digested as a fingerprint keyed
+with the workspace's key for receipts, at the gate and at the records door alike, so a receipt kept for months cannot
+be used to try values (TP-S2).
 
 ## Refusals
 

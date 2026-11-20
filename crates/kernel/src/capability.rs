@@ -694,10 +694,16 @@ impl Kernel {
             Operation::Action(name) => crate::receipt::action_def(ctx, cap.entity.as_deref().unwrap_or_default(), name),
             _ => None,
         };
-        let digest = match (action, inv.input.get("params")) {
-            (Some(a), Some(params)) if a.params.iter().any(|p| p.secret) => {
+        let digest = match (action, inv.input.get("params"), inv.input.get("values")) {
+            (Some(a), Some(params), _) if a.params.iter().any(|p| p.secret) => {
                 let mut input = inv.input.clone();
                 input["params"] = self.digestible_params(ctx, cap.entity.as_deref().unwrap_or_default(), &a.name, params).await?;
+                cap.input_digest(&input)?
+            }
+            // A record's secret field values too (TP-S2): a receipt is kept for its retention, 400 days by default.
+            (_, _, Some(values)) if matches!(cap.operation, Operation::Create | Operation::Update) => {
+                let mut input = inv.input.clone();
+                input["values"] = self.digestible_record(ctx, cap.entity.as_deref().unwrap_or_default(), values).await?;
                 cap.input_digest(&input)?
             }
             _ => cap.input_digest(&inv.input)?,

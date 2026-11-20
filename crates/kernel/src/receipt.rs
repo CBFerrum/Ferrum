@@ -151,6 +151,26 @@ impl Kernel {
         .await
     }
 
+    /// What a receipt's digest is taken over for a record's `values` (a create's or an update's, at the gate or the records
+    /// door): each `secret` field's value, a child row's too, as a fingerprint keyed with the workspace's key for receipts,
+    /// as [`Kernel::digestible_params`] does for an action's, so that a digest kept for weeks cannot be used to try values.
+    /// Values with no secret field come back as they are.
+    pub async fn digestible_record(&self, ctx: &Ctx, entity: &str, values: &Value) -> Result<Value> {
+        let mut out = values.clone();
+        let Some(ent) = ctx.schema.entity(entity) else { return Ok(out) };
+        let any = std::cell::Cell::new(false);
+        each_secret(ctx, ent, &mut out, &|_| any.set(true));
+        if !any.get() {
+            return Ok(out);
+        }
+        let (_, key) = self.making_key(crate::vault::Scope::Workspace(ctx.tenant), crate::vault::Keyed::Receipt).await?;
+        each_secret(ctx, ent, &mut out, &|v| {
+            let text = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+            *v = Value::String(key.fingerprint("record field", &format!("{}|{text}", ctx.tenant)));
+        });
+        Ok(out)
+    }
+
     /// What a receipt's digest is taken over for action `action` of `entity`: `params` with each secret parameter
     /// as a fingerprint keyed with the workspace's key for receipts (crate::vault::keyed), so that the digest cannot be
     /// used to try values.
@@ -165,6 +185,29 @@ impl Kernel {
             }
         }
         Ok(out)
+    }
+}
+
+/// `f` on each set value of a `secret` field of `doc`, a record of `ent`, and of its child rows.
+fn each_secret(ctx: &Ctx, ent: &ferrum_meta::EffEntity, doc: &mut Value, f: &dyn Fn(&mut Value)) {
+    let Some(o) = doc.as_object_mut() else { return };
+    for field in &ent.def.fields {
+        match field.ftype {
+            ferrum_meta::FieldType::Secret => {
+                if let Some(v) = o.get_mut(&field.name).filter(|v| !v.is_null()) {
+                    f(v);
+                }
+            }
+            ferrum_meta::FieldType::Table => {
+                let child = field.of.as_deref().and_then(|c| ctx.schema.entity(c));
+                if let (Some(rows), Some(child)) = (o.get_mut(&field.name).and_then(Value::as_array_mut), child) {
+                    for row in rows {
+                        each_secret(ctx, child, row, f);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

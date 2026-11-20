@@ -107,7 +107,7 @@ async fn create(
         let mut h = Sha256::new();
         h.update(entity.as_bytes());
         h.update(if submit { b"+submit".as_slice() } else { b"".as_slice() });
-        h.update(canonical_json(&Value::Object(doc.clone())));
+        h.update(canonical_json(&st.kernel.digestible_record(&ctx, &entity, &Value::Object(doc.clone())).await?));
         let (d, replayed) = st.kernel.insert_idempotent_with(&ctx, &entity, doc, key, &hex::encode(h.finalize()), submit).await?;
         let mut resp = doc_response(d, if replayed { StatusCode::OK } else { StatusCode::CREATED });
         if replayed {
@@ -147,7 +147,9 @@ async fn update(
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
     let expected = if_match(&headers)?;
-    if let Some((key, digest)) = receipt(&headers, &format!("PATCH {entity}/{id}"), &body) {
+    // Only under a receipt: a secret field's value then digested keyed (TP-S2).
+    let digested = if headers.contains_key("idempotency-key") { st.kernel.digestible_record(&ctx, &entity, &body).await? } else { Value::Null };
+    if let Some((key, digest)) = receipt(&headers, &format!("PATCH {entity}/{id}"), &digested) {
         let (doc, again) = st.kernel.update_idempotent(&ctx, &entity, id, body_doc(body)?, expected, key, &digest).await?;
         let resp = doc_response(doc, StatusCode::OK);
         return Ok(if again { replayed(resp) } else { resp });
