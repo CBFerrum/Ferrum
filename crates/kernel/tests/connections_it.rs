@@ -979,6 +979,12 @@ async fn sessions(k: &Kernel, admin: &Ctx, base: &str, seen: &Seen) -> Vec<Strin
     );
     let listed = k.connection_defs(admin).await.unwrap().into_iter().find(|c| c["name"] == "bound").unwrap();
     assert_eq!(listed["secrets"], json!([]), "what the platform keeps is not listed: {listed}");
+    // Moved elsewhere with a secret given: the client registered for the old hosts is not carried there.
+    let moved = json!({"base": base, "allowed_hosts": ["elsewhere.example.test"], "auth": {"type": "oauth", "provider": provider},
+        "operations": {"me": {"path": "/dpop/me"}}});
+    k.save_connection_def(admin, Some(bound), &input("bound", moved, Some(json!({"note": "given"})))).await.unwrap();
+    k.connect_start(admin, bound, Uuid::now_v7()).await.unwrap();
+    assert_eq!(BOUND.lock().unwrap().0, 2, "registered again for the new hosts");
     vec![APP_PASSWORD.into(), SESSION_REFRESH.into(), "Ww3-access".into(), REGISTERED.into(), "DP-AT-Ww9".into()]
 }
 
@@ -1004,6 +1010,30 @@ async fn operating(k: &Kernel, admin: &Ctx, base: &str) {
     )
     .await;
     assert_eq!(audited, 2, "audited by name only");
+    // An address changed: the secrets kept for the old hosts are not re-kept for the new ones by a later merge.
+    let at = |hosts: Value, path: &str| json!({"base": base, "allowed_hosts": hosts, "auth": {"type": "bearer", "secret": "api_key"}, "operations": {"find": {"path": path}, "other": {"path": "/ok"}}});
+    let moved = k.save_connection_def(admin, None, &input("moved", at(json!([]), "/ok"), Some(json!({"api_key": SECRET})))).await.unwrap();
+    connections::call(k, admin, None, &call("moved", "find", json!({}), None)).await.expect("given for its hosts");
+    k.save_connection_def(admin, Some(moved), &input("moved", at(json!(["elsewhere.example.test"]), "/ok"), None)).await.unwrap();
+    let merged = k.merge_connection_secrets(admin, moved, &set, &[]).await.unwrap();
+    assert_eq!(merged, vec!["webhook".to_string()], "only what was given for the new hosts");
+    let e = connections::call(k, admin, None, &call("moved", "find", json!({}), None)).await.unwrap_err();
+    assert!(e.to_string().contains("has no secret api_key"), "asked for again: {e}");
+    // Hosts unchanged: the secrets stay, and the save names each operation that changed by a digest of it.
+    k.merge_connection_secrets(admin, moved, &BTreeMap::from([("api_key".to_string(), SECRET.to_string())]), &[]).await.unwrap();
+    k.save_connection_def(admin, Some(moved), &input("moved", at(json!(["elsewhere.example.test"]), "/ok/changed"), None)).await.unwrap();
+    connections::call(k, admin, None, &call("moved", "other", json!({}), None)).await.expect("kept");
+    let mut tx = k.db.tenant_tx(tenant).await.unwrap();
+    let diff: Value = sqlx::query_scalar("select diff from audit_event where tenant_id = $1 and record_id = $2 and action = 'save' order by id desc limit 1")
+        .bind(tenant)
+        .bind(moved)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let ops = diff["operations"].as_object().unwrap_or_else(|| panic!("no operations in {diff}"));
+    assert_eq!(ops.keys().collect::<Vec<_>>(), vec!["find"], "only the one changed: {diff}");
+    assert!(ops["find"].as_str().is_some_and(|d| d.len() == 64 && d.chars().all(|c| c.is_ascii_hexdigit())), "{diff}");
     // `meta`: kept and given back, bounded.
     let d = json!({"test": true, "meta": {"caps": ["video", "threads"]}, "operations": {"a": {}}});
     k.save_connection_def(admin, None, &input("caps", d, None)).await.unwrap();
