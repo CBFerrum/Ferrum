@@ -158,6 +158,10 @@ async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, St
     if state.is_empty() || state.len() > 64 || !state.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(refused());
     }
+    // Only the browser's own session cookie: a key or a program's token beside it is refused, never preferred.
+    if headers.contains_key(header::AUTHORIZATION) {
+        return Ok(refused());
+    }
     // Not signed in here: the sign-in page, which comes back to this address.
     let (ctx, _, _) = match person(st, headers, uri).await {
         Ok(p) => p,
@@ -191,8 +195,9 @@ async fn site_callback(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(S
     let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
     let kept = name.as_deref().and_then(|n| shell::cookie(headers, n)).unwrap_or_default();
     let (kept_state, next) = kept.split_once('.').unwrap_or_default();
-    // Only the browser that set off from here comes back; the code is not taken otherwise.
+    // Only the browser that set off from here comes back; the code is spent either way.
     if kept_state.is_empty() || !super::system::same_secret(kept_state, state) {
+        let _ = st.kernel.redeem_site_code(code, shell::request_host(headers).unwrap_or_default()).await;
         return Ok(failed("It took too long, or was started in another browser. Sign in again."));
     }
     let next = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(next).ok().and_then(|b| String::from_utf8(b).ok()).unwrap_or_else(|| "/".into());

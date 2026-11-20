@@ -662,8 +662,8 @@ impl Kernel {
     /// says a package seeded it; its seeded rules are those every installed package's manifest gives a role of
     /// that name (several packages may seed one role).
     async fn export_roles(&self, ctx: &Ctx, tx: &mut Tx, installed: &[(String, String)]) -> Result<(Vec<RoleDef>, BTreeSet<String>)> {
-        let roles: Vec<(String, Option<String>, Option<String>, bool)> =
-            sqlx::query_as("select name, description, package, portal from role where tenant_id = $1 order by name")
+        let roles: Vec<(String, Option<String>, Option<String>, bool, bool)> =
+            sqlx::query_as("select name, description, package, portal, portal_default from role where tenant_id = $1 order by name")
                 .bind(ctx.tenant)
                 .fetch_all(&mut **tx)
                 .await?;
@@ -673,13 +673,13 @@ impl Kernel {
         }
         let catalog = self.registry.catalog();
         let (mut out, mut packages) = (Vec::new(), BTreeSet::new());
-        for (name, description, package, portal) in roles {
+        for (name, description, package, portal, portal_default) in roles {
             if MACHINE_ROLES.iter().any(|p| name.starts_with(p)) {
                 continue;
             }
             let permissions = rules.remove(&name).unwrap_or_default();
             match package {
-                None => out.push(RoleDef { name, description, permissions, portal, portal_default: false, visitor: false }),
+                None => out.push(RoleDef { name, description, permissions, portal, portal_default, visitor: false }),
                 Some(pkg) => {
                     let seeded = catalog.package(&pkg).and_then(|p| p.manifest.roles.iter().find(|r| r.name == name).cloned());
                     let kept: Vec<PermissionDef> = installed
@@ -689,11 +689,11 @@ impl Kernel {
                         .flat_map(|r| r.permissions.iter().map(as_kept))
                         .collect();
                     let added: Vec<PermissionDef> = permissions.into_iter().filter(|p| !kept.contains(p)).collect();
-                    if added.is_empty() && seeded.as_ref().map(|r| r.portal) == Some(portal) {
+                    if added.is_empty() && seeded.as_ref().map(|r| (r.portal, r.portal_default)) == Some((portal, portal_default)) {
                         continue;
                     }
                     packages.insert(pkg);
-                    out.push(RoleDef { name, description: None, permissions: added, portal, portal_default: false, visitor: false });
+                    out.push(RoleDef { name, description: None, permissions: added, portal, portal_default, visitor: false });
                 }
             }
         }
@@ -1001,19 +1001,30 @@ impl Kernel {
         if MACHINE_ROLES.iter().any(|p| role.name.starts_with(p)) || role.name.trim().is_empty() || role.name.len() > 100 {
             return Err(Error::invalid("not a role a pack may carry"));
         }
-        let found: Option<(Option<String>, Option<String>, bool)> =
-            sqlx::query_as("select description, package, portal from role where tenant_id = $1 and name = $2")
+        if role.portal_default && !role.portal {
+            return Err(Error::field("roles", format!("{}: only a portal role is held by every portal person", role.name)));
+        }
+        let found: Option<(Option<String>, Option<String>, bool, bool)> =
+            sqlx::query_as("select description, package, portal, portal_default from role where tenant_id = $1 and name = $2")
                 .bind(ctx.tenant)
                 .bind(&role.name)
                 .fetch_optional(&mut **tx)
                 .await?;
         let have: Vec<PermissionDef> = rules_of(tx, ctx.tenant, Some(role.name.as_str())).await?.into_iter().map(Rule::def).collect();
         let new: Vec<&PermissionDef> = role.permissions.iter().filter(|p| !have.contains(&as_kept(p))).collect();
-        let describe = found.as_ref().is_some_and(|(d, pkg, _)| pkg.is_none() && role.description.is_some() && *d != role.description);
+        let describe = found.as_ref().is_some_and(|(d, pkg, ..)| pkg.is_none() && role.description.is_some() && *d != role.description);
         let portal = found.as_ref().map_or(role.portal, |f| f.2 != role.portal);
+        let default = found.as_ref().map_or(role.portal_default, |f| f.3 != role.portal_default);
+        // Every portal person holding a role is applied by an administrator at a screen, never by a key or a job (BD-89).
+        if default && role.portal_default && !ctx.at_screen() {
+            return Err(Error::Forbidden(format!(
+                "{}: a pack that makes a role every portal person holds is installed by an administrator at a screen",
+                role.name
+            )));
+        }
         let status = match &found {
             None => "created",
-            Some(_) if new.is_empty() && !describe && !portal => return Ok("unchanged"),
+            Some(_) if new.is_empty() && !describe && !portal && !default => return Ok("unchanged"),
             Some(_) => "changed",
         };
         sqlx::query("insert into role (tenant_id, name, description) values ($1, $2, $3) on conflict do nothing")
@@ -1040,6 +1051,9 @@ impl Kernel {
         }
         if portal && !role.portal {
             self.set_role_portal_in(ctx, tx, &role.name, false).await?;
+        }
+        if default {
+            self.set_role_portal_default_in(ctx, tx, &role.name, role.portal_default).await?;
         }
         Ok(status)
     }

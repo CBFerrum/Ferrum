@@ -99,6 +99,13 @@ fn catalog() -> Catalog {
     std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core").canonicalize().unwrap(), dir.join("core")).unwrap();
     std::fs::write(dir.join("school/package.yaml"), "package: school\nversion: 0.1.0\nlabel: School\ndepends: [core]\n").unwrap();
     std::fs::write(dir.join("school/entities/school.yaml"), ENTITIES).unwrap();
+    // A package whose customer role every portal person holds (installed by the test that needs it).
+    std::fs::create_dir_all(dir.join("clinic")).unwrap();
+    std::fs::write(
+        dir.join("clinic/package.yaml"),
+        "package: clinic\nversion: 0.1.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors, portal: true, portal_default: true}\n",
+    )
+    .unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
     c
@@ -211,6 +218,84 @@ fn portal_default_roles_reach_only_own_records() {
 #[test]
 fn portal_default_refused_on_member_role() {
     run(default_refused());
+}
+
+#[test]
+fn a_package_never_marks_again_what_an_administrator_unmarked() {
+    run(unmarked_stays());
+}
+
+/// Install, update and re-enable leave a role's "every portal person holds it" mark as the workspace has it
+/// (S4-P4 review M4).
+async fn unmarked_stays() {
+    let (k, tenant, admin) = school().await;
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    let marked = |k: Arc<Kernel>| async move {
+        let mut tx = k.db.system_tx().await.unwrap();
+        let m: bool =
+            sqlx::query_scalar("select portal_default from role where tenant_id = $1 and name = 'Visitors'").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        m
+    };
+    assert!(marked(k.clone()).await, "the package's mark on install");
+    k.set_role_portal_default(&admin, "Visitors", false).await.unwrap();
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    assert!(!marked(k.clone()).await, "installed again: still unmarked");
+}
+
+#[test]
+fn a_pack_carries_the_default_mark_and_applies_it_only_at_a_screen() {
+    run(pack_mark());
+}
+
+/// A pack built from a workspace carries the mark; installing it applies the mark only for an administrator at a screen
+/// (S4-P4 review L8).
+async fn pack_mark() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
+    let options = ferrum_kernel::pack::ExportOptions { name: "patients".into(), label: "Patients".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(&admin, &options).await.unwrap();
+    let (elsewhere, other) = workspace(&k, "elsewhere").await;
+    let screen = Ctx { made: ferrum_kernel::ctx::Made::Screen, ..other.clone() };
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    let e = k.install_pack(&other, &pack, &digest).await.expect_err("not at a screen");
+    assert!(e.to_string().contains("screen"), "{e}");
+    k.install_pack(&screen, &pack, &digest).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let marked: bool =
+        sqlx::query_scalar("select portal_default from role where tenant_id = $1 and name = 'Patients'").bind(elsewhere).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(marked, "carried and applied");
+}
+
+#[test]
+fn a_members_customer_self_owns_nothing_it_made_as_staff() {
+    run(made_as_staff());
+}
+
+/// A rule reaching "own" records (`if_owner`): a member who is also a customer owns, on the site, what names their
+/// address, never what they created as staff (S4-P4 review M3); a portal person still owns what they made.
+async fn made_as_staff() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "if_owner": true}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
+    let mut all = vec![];
+    for (name, email) in [("Ann", "ann@x.test"), ("Bob", "bob@x.test")] {
+        all.push((id_of(&k.insert(&admin, "Patient", obj(json!({"name": name, "email": email}))).await.unwrap()), name));
+    }
+    let me = k.customer_ctx(admin.tenant, admin.user, None, "it".into(), None).await.unwrap();
+    assert_eq!(reach(&k, &me, "Patient", &all, "name").await, names(&[]), "made as staff: not the customer's");
+    let ann = portal_person(&k, &admin, "ann@x.test", &[]).await;
+    let own = id_of(&k.insert(&admin, "Patient", obj(json!({"name": "Ann's own", "email": "other@x.test"}))).await.unwrap());
+    let table = admin.schema.entity("Patient").unwrap().table.clone();
+    let mut tx = k.db.system_tx().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("update {table} set created_by = $1 where id = $2"))).bind(ann.user).bind(own).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    all.push((own, "Ann's own"));
+    assert_eq!(reach(&k, &ann, "Patient", &all, "name").await, names(&["Ann's own"]), "a portal person owns what they made");
 }
 
 /// An empty database and the school workspace.

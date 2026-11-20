@@ -197,7 +197,7 @@ async fn list_roles(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult
     let rows = query_json(
         &app,
         &ctx,
-        "select jsonb_build_object('name', r.name, 'description', r.description, 'package', r.package, 'portal', r.portal, 'permissions', \
+        "select jsonb_build_object('name', r.name, 'description', r.description, 'package', r.package, 'portal', r.portal, 'portal_default', r.portal_default, 'permissions', \
          coalesce((select jsonb_agg(to_jsonb(p) - 'tenant_id' - 'role' order by p.entity) from role_permission p \
                    where p.tenant_id = r.tenant_id and p.role = r.name), '[]'::jsonb)) \
          from role r where r.tenant_id = $1 order by r.name",
@@ -217,6 +217,10 @@ struct Portal {
 /// Marks a role for the portal or not (docs/builder/decisions.md BD-02), and as one every portal person holds (BD-89).
 async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
     let k = &app_state(&app)?.kernel;
+    // Refused before anything changes: a default that is no portal role (S4-P4 review L6).
+    if p.portal_default == Some(true) && !p.portal {
+        return Err(ApiError(Error::field("portal_default", "only a portal role is held by every portal person")));
+    }
     k.set_role_portal(&ctx, role.trim(), p.portal).await?;
     if let Some(on) = p.portal_default {
         k.set_role_portal_default(&ctx, role.trim(), on).await?;

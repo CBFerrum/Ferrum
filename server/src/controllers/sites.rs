@@ -145,6 +145,11 @@ pub(crate) async fn respond(
         if matches!(k.to_ascii_lowercase().as_str(), "content-length" | "transfer-encoding" | "connection") {
             continue;
         }
+        // The platform's own cookies (a session, a sign-in's state) are never an app's to set on its host.
+        let cookie = v.split('=').next().unwrap_or_default().trim().to_ascii_lowercase();
+        if k.eq_ignore_ascii_case("set-cookie") && (cookie.starts_with("__host-ferrum") || cookie.starts_with("ferrum_")) {
+            continue;
+        }
         if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::from_str(&v)) {
             resp.headers_mut().append(name, value);
         }

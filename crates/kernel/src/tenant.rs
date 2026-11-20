@@ -139,10 +139,11 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
             for role in &pkg.manifest.roles {
-                // A package's portal mark follows its version (BD-02); its roles stay its own.
+                // A package's portal mark follows its version (BD-02); its roles stay its own. Whether every portal person
+                // holds one is the workspace's once it has the role: set on install, never again (BD-89).
                 sqlx::query(
                     "insert into role (tenant_id, name, description, package, portal, portal_default) values ($1, $2, $3, $4, $5, $6) \
-                     on conflict (tenant_id, name) do update set portal = excluded.portal, portal_default = excluded.portal_default \
+                     on conflict (tenant_id, name) do update set portal = excluded.portal, portal_default = role.portal_default and excluded.portal \
                      where role.package = excluded.package",
                 )
                 .bind(tenant)

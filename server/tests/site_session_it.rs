@@ -51,7 +51,14 @@ struct Echo(&'static str);
 impl Site for Echo {
     async fn handle(&self, _: &Kernel, req: SiteRequest) -> ferrum_kernel::Result<SiteResponse> {
         let user = req.user.as_ref().map(|c| json!({"email": c.email, "outside": c.outside, "admin": c.is_admin, "roles": c.roles}));
-        Ok(SiteResponse::json(200, &json!({"site": self.0, "path": req.path, "user": user})))
+        let mut r = SiteResponse::json(200, &json!({"site": self.0, "path": req.path, "user": user}));
+        if req.path.ends_with("plant") {
+            // A site that tries to set the platform's own cookie, beside one of its own.
+            r.headers.push(("set-cookie".into(), format!("{}=planted; Path=/", ferrum_server::shell::cookie_name(false))));
+            r.headers.push(("Set-Cookie".into(), "ferrum_auth-0123456789ab=x.y; Path=/".into()));
+            r.headers.push(("set-cookie".into(), "app_pref=1; Path=/".into()));
+        }
+        Ok(r)
     }
 }
 
@@ -93,6 +100,7 @@ fn extend() {
 
 struct World {
     k: Arc<Kernel>,
+    st: AppState,
     r: axum::Router,
     /// Acme's administrator's browser session (a member), signed in on the portal host.
     member: String,
@@ -162,7 +170,7 @@ async fn world() -> World {
         let res = r.clone().oneshot(req).await.unwrap();
         cookies(res.headers()).remove(ferrum_server::shell::cookie_name(false)).expect("a page's sign-in sets the session cookie")
     };
-    World { k, r, member }
+    World { k, r, member, st: st.clone() }
 }
 
 /// The cookies a response sets, by name (an emptied one as empty).
@@ -346,5 +354,119 @@ fn cross_site_post_refused() {
         assert_eq!(cookies(&h).get(SESSION()).map(String::as_str), Some(""), "the cookie is cleared");
         let (_, _, body) = call(&w.r, Method::GET, SHOP, "/hello", &[(SESSION(), &site)], &[]).await;
         assert_eq!(user_of(&body), Value::Null, "the ended session is nobody");
+    });
+}
+
+/// Only the browser's own session starts a site sign-in (S4-P4 review M1): a junk cookie beside an API key or a bare
+/// sign-in token mints nothing.
+#[test]
+#[serial]
+fn handoff_takes_only_the_browsers_session() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let admin = w.k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+        let key = w.k.create_api_key(&admin, s.user, "it", None, None).await.unwrap().1;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/api/auth/login")
+            .header(header::HOST, PORTAL)
+            .header("x-forwarded-for", "203.0.113.5")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"tenant": "acme", "email": "admin@acme.test", "password": PASSWORD}).to_string()))
+            .unwrap();
+        let res = w.r.clone().oneshot(req).await.unwrap();
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        let token = body["token"].as_str().unwrap_or_else(|| panic!("a bare token: {body}")).to_string();
+        let (_, h, _) = call(&w.r, Method::GET, SHOP, "/_auth/sign-in?next=/account", &[], &[]).await;
+        let (_, handoff) = location(&h);
+        for bearer in [key, token] {
+            let auth = format!("Bearer {bearer}");
+            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), "x")], &[("authorization", &auth)]).await;
+            assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "{status} {body}");
+            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.member)], &[("authorization", &auth)]).await;
+            assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "not preferred beside the cookie either: {status} {body}");
+        }
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let minted: i64 = sqlx::query_scalar("select count(*) from host_code").fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(minted, 0, "nothing minted");
+    });
+}
+
+/// A code is spent by any callback that names it, refused or not (S4-P4 review L1).
+#[test]
+#[serial]
+fn a_refused_callback_spends_its_code() {
+    run(|| async {
+        let w = world().await;
+        let ((n, v), callback) = handed(&w).await;
+        let (status, _, body) = call(&w.r, Method::GET, SHOP, &callback, &[], &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let (status, h, body) = call(&w.r, Method::GET, SHOP, &callback, &[(&n, &v)], &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(cookies(&h).get(SESSION()).is_none_or(|c| c.is_empty()), "no session");
+    });
+}
+
+/// The role list shows which roles every portal person holds (S4-P4 review M4).
+#[test]
+#[serial]
+fn role_list_shows_the_default_mark() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        sqlx::query("insert into role (tenant_id, name, portal, portal_default) values ($1, 'Patrons', true, true)")
+            .bind(s.tenant)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let (status, _, body) = call(&w.r, Method::GET, PORTAL, "/api/admin/roles", &[(SESSION(), &w.member)], &[("sec-fetch-site", "same-origin")]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let roles: Value = serde_json::from_str(&body).unwrap();
+        let patrons = roles["roles"].as_array().and_then(|a| a.iter().find(|r| r["name"] == "Patrons")).cloned().unwrap_or_else(|| panic!("{body}"));
+        assert_eq!(patrons["portal_default"], json!(true), "{patrons}");
+    });
+}
+
+/// A site app never sets the platform's own cookies on its host (S4-P4 review L4); its own pass.
+#[test]
+#[serial]
+fn site_cannot_set_the_platforms_cookies() {
+    run(|| async {
+        let w = world().await;
+        let (status, h, body) = call(&w.r, Method::GET, SHOP, "/plant", &[], &[]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let set: Vec<String> = cookies(&h).into_keys().collect();
+        assert_eq!(set, vec!["app_pref".to_string()], "{h:?}");
+    });
+}
+
+/// A session that may only set up the second factor the workspace requires starts no site sign-in (S4-P4 review M1,
+/// with API-K2's setup-only cookie).
+#[test]
+#[serial]
+fn handoff_refuses_a_setup_only_session() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let mut claims = serde_json::Map::new();
+        claims.insert("tenant".into(), json!(s.tenant.to_string()));
+        claims.insert("tv".into(), json!(s.token_version));
+        claims.insert("setup_2fa".into(), json!(true));
+        // A browser's session (its `sid`), as API-K2 makes the setup-only one.
+        let sid = w.k.open_session(&s, std::time::Duration::from_secs(600), "it", "203.0.113.5", None).await.unwrap();
+        claims.insert("sid".into(), json!(sid.to_string()));
+        let setup = w.st.sessions.sign(600, s.user.to_string(), claims).unwrap();
+        let (_, h, _) = call(&w.r, Method::GET, SHOP, "/_auth/sign-in?next=/account", &[], &[]).await;
+        let (_, handoff) = location(&h);
+        let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &setup)], &[]).await;
+        assert!(h.get(header::LOCATION).is_none_or(|l| !l.to_str().unwrap().contains("/_auth/callback")), "{status} {body}");
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let minted: i64 = sqlx::query_scalar("select count(*) from host_code").fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(minted, 0, "nothing minted");
     });
 }

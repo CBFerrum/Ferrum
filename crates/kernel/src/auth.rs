@@ -672,6 +672,8 @@ impl Kernel {
         // people also hold the roles marked for the portal (docs/builder/decisions.md BD-02), which
         // reach only their own records; any other role given to them counts for nothing, as every
         // role does for a guest. Neither is ever an administrator.
+        // A member as a customer owns, by their address alone, nothing they made as staff (BD-89).
+        let own_by_address = customer && !matches!(kind.as_str(), "portal" | "guest");
         let kind = if customer && kind != "guest" { "portal".to_string() } else { kind };
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
@@ -721,7 +723,8 @@ impl Kernel {
                 default_company = Some(*one);
             }
         }
-        let perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        let mut perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        perms.own_by_address = own_by_address;
         let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false, &schema).await?)) } else { None };
         tx.commit().await?;
         let fy_start_month = settings.get("fiscal_year_start_month").and_then(|v| v.as_u64()).unwrap_or(1).clamp(1, 12) as u32;
@@ -1629,24 +1632,29 @@ impl Kernel {
     /// Makes a portal role one every portal person holds without being given it, or not (docs/builder/decisions.md
     /// BD-89). Administrators only; refused for a role that is not a portal role.
     pub async fn set_role_portal_default(&self, ctx: &Ctx, role: &str, on: bool) -> Result<()> {
-        Self::require_admin(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.set_role_portal_default_in(ctx, &mut tx, role, on).await?;
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
+    }
+
+    /// [`Kernel::set_role_portal_default`] in the caller's transaction (a pack's install).
+    pub(crate) async fn set_role_portal_default_in(&self, ctx: &Ctx, tx: &mut Tx, role: &str, on: bool) -> Result<()> {
+        Self::require_admin(ctx)?;
         let portal: Option<bool> = sqlx::query_scalar("select portal from role where tenant_id = $1 and name = $2 for update")
             .bind(ctx.tenant)
             .bind(role)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
         match portal {
             None => return Err(Error::NotFound(format!("role {role}"))),
             Some(false) if on => return Err(Error::field("portal_default", "only a portal role is held by every portal person")),
             _ => {}
         }
-        sqlx::query("update role set portal_default = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(on).execute(&mut *tx).await?;
-        crate::audit::record_admin(&mut tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": on})).await?;
-        notify_users(&mut tx, ctx.tenant, None).await?;
-        tx.commit().await?;
-        self.invalidate_tenant_users(ctx.tenant);
-        Ok(())
+        sqlx::query("update role set portal_default = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(on).execute(&mut **tx).await?;
+        crate::audit::record_admin(tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": on})).await?;
+        notify_users(tx, ctx.tenant, None).await
     }
 }
 
