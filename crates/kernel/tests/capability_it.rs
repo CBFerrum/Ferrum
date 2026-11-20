@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use uuid::Uuid;
 
-const PACKAGE: &str = "package: stockcap\nversion: 0.3.1\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, read_groups: [costing], write_groups: [costing]}\n      - {entity: StockLine, read: true}\n  - name: Viewer\n    permissions:\n      - {entity: Hold, read: true}\n  - name: Approver\n    permissions:\n      - {entity: Hold, read: true, write: true}\nworkflows:\n  - name: Hold approval\n    entity: Hold\n    initial_state: Draft\n    states:\n      - {name: Draft}\n      - {name: Approved}\n    transitions:\n      - {action: approve, from: Draft, to: Approved, roles: [Approver], not_creator: true}\n";
+const PACKAGE: &str = "package: stockcap\nversion: 0.3.1\ndepends: [core]\nroles:\n  - name: Clerk\n    permissions:\n      - {entity: Hold, read: true, write: true, create: true, submit: true, read_groups: [costing], write_groups: [costing]}\n      - {entity: StockLine, read: true}\n      - {entity: Safe, read: true, write: true, create: true}\n  - name: Viewer\n    permissions:\n      - {entity: Hold, read: true}\n  - name: Approver\n    permissions:\n      - {entity: Hold, read: true, write: true}\nworkflows:\n  - name: Hold approval\n    entity: Hold\n    initial_state: Draft\n    states:\n      - {name: Draft}\n      - {name: Approved}\n    transitions:\n      - {action: approve, from: Draft, to: Approved, roles: [Approver], not_creator: true}\n";
 const ENTITIES: &str = r#"
 - name: Hold
   label: Hold
@@ -33,6 +33,12 @@ const ENTITIES: &str = r#"
     - {name: peek, label: Peek, read_only: true, permission: read}
     - {name: fix_up, label: Fix up, hidden: true}
     - {name: restock, label: Restock, permission: write}
+- name: Safe
+  label: Safe
+  kind: master
+  fields:
+    - {name: label, type: data}
+    - {name: pin, type: secret}
 - name: StockLine
   label: Stock Line
   kind: ledger
@@ -120,8 +126,16 @@ async fn workspace(k: &Kernel, slug: &str) -> (Ctx, Ctx) {
 
 async fn scenario() {
     let url = std::env::var("FERRUM_TEST_DATABASE_URL").unwrap_or_else(|_| "postgres://ferrum:ferrum@localhost:5432/ferrum_test".into());
-    let db = Db::connect(DbConfig { url, max_connections: 10, ..Default::default() }).await.expect("connect");
+    let db = Db::connect(DbConfig { url: url.clone(), max_connections: 10, ..Default::default() }).await.expect("connect");
     sqlx::raw_sql("drop schema if exists public cascade; drop schema if exists vault cascade; create schema public;").execute(&db.pool).await.expect("reset");
+    // The vault, as a server opens it: a secret field's value is kept there.
+    let opener = ferrum_kernel::vault::Opener {
+        database_url: url,
+        file: "/nonexistent/root.key".into(),
+        kdf: ferrum_kernel::vault::Kdf { m_kib: 64, t: 1, p: 1 },
+        ..Default::default()
+    };
+    ferrum_kernel::vault::open(&db, opener, false).await.expect("the vault");
     let core = ferrum_meta::catalog::load_package_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core")).expect("core");
     let files: BTreeMap<String, String> = [("package.yaml", PACKAGE), ("entities/stock.yaml", ENTITIES), ("sql/001_ledger.sql", LEDGER_SQL)]
         .into_iter()
@@ -342,4 +356,20 @@ async fn scenario() {
     let answer = client.get(url).send().await.unwrap();
     assert_eq!(answer.status().as_u16(), 302, "the redirect comes back as it is");
     assert_eq!(reached.load(Ordering::SeqCst), 0, "and the private endpoint it pointed at was never reached");
+
+    // ── a_secret_field_is_digested_keyed_in_its_receipt (TP-S2): a receipt kept for 400 days holds no plain digest of a
+    // secret value, which a short value would not survive ──
+    let safe = |pin: &str| Invocation::new("stockcap.safe.create", json!({"values": {"label": "Vault 1", "pin": pin}})).key("safe/1");
+    k.invoke(&clerk, safe("4821")).await.expect("a safe made with its pin");
+    let plain = k.capability(&clerk, "stockcap.safe.create").unwrap().input_digest(&json!({"values": {"label": "Vault 1", "pin": "4821"}})).unwrap();
+    let mut tx = k.db.tenant_tx(clerk.tenant).await.unwrap();
+    let kept: String = sqlx::query_scalar("select input_digest from logic_effect where capability = 'stockcap.safe.create' and effect_key = 'safe/1'")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(kept, plain, "the receipt's digest of a secret field is keyed");
+    // ── the_same_secret_again_is_repeated_and_another_is_input_changed ──
+    assert!(k.invoke(&clerk, safe("4821")).await.unwrap().repeated, "the same pin again is the same request");
+    assert_eq!(code(&k.invoke(&clerk, safe("4822")).await.unwrap_err()), "input_changed", "another pin under the key is other input");
 }
