@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use ferrum_kernel::automation;
 use ferrum_kernel::capability::Invocation;
-use ferrum_kernel::connections::inbound::InboundHandler;
+use ferrum_kernel::connections::inbound::{InboundAnswer, InboundHandler, InboundResponder};
 use ferrum_kernel::connections::{self, Call, ConnectionInput};
 use ferrum_kernel::customize::NewCustomization;
 use ferrum_kernel::tenant::NewTenant;
@@ -357,6 +357,99 @@ impl InboundHandler for Depot {
         k.insert_tx(ctx, tx, "Parcel", obj(json!({"label": label}))).await?;
         Ok(())
     }
+
+    /// With the inbound address's query (TP-3): each parameter goes on the label.
+    async fn handle_call(
+        &self,
+        k: &Kernel,
+        tx: &mut ferrum_kernel::db::Tx,
+        ctx: &Ctx,
+        connection: &str,
+        payload: &Value,
+        query: &BTreeMap<String, String>,
+    ) -> ferrum_kernel::Result<()> {
+        let mut label = format!("{connection}:{}", payload["ref"].as_str().unwrap_or_default());
+        for (k, v) in query {
+            label.push_str(&format!(":{k}={v}"));
+        }
+        k.insert_tx(ctx, tx, "Parcel", obj(json!({"label": label}))).await?;
+        Ok(())
+    }
+}
+
+/// The app's answer in the caller's own request (TP-3): only for a call that asks for one (`answer`), slowly when it
+/// says `slow`; it records what it answered.
+struct Answering;
+
+#[async_trait]
+impl InboundResponder for Answering {
+    fn deadline(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(500)
+    }
+    fn fallback(&self, _connection: &str) -> InboundAnswer {
+        InboundAnswer { status: 200, content_type: "application/xml".into(), body: "<Response/>".into() }
+    }
+    async fn respond(
+        &self,
+        k: &Kernel,
+        tx: &mut ferrum_kernel::db::Tx,
+        ctx: &Ctx,
+        _connection: &str,
+        payload: &Value,
+        _query: &BTreeMap<String, String>,
+    ) -> ferrum_kernel::Result<Option<InboundAnswer>> {
+        if payload["answer"] != json!(true) {
+            return Ok(None);
+        }
+        if payload["slow"] == json!(true) {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        let r = payload["ref"].as_str().unwrap_or_default();
+        k.insert_tx(ctx, tx, "Parcel", obj(json!({"label": format!("answered:{r}")}))).await?;
+        Ok(Some(InboundAnswer { status: 200, content_type: "application/xml".into(), body: format!("<Response>{r}</Response>") }))
+    }
+}
+
+/// Calls to a connection whose app answers some of them at once (TP-3): its handler gets the address's query without
+/// its secret; an answered call is answered once, the same to a repeat, and never handled again; one answered past its
+/// deadline gets the fallback and is handled later by the job.
+async fn answering(k: &Kernel, admin: &Ctx) {
+    let tenant = admin.tenant;
+    let parcel = admin.schema.entity("Parcel").unwrap().table.clone();
+    let desc = json!({"test": true, "apps": ["depot"], "inbound": {"verify": {"type": "query", "param": "key", "secret": "hook"}, "delivery_at": "/id", "handler": "depot"}});
+    let id = k.save_connection_def(admin, None, &input("voice", desc, Some(json!({"hook": INBOUND})))).await.unwrap();
+    let query = BTreeMap::from([("key".to_string(), INBOUND.to_string()), ("ours".to_string(), "m-1".to_string())]);
+    let post = |body: Value| {
+        let query = query.clone();
+        async move { k.connection_inbound_answered(id, &BTreeMap::new(), &query, body.to_string().as_bytes()).await }
+    };
+    let labels = |like: &str| {
+        let sql = format!("select count(*) from {parcel} where tenant_id = $1 and label like '{like}'");
+        async move { count(k, tenant, &sql).await }
+    };
+
+    // a_handler_gets_the_inbound_query_without_its_secret
+    assert!(post(json!({"id": "q-1", "ref": "Q1"})).await.unwrap().is_none(), "not answered: accepted, as before");
+    drain(k).await;
+    assert_eq!(labels("voice:Q1:ours=m-1").await, 1, "the handler had the query, its secret parameter taken out");
+    assert_eq!(labels("voice:Q1%key%").await, 0);
+    assert_eq!(count(k, tenant, &format!("select count(*) from conn_inbound where tenant_id = $1 and query::text like '%{INBOUND}%'")).await, 0, "nor kept");
+
+    // an_answering_inbound_answers_in_the_same_request_once_per_delivery
+    let answered = post(json!({"id": "a-1", "ref": "A1", "answer": true})).await.unwrap().expect("answered");
+    assert_eq!((answered.status, answered.content_type.as_str(), answered.body.as_str()), (200, "application/xml", "<Response>A1</Response>"));
+    let again = post(json!({"id": "a-1", "ref": "A1", "answer": true})).await.unwrap().expect("answered again");
+    assert_eq!(again.body, answered.body, "a repeat gets the stored answer");
+    drain(k).await;
+    assert_eq!(labels("answered:A1").await, 1, "the responder ran once");
+    assert_eq!(labels("voice:A1%").await, 0, "and the handler never: the call was processed with its answer");
+
+    // past_its_deadline_an_answering_inbound_gives_the_fallback_and_is_processed_later
+    let late = post(json!({"id": "s-1", "ref": "S1", "answer": true, "slow": true})).await.unwrap().expect("the fallback");
+    assert_eq!(late.body, "<Response/>");
+    drain(k).await;
+    assert_eq!(labels("answered:S1").await, 0, "what the late answer wrote is undone");
+    assert_eq!(labels("voice:S1%").await, 1, "the job handled it, once");
 }
 
 fn sign(secret: &str, ts: i64, body: &str) -> String {
@@ -1407,6 +1500,7 @@ async fn boot() -> (Arc<Kernel>, Ctx) {
     let settings = KernelSettings { connection_hosts: vec!["127.0.0.1".into()], public_url: Some("https://ferrum.example.test".into()), ..Default::default() };
     let mut hooks = HookRegistry::default();
     hooks.add_inbound_handler("depot", Arc::new(Depot));
+    hooks.add_inbound_responder("depot", Arc::new(Answering));
     let k = Kernel::boot(db, Catalog::from_packages(vec![core, depot]).unwrap(), hooks, settings, None).await.expect("boot");
     let tenant = k
         .create_tenant(NewTenant {
@@ -1625,6 +1719,7 @@ async fn scenario() {
     assert!(log.iter().all(|l| !l.to_string().contains(SECRET)));
 
     being_called(&k, &admin).await;
+    answering(&k, &admin).await;
     payment_providers(&k, &admin, &base, &seen).await;
     answers(&k, &admin, &base, &seen).await;
     files(&k, &admin, &base, &seen).await;

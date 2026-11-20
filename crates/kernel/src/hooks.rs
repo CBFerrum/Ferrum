@@ -245,6 +245,7 @@ pub struct HookRegistry {
     doc_hosts: HashMap<String, Arc<dyn DocHost>>,
     job_handlers: HashMap<&'static str, Arc<dyn crate::jobs::JobHandler>>,
     inbound_handlers: HashMap<String, Arc<dyn crate::connections::inbound::InboundHandler>>,
+    inbound_responders: HashMap<String, Arc<dyn crate::connections::inbound::InboundResponder>>,
     connector_source: Option<Arc<dyn crate::connect::ConnectorSource>>,
     connectors: HashMap<String, Arc<dyn crate::connect::Connector>>,
     resources: Option<Arc<dyn crate::resources::Resources>>,
@@ -642,6 +643,16 @@ impl HookRegistry {
 
     pub fn inbound_handler(&self, app: &str) -> Option<&Arc<dyn crate::connections::inbound::InboundHandler>> {
         self.inbound_handlers.get(app)
+    }
+
+    /// Registers `app` to answer some of the calls its connections accept in the caller's own request (TP-3).
+    pub fn add_inbound_responder(&mut self, app: &str, responder: Arc<dyn crate::connections::inbound::InboundResponder>) -> &mut Self {
+        self.inbound_responders.insert(app.to_string(), responder);
+        self
+    }
+
+    pub fn inbound_responder(&self, app: &str) -> Option<&Arc<dyn crate::connections::inbound::InboundResponder>> {
+        self.inbound_responders.get(app)
     }
 
     /// Adds a provider a workspace can connect to (crate::connect).

@@ -221,7 +221,8 @@ async fn handshake(State(app): State<AppContext>, Path(id): Path<Uuid>, Query(q)
         .into_response())
 }
 
-/// What an inbound call is answered: every refusal the same 401, counted; one accepted, `{accepted: true}`.
+/// What an inbound call is answered: every refusal the same 401, counted; one accepted, `{accepted: true}`, or what the
+/// connection's app answered it (TP-3).
 /// `query`: the address's query parameters (a `Query` connection's secret is one; request logs keep no query).
 pub async fn inbound_answer(
     k: &Kernel,
@@ -233,7 +234,15 @@ pub async fn inbound_answer(
 ) -> ApiResult<Response> {
     limiter.check_from(headers, "connections").await?;
     let names: BTreeMap<String, String> = headers.iter().filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string()))).collect();
-    Ok(Json(k.connection_inbound(id, &names, query, body).await?).into_response())
+    Ok(match k.connection_inbound_answered(id, &names, query, body).await? {
+        None => Json(json!({"accepted": true})).into_response(),
+        Some(a) => (
+            axum::http::StatusCode::from_u16(a.status).unwrap_or(axum::http::StatusCode::OK),
+            [(axum::http::header::CONTENT_TYPE, a.content_type), (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())],
+            a.body,
+        )
+            .into_response(),
+    })
 }
 
 pub fn routes() -> Routes {
