@@ -17,7 +17,24 @@ set -uo pipefail
 # Whether a test database may be emptied: only one of this machine's own runs (`…_localci`), never the development or the
 # platform's test database, nor a walk's. `--may-reset NAME` answers by the exit code (scripts/test_app_ci.py).
 may_reset() { case "$1" in ferrum_dev | ferrum_test | *walk*) return 1 ;; *_localci) return 0 ;; *) return 1 ;; esac; }
+# What a failed test run says: each failing target's own output (its passing tests left out) and cargo's list of the
+# targets that failed; a run that built nothing to run (a compile error) its tail.
+failures() {
+  local log
+  log=$(mktemp "${TMPDIR:-/tmp}/app-ci-fail.XXXXXX")
+  grep -v "^ *Compiling\|^ *Checking\| \.\.\. ok$" > "$log"
+  if grep -q "^ *Running " "$log"; then
+    awk '/^ *(Running|Doc-tests) /{ if (keep) printf "%s", block; block = ""; keep = 0 }
+      { block = block $0 "\n" } /FAILED|panicked|error: test failed|process didn.t exit/{ keep = 1 }
+      END { if (keep) printf "%s", block }' "$log" | grep -v "^error: [0-9]* targets* failed:" | head -400
+    sed -n '/^error: [0-9]* targets* failed:/,$p' "$log"
+  else
+    tail -60 "$log"
+  fi
+  rm -f "$log"
+}
 if [ "${1:-}" = --may-reset ]; then may_reset "${2:?a database name}"; exit; fi
+if [ "${1:-}" = --failures ]; then failures; exit; fi
 APP_DIR=$(cd "${1:?an app checkout}" && pwd)
 PLATFORM=${PLATFORM:-$(cd "$(dirname "$0")/.." && pwd)}
 FRONTEND=${FRONTEND:-$PLATFORM/web}
@@ -33,11 +50,18 @@ while read -r var db; do
   case " ${DBS[*]:-} " in *" $var="*) ;; *) DBS+=("$var=$PG/${db}_localci");; esac
 done < <(grep -rhoE --include='*.rs' 'env::var\("FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL"\)[^"]*"postgres://[^/"]*/[a-z0-9_]+' "$APP_DIR" 2>/dev/null |
   sed -E 's#.*"(FERRUM_[A-Z0-9_]*)".*/([a-z0-9_]+)$#\1 \2#' | sort -u)
+# And each one a suite names through a helper of its own (url("FERRUM_X_TEST_DATABASE_URL", "ferrum_x_test")).
+files=$(grep -rlE --include='*.rs' 'FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL' "$APP_DIR" 2>/dev/null)
+while read -r var db; do
+  [ -n "$var" ] || continue
+  case " ${DBS[*]:-} " in *" $var="*) ;; *) DBS+=("$var=$PG/${db}_localci");; esac
+done < <([ -n "$files" ] && perl -0777 -ne 'print "$1 $2\n" while /\(\s*"(FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL)"\s*,\s*"([a-z0-9_]+)"/g' $files | sort -u)
 # And each one a suite reads through the test kit (database("FERRUM_X_TEST_DATABASE_URL"), default ferrum_x_test).
 while read -r var; do
   db=$(echo "${var#FERRUM_}" | sed 's/_DATABASE_URL$//' | tr 'A-Z' 'a-z')
   case " ${DBS[*]:-} " in *" $var="*) ;; *) DBS+=("$var=$PG/ferrum_${db}_localci");; esac
 done < <(grep -rhoE --include='*.rs' 'database\("FERRUM_[A-Z0-9_]*_TEST_DATABASE_URL"\)' "$APP_DIR" 2>/dev/null | sed -E 's/.*"(.*)".*/\1/' | sort -u)
+[ "${2:-}" = --databases ] && { printf '%s\n' "${DBS[@]}"; exit; }
 [ ${#DBS[@]} -gt 0 ] || DBS=("FERRUM_$(echo "$APP" | tr 'a-z-' 'A-Z_')_TEST_DATABASE_URL=$PG/ferrum_${APP//-/_}_localci")
 # A workspace's members too, when its workflow tests them.
 WS=$(grep -q "cargo test --workspace" "$APP_DIR/.github/workflows/ci.yml" 2>/dev/null && echo --workspace)
@@ -50,13 +74,13 @@ export CARGO_INCREMENTAL=0
 fail=0
 step() { echo "== $1"; }
 quiet() { grep -v "patch.*was not used\|Check that the patched\|^warning: Patch"; }
-# A test run's outcome: its results when it passed, and its whole tail when it did not.
+# A test run's outcome: its results when it passed, and what failed when it did not.
 tests() {
   local log
   log=$(mktemp "${TMPDIR:-/tmp}/app-ci-test.XXXXXX")
   "$@" > "$log" 2>&1
   local code=$?
-  if [ $code = 0 ]; then grep -E "^test result" "$log"; else quiet < "$log" | grep -v "^ *Compiling\|^ *Checking" | tail -60; fi
+  if [ $code = 0 ]; then grep -E "^test result" "$log"; else quiet < "$log" | failures; fi
   rm -f "$log"
   return $code
 }

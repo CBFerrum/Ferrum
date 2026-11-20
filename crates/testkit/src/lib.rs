@@ -65,16 +65,79 @@ pub fn database(var: &str) -> String {
 static RUNTIME: LazyLock<tokio::runtime::Runtime> =
     LazyLock::new(|| tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(16 << 20).build().expect("a runtime"));
 
+tokio::task_local! {
+    /// What the running scenario's panic said, and where.
+    static FAILURE: Arc<Mutex<Option<String>>>;
+}
+
 /// Runs a scenario as a task of one multi-threaded runtime per test binary, whose threads have the server's 16 MiB stacks
 /// (an unoptimised build's hook chains need more than 2 MiB). A kernel booted under one test serves the next, and the
-/// scenario's panic is the test's.
+/// scenario's panic is the test's: its text and where it was are panicked again on the test thread, since the hook ran on
+/// a runtime worker whose captured output belongs to whichever test started the runtime.
 pub fn run(scenario: impl Future<Output = ()> + Send + 'static) {
-    if let Err(e) = RUNTIME.block_on(RUNTIME.spawn(scenario)) {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if FAILURE.try_with(|f| *f.lock().unwrap_or_else(|p| p.into_inner()) = Some(info.to_string())).is_err() {
+                default(info)
+            }
+        }));
+    });
+    let failure = Arc::new(Mutex::new(None));
+    if let Err(e) = RUNTIME.block_on(RUNTIME.spawn(FAILURE.scope(failure.clone(), scenario))) {
         match e.try_into_panic() {
-            Ok(panic) => std::panic::resume_unwind(panic),
+            Ok(panic) => match failure.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                Some(text) => panic!("the scenario {text}"),
+                None => std::panic::resume_unwind(panic),
+            },
             Err(e) => panic!("the scenario did not finish: {e}"),
         }
     }
+}
+
+/// Runs every job due, and those waiting for a retry or their moment too, until none is left to run; then waits for any
+/// job another scenario's runner claimed meanwhile (scenarios run side by side and each runs every workspace's jobs).
+pub async fn run_jobs(k: &Kernel) {
+    for _ in 0..20 {
+        let mut tx = k.db.system_tx().await.expect("a transaction");
+        // Rows another runner holds are skipped, not waited for: two runners updating the same rows in different orders
+        // deadlock.
+        sqlx::query("update job set run_at = now() where id in (select id from job where status = 'queued' and run_at > now() for update skip locked)")
+            .execute(&mut *tx)
+            .await
+            .expect("jobs due");
+        tx.commit().await.expect("commit");
+        let mut ran = run_due(k).await;
+        // Until nothing runs and nothing due waits: another runner may have claimed one of these jobs a moment ago.
+        for _ in 0..200 {
+            let mut tx = k.db.system_tx().await.expect("a transaction");
+            let busy: i64 = sqlx::query_scalar("select count(*) from job where status = 'running' or (status = 'queued' and run_at <= now())")
+                .fetch_one(&mut *tx)
+                .await
+                .expect("running");
+            tx.commit().await.expect("commit");
+            if busy == 0 {
+                break;
+            }
+            ran += run_due(k).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if ran == 0 {
+            return;
+        }
+    }
+}
+
+async fn run_due(k: &Kernel) -> usize {
+    let mut ran = 0;
+    while let Ok(n) = k.run_jobs_once(4).await {
+        if n == 0 {
+            break;
+        }
+        ran += n;
+    }
+    ran
 }
 
 /// A kernel booted as the server boots one, and what it keeps in memory for the suite to read.
@@ -423,6 +486,15 @@ mod tests {
         shared::<Workspace>();
     }
 
+    /// A scenario's panic reaches the test thread with its text and where it was, so libtest prints it for that test
+    /// (the hook runs on a runtime worker, whose captured output is another test's).
+    #[test]
+    fn a_failing_scenario_says_why_on_the_test_thread() {
+        let failed = std::panic::catch_unwind(|| run(async { assert_eq!(1 + 1, 3, "kit-marker") })).expect_err("it fails");
+        let said = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(said.contains("kit-marker") && said.contains("src/lib.rs:"), "the test thread's panic says why and where: {said:?}");
+    }
+
     /// As the server boots one: an app's hooks only where it is installed, the vault open and the app's handle working
     /// in it, people signed in with their roles, and a drain that waits for the workspace's own events and fails, naming
     /// them, when they cannot go.
@@ -460,6 +532,16 @@ mod tests {
             assert!(said.contains("other's events were not delivered") && said.contains("kit.newer"), "{said}");
             assert_eq!(kit.k.get(&ws.admin, "Site", uid(&site), false).await.unwrap()["site_name"], "North");
             assert!(kit.mail().is_empty(), "nothing was sent");
+
+            // Another runner holding a queued job's row is skipped, not waited for (two runners deadlocked otherwise).
+            let mut tx = kit.k.db.tenant_tx(ws.tenant).await.unwrap();
+            let job = ferrum_kernel::jobs::enqueue(&mut tx, ws.tenant, None, ferrum_kernel::jobs::NewJob::new("kit.later", json!({}))).await.unwrap();
+            sqlx::query("update job set run_at = now() + interval '1 hour' where id = $1").bind(job).execute(&mut *tx).await.unwrap();
+            tx.commit().await.unwrap();
+            let mut held = kit.k.db.system_tx().await.unwrap();
+            sqlx::query("select id from job where id = $1 for update").bind(job).execute(&mut *held).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(20), run_jobs(&kit.k)).await.expect("run_jobs skips a row another runner holds");
+            held.rollback().await.unwrap();
         });
     }
 }

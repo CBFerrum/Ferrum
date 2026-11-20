@@ -44,7 +44,7 @@ async fn scenario() {
 
 | | |
 |---|---|
-| `run(scenario)` | the scenario as a task of one runtime per test binary, with the server's 16 MiB thread stacks; a kernel booted under one test serves the next |
+| `run(scenario)` | the scenario as a task of one runtime per test binary, with the server's 16 MiB thread stacks; a kernel booted under one test serves the next; a failing scenario's assertion and where it was are the test's own failure |
 | `database("FERRUM_X_TEST_DATABASE_URL")` | the variable's address, else `ferrum_x_test` on the local server as `ferrum` (the kit empties it) |
 | `app!("id", crate)` | an app as the server lists it: its crate's `packages`, `register` and `reports` |
 | `Kit::boot(url, &apps)` | the database emptied and a kernel booted on it, as above |
@@ -66,7 +66,7 @@ async fn scenario() {
 
 - **Record wrappers.** `insert`, `get`, `list` with a suite's panics differ by whose context each acts in: keep them in
   the suite, over `kit.k`.
-- **Jobs.** `ws.drain()` delivers events. A suite that needs jobs run calls `kit.k.run_jobs_once(n)`.
+- **Jobs.** `ws.drain()` delivers events. A suite that needs jobs run calls `run_jobs(&kit.k)`: every queued job made due and run, rows another scenario's runner holds skipped rather than waited for (two runners making the same rows due deadlock), then those it claimed waited for.
 - **Two app sets in one test binary.** Reports are the process's: every boot in a binary gives the same apps.
 - **Two databases at once.** Each boot empties its database. Scenarios that run side by side share one `Kit` (a
   `tokio::sync::OnceCell<Kit>` in the suite) and make a workspace each.
