@@ -703,7 +703,7 @@ impl Kernel {
 
     /// Whose tokens a call by `ctx` uses: the workspace's, or the caller's own.
     pub(crate) fn token_owner(conn: &Loaded, ctx: &Ctx) -> Result<Uuid> {
-        if matches!(conn.desc.auth, Auth::Session { .. }) {
+        if matches!(conn.desc.auth, Auth::Session { .. } | Auth::Jwt { .. }) {
             return Ok(Uuid::nil());
         }
         match oauth(conn)?.1 {
@@ -748,7 +748,7 @@ impl Kernel {
         let (expires, status) = match row {
             Some(r) => r,
             // A session signs itself in, the first time it is needed.
-            None if matches!(conn.desc.auth, Auth::Session { .. }) => return self.session_sign_in(conn, ctx).await,
+            None if matches!(conn.desc.auth, Auth::Session { .. } | Auth::Jwt { .. }) => return self.session_sign_in(conn, ctx).await,
             None => return Err(Error::invalid(format!("{} is not connected to an account: connect it first", conn.name))),
         };
         if status != "connected" {
@@ -787,7 +787,7 @@ impl Kernel {
         let refresh = open["refresh_token"].as_str().filter(|r| !r.is_empty()).map(str::to_string);
         let granted = match (&conn.desc.auth, &refresh) {
             // A session refreshes with its refresh operation, else signs in again.
-            (Auth::Session { .. }, _) => self.session_grant(conn, refresh.as_deref()).await?,
+            (Auth::Session { .. } | Auth::Jwt { .. }, _) => self.session_grant(conn, refresh.as_deref()).await?,
             // A provider that refreshes by an operation of its own (a GET with the token itself).
             (Auth::Oauth { provider, .. }, _) if provider.refresh.is_some() => {
                 let op = provider.refresh.clone().unwrap_or_default();
@@ -854,7 +854,7 @@ impl Kernel {
     /// offers that; the tokens are gone here whatever it says. Whether the provider confirmed.
     pub async fn connect_remove(&self, ctx: &Ctx, id: Uuid) -> Result<bool> {
         let conn = self.load_connection(ctx.tenant, &id.to_string()).await?;
-        if matches!(conn.desc.auth, Auth::Session { .. }) {
+        if matches!(conn.desc.auth, Auth::Session { .. } | Auth::Jwt { .. }) {
             if !ctx.is_admin {
                 return Err(Error::Forbidden("the workspace's account is disconnected by an administrator".into()));
             }
@@ -936,15 +936,24 @@ impl Kernel {
     /// What a session's login or refresh operation gives (`refresh`: the refresh token, for its refresh operation), as
     /// a token address's answer would say it.
     async fn session_grant(&self, conn: &Loaded, refresh: Option<&str>) -> Result<Granted> {
-        let Auth::Session { login, refresh: renew, token_at, refresh_at, expires_at, keep, .. } = &conn.desc.auth else {
-            return Err(Error::invalid(format!("{} has no session", conn.name)));
-        };
-        let (op, inputs) = match (renew, refresh) {
-            (Some(op), Some(r)) => (op, json!({"refresh_token": r})),
-            _ => (login, json!({})),
+        let mut quiet = conn.clone();
+        let (op, inputs, token_at, refresh_at, expires_at, keep) = match &conn.desc.auth {
+            Auth::Session { login, refresh: renew, token_at, refresh_at, expires_at, keep, .. } => {
+                let (op, inputs) = match (renew, refresh) {
+                    (Some(op), Some(r)) => (op, json!({"refresh_token": r})),
+                    _ => (login, json!({})),
+                };
+                (op, inputs, token_at.as_str(), refresh_at.as_deref(), expires_at.as_deref(), keep.as_slice())
+            }
+            // A signed token exchanged for an access token (TP-1), masked as a secret is.
+            Auth::Jwt { alg, key, kid, claims, reuse_seconds, exchange: Some(op), .. } => {
+                let assertion = super::jwt::token(conn.id, *alg, conn.secret(key)?, kid.as_deref(), claims, *reuse_seconds)?;
+                quiet.secrets.insert("\u{0}assertion".into(), assertion.clone());
+                (op, json!({"assertion": assertion}), "/access_token", None, Some("/expires_in"), &[][..])
+            }
+            _ => return Err(Error::invalid(format!("{} has no session", conn.name))),
         };
         // The refresh token is masked wherever the call's words are kept, as the secrets are.
-        let mut quiet = conn.clone();
         if let Some(r) = refresh {
             quiet.secrets.insert("\u{0}refresh".into(), r.to_string());
         }
@@ -953,10 +962,10 @@ impl Kernel {
             Outcome::Ok(_, a) => match super::at(&a.body, Some(token_at)).filter(|t| !t.is_empty()) {
                 Some(token) => {
                     let mut out = json!({"access_token": token});
-                    if let Some(r) = super::at(&a.body, refresh_at.as_deref()) {
+                    if let Some(r) = super::at(&a.body, refresh_at) {
                         out["refresh_token"] = json!(r);
                     }
-                    if let Some(at) = expires_at.as_deref().and_then(|p| a.body.pointer(p)).and_then(expiry) {
+                    if let Some(at) = expires_at.and_then(|p| a.body.pointer(p)).and_then(expiry) {
                         out["expires_in"] = json!((at - Utc::now()).num_seconds().max(0));
                     }
                     for k in keep {

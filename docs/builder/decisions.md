@@ -2239,6 +2239,23 @@ undone with its transaction, the app's `fallback` is answered, and the job hands
 Handlers get the inbound address's query through `InboundHandler::handle_call` (defaulting to `handle`), never the
 parameter that carries the connection's secret; it is dropped with the payload once the call is processed.
 
+A call's own secret values (TP-3c) go through `connections::call_with_secrets`, beside `call`, since apps build `Call`
+as a full literal: they join the connection's secrets in what masks the debug capture and error texts, and the input
+digest kept with a key is a fingerprint under the workspace's key for receipts instead of a bare hash. A repeat after
+that key rotates is told apart from the first, as a receipt's is, and refused as "other inputs" (a new key).
+
 **Why.** Telecom providers ask for a call's next instructions in the answer to their webhook (TP-3). The answer is
 the app's, not the description's, so that descriptions and apps building an `Inbound` keep compiling.
 
+## BD-91. Connections that sign a token
+
+**Decision.** `auth: {type: jwt}` signs a JWT (ES256 or RS256) under a private key the connection keeps as a secret,
+with the `kid` and claims its description gives and `iat`/`exp` the platform adds, and reuses it for up to 3300
+seconds; each server process signs its own. The key is checked against the alg when it is saved, and a refusal never
+quotes it. With `exchange`, the token is posted to that operation and the access token it answers is kept sealed and
+renewed before it ends, by the same path as a session's (BD-48): one sign-in at a time, a refusal marks it "needs
+reconnecting", a 401 renews it once, new secrets drop it. The signed token and the access token are masked wherever a
+call's words are kept, as every secret is.
+
+**Why.** Push services and service accounts ask for a token signed by a key the customer holds (TP-1). Which service,
+which claims and which address answer the exchange are description data, never Rust.
