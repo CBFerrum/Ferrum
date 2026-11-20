@@ -753,7 +753,7 @@ markup (a body is shown as its text).
 
 ## BD-26. An outside person's session on a site host (design only)
 
-**Superseded by [BD-89](#bd-88-one-customer-account-and-a-session-on-a-site-host)**, which builds it with a sign-in
+**Superseded by [BD-89](#bd-89-one-customer-account-and-a-session-on-a-site-host)**, which builds it with a sign-in
 handed from the portal instead of a code sign-in on each site.
 
 Decided 12 November 2026 as a design; **not built** in this slice, because doing it safely needs a session kind the
