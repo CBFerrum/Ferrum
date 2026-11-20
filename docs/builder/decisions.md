@@ -2217,5 +2217,12 @@ the host's app's; another app's routes on the same host get nobody. A request th
 from the site's own pages (`may_change`), else 403. The context is the person's customer self
 (`Kernel::customer_ctx`): `outside`, never an administrator, the portal roles alone, so a member who shops is a customer
 there and nothing more: a member's own records there are those that name their address (owner fields, `via`),
-never those they created as staff (`PermSet.own_by_address`). `POST /_auth/sign-out` on the site ends that session; signing out everywhere ends it too (token
+never those they created as staff (`PermSet.own_by_address`). In this release a member of staff holds no site
+session at all: the handoff gives a code only to a portal person and sends a member to the workspace's own address
+(the callback, too, takes a portal person's code alone); members as customers wait for a separate customer identity.
+A role every portal person holds is named by no conflict rule and no `role:` recipient (refused when saved and when
+sent); the evidence pack and a person's data copy list it as `held_by_every_portal_person`. Whether a role is a portal
+role, or one every portal person holds, is changed by an administrator at a screen (`PUT …/portal`); a pack's install
+applies marks as before. An answer to a request carrying a site session is `Cache-Control: private`, `Vary: Cookie`,
+whatever the app set. `POST /_auth/sign-out` on the site ends that session; signing out everywhere ends it too (token
 version).

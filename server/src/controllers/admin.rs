@@ -217,6 +217,10 @@ struct Portal {
 /// Marks a role for the portal or not (docs/builder/decisions.md BD-02), and as one every portal person holds (BD-89).
 async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(role): Path<String>, Json(p): Json<Portal>) -> ApiResult<Response> {
     let k = &app_state(&app)?.kernel;
+    // A person's at a screen, never a key's (BD-89).
+    if !ctx.at_screen() {
+        return Err(ApiError(Error::Forbidden("change a role's portal marks from a page of this site: a key, a token or an app cannot".into())));
+    }
     // Refused before anything changes: a default that is no portal role (S4-P4 review L6).
     if p.portal_default == Some(true) && !p.portal {
         return Err(ApiError(Error::field("portal_default", "only a portal role is held by every portal person")));

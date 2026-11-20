@@ -1364,6 +1364,7 @@ pub(crate) async fn execute(
             let users: Vec<Uuid> = if to == "owner" {
                 doc.get("created_by").and_then(Value::as_str).and_then(|s| s.parse().ok()).into_iter().collect()
             } else if let Some(role) = to.strip_prefix("role:") {
+                crate::auth::not_held_by_every_portal_person(tx, ctx.tenant, role, "a recipient").await?;
                 sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2 and (expires_at is null or expires_at > now())")
                     .bind(ctx.tenant)
                     .bind(role)
@@ -1776,6 +1777,15 @@ pub async fn save(k: &Kernel, ctx: &Ctx, input: &Map<String, Value>) -> Result<U
         }
     }
     let mut tx = k.db.tenant_tx(ctx.tenant).await?;
+    if let Ok(list) = validate_actions(input.get("actions").unwrap_or(&Value::Null)) {
+        for a in every(&list) {
+            if let AutomationAction::Notify { to, .. } = a
+                && let Some(role) = to.strip_prefix("role:")
+            {
+                crate::auth::not_held_by_every_portal_person(&mut tx, ctx.tenant, role.trim(), "a recipient").await?;
+            }
+        }
+    }
     let id = save_in(ctx, &mut tx, input).await?;
     tx.commit().await?;
     Ok(id)

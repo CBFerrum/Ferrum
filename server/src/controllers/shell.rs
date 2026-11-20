@@ -167,6 +167,17 @@ async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, St
         Ok(p) => p,
         Err(r) => return Ok(r),
     };
+    // A member of staff holds no site session (BD-89): sent to the workspace's own address instead, nothing minted.
+    if !ctx.outside {
+        let to = st.kernel.staff_host(ctx.tenant).await?.map(|h| format!("{}/", moved_origin(st, &h, headers))).unwrap_or_else(|| "/".into());
+        return Ok(status_page(
+            StatusCode::FORBIDDEN,
+            "Staff do not sign in on the workspace's sites",
+            &format!("Your account is a staff account: use the workspace at {to}"),
+            &[("Go to the workspace", &to)],
+            None,
+        ));
+    }
     let Some(host) = ferrum_kernel::shell::normalize_host(host) else { return Ok(refused()) };
     if !st.kernel.is_site_host_of(ctx.tenant, &host).await? {
         return Ok(refused());
@@ -1122,6 +1133,7 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     };
     // A customer signed in on this host (BD-89), as their customer self.
     let user = super::sites::site_user(st, headers, &Method::GET, tenant, None).await?;
+    let signed_in = user.is_some();
     let mut req = super::sites::request(tenant, user, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
     let scheme = if st.shell.secure { "https" } else { "http" };
     let host = shell::request_host(headers).unwrap_or_default();
@@ -1156,6 +1168,9 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
         if !h.contains_key(name) {
             h.insert(name, HeaderValue::from_static(value));
         }
+    }
+    if signed_in {
+        super::sites::private(h);
     }
     Ok(res)
 }

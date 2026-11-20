@@ -1204,6 +1204,13 @@ impl Kernel {
     pub async fn set_role_conflict(&self, ctx: &Ctx, a: &str, b: &str, reason: &str) -> Result<()> {
         Self::require_admin(ctx)?;
         let (a, b, reason) = (a.trim(), b.trim(), reason.trim());
+        {
+            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+            for r in [a, b] {
+                not_held_by_every_portal_person(&mut tx, ctx.tenant, r, "a conflict rule").await?;
+            }
+            tx.commit().await?;
+        }
         if a == b {
             return Err(Error::field("role_b", "a role is never in conflict with itself"));
         }
@@ -1663,6 +1670,14 @@ impl Kernel {
             Some(false) if on => return Err(Error::field("portal_default", "only a portal role is held by every portal person")),
             _ => {}
         }
+        let in_conflict: bool = sqlx::query_scalar("select exists (select 1 from role_conflict where tenant_id = $1 and $2 in (role_a, role_b))")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_one(&mut **tx)
+            .await?;
+        if on && in_conflict {
+            return Err(Error::field("portal_default", "a conflict rule names this role, and no conflict rule names one every portal person holds"));
+        }
         sqlx::query("update role set portal_default = $3 where tenant_id = $1 and name = $2").bind(ctx.tenant).bind(role).bind(on).execute(&mut **tx).await?;
         crate::audit::record_admin(tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": on})).await?;
         notify_users(tx, ctx.tenant, None).await
@@ -1746,6 +1761,17 @@ impl Kernel {
         }
         tx.commit().await?;
         Ok(told)
+    }
+}
+
+/// Refused when `role` is one every portal person holds (BD-89): `what` (a conflict rule, a recipient) never names one,
+/// since who holds it is never written down person by person.
+pub(crate) async fn not_held_by_every_portal_person(tx: &mut Tx, tenant: Uuid, role: &str, what: &str) -> Result<()> {
+    let default: Option<bool> =
+        sqlx::query_scalar("select portal_default from role where tenant_id = $1 and name = $2").bind(tenant).bind(role).fetch_optional(&mut **tx).await?;
+    match default {
+        Some(true) => Err(Error::invalid(format!("{what} may not name {role}: it is held by every portal person"))),
+        _ => Ok(()),
     }
 }
 

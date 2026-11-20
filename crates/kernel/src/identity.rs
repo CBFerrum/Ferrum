@@ -847,7 +847,8 @@ impl Kernel {
     /// [`Kernel::redeem_host_code`] on a site host (docs/builder/decisions.md BD-89): the person a member or a portal
     /// person, who is a customer there.
     pub async fn redeem_site_code(&self, code: &str, host: &str) -> Result<Session> {
-        self.redeem_code_of(code, host, &["member", "portal"]).await
+        // A portal person's alone: a member of staff holds no site session (BD-89).
+        self.redeem_code_of(code, host, &["portal"]).await
     }
 
     async fn redeem_code_of(&self, code: &str, host: &str, kinds: &[&str]) -> Result<Session> {
@@ -904,6 +905,20 @@ impl Kernel {
 
     /// Where a site of `tenant` sends a customer to sign in: its primary live portal address, else its primary live
     /// workspace address (BD-89).
+    /// The workspace's own address for its staff (a `shell` host), as [`Kernel::sign_in_host`] picks one.
+    pub async fn staff_host(&self, tenant: Uuid) -> Result<Option<String>> {
+        let mut tx = self.db.system_tx().await?;
+        let host = sqlx::query_scalar(
+            "select host from tenant_host where tenant_id = $1 and target = 'shell' and released_at is null \
+             and (kind = 'subdomain' or verified_at is not null) and not forward order by is_primary desc, host limit 1",
+        )
+        .bind(tenant)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(host)
+    }
+
     pub async fn sign_in_host(&self, tenant: Uuid) -> Result<Option<String>> {
         let mut tx = self.db.system_tx().await?;
         let host = sqlx::query_scalar(

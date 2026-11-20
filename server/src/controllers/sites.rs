@@ -204,11 +204,22 @@ async fn public(
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
     let user = site_user(&st, &headers, &method, tenant, Some(&package)).await?;
+    let signed_in = user.is_some();
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, user, method, &uri, path, query, &headers, body)?;
     let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
     super::system::contain(res.headers_mut());
+    if signed_in {
+        private(res.headers_mut());
+    }
     Ok(res)
+}
+
+/// An answer made for a signed-in customer is that browser's alone, whatever the app said (BD-89): never kept by a
+/// cache for the next visitor.
+pub(crate) fn private(h: &mut axum::http::HeaderMap) {
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private"));
+    h.append(header::VARY, HeaderValue::from_static("Cookie"));
 }
 
 /// The customer a site session makes of this request (docs/builder/decisions.md BD-89): only on a site host of `tenant`,

@@ -1128,6 +1128,7 @@ pub async fn recipients(k: &Kernel, tx: &mut Tx, ctx: &Ctx, entity: &str, doc: &
         return Ok(users(vec![u.parse().map_err(|_| Error::invalid("message: bad user id"))?]));
     }
     if let Some(role) = spec.strip_prefix("role:") {
+        crate::auth::not_held_by_every_portal_person(tx, ctx.tenant, role, "a recipient").await?;
         let ids = sqlx::query_scalar("select user_id from user_role where tenant_id = $1 and role = $2 and (expires_at is null or expires_at > now())")
             .bind(ctx.tenant)
             .bind(role)

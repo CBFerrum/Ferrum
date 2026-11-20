@@ -52,6 +52,9 @@ impl Site for Echo {
     async fn handle(&self, _: &Kernel, req: SiteRequest) -> ferrum_kernel::Result<SiteResponse> {
         let user = req.user.as_ref().map(|c| json!({"email": c.email, "outside": c.outside, "admin": c.is_admin, "roles": c.roles}));
         let mut r = SiteResponse::json(200, &json!({"site": self.0, "path": req.path, "user": user}));
+        if req.path.ends_with("cached") {
+            r.headers.push(("cache-control".into(), "public, max-age=60".into()));
+        }
         if req.path.ends_with("plant") {
             // A site that tries to set the platform's own cookie, beside one of its own.
             r.headers.push(("set-cookie".into(), format!("{}=planted; Path=/", ferrum_server::shell::cookie_name(false))));
@@ -104,6 +107,8 @@ struct World {
     r: axum::Router,
     /// Acme's administrator's browser session (a member), signed in on the portal host.
     member: String,
+    /// Acme's customer's (a portal person, pat@acme.test) browser session on the portal host.
+    customer: String,
 }
 
 fn run<F: std::future::Future<Output = ()> + Send + 'static>(f: impl FnOnce() -> F) {
@@ -157,7 +162,11 @@ async fn world() -> World {
             k.host_checked(host, true).await.unwrap();
         }
     }
-    let member = {
+    let s = k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+    let admin = k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+    let pat = k.create_user(&admin, "pat@acme.test", "Pat", Some(PASSWORD), &[], false).await.unwrap();
+    k.set_user_kind(&admin, pat, "portal").await.unwrap();
+    let signed_in = |email: &'static str| {
         let req = Request::builder()
             .method(Method::POST)
             .uri("/api/auth/login")
@@ -165,12 +174,16 @@ async fn world() -> World {
             .header("x-forwarded-for", "203.0.113.5")
             .header("sec-fetch-site", "same-origin")
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(json!({"tenant": "acme", "email": "admin@acme.test", "password": PASSWORD}).to_string()))
+            .body(Body::from(json!({"tenant": "acme", "email": email, "password": PASSWORD}).to_string()))
             .unwrap();
-        let res = r.clone().oneshot(req).await.unwrap();
-        cookies(res.headers()).remove(ferrum_server::shell::cookie_name(false)).expect("a page's sign-in sets the session cookie")
+        let r = r.clone();
+        async move {
+            let res = r.oneshot(req).await.unwrap();
+            cookies(res.headers()).remove(ferrum_server::shell::cookie_name(false)).expect("a page's sign-in sets the session cookie")
+        }
     };
-    World { k, r, member, st: st.clone() }
+    let (member, customer) = (signed_in("admin@acme.test").await, signed_in("pat@acme.test").await);
+    World { k, r, member, customer, st: st.clone() }
 }
 
 /// The cookies a response sets, by name (an emptied one as empty).
@@ -219,7 +232,7 @@ async fn handed(w: &World) -> ((String, String), String) {
     let state_cookie = cookies(&h).into_iter().find(|(n, _)| n != SESSION()).expect("the state cookie");
     let (host, handoff) = location(&h);
     assert_eq!(host, PORTAL, "to the workspace's portal host");
-    let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.member)], &[]).await;
+    let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.customer)], &[]).await;
     assert!(status.is_redirection(), "{status} {body}");
     let (host, callback) = location(&h);
     assert_eq!(host, SHOP);
@@ -265,15 +278,34 @@ fn site_session_refused_on_portal_and_other_site() {
 
 #[test]
 #[serial]
-fn member_is_customer_on_site() {
+fn a_customer_is_a_customer_on_site() {
     run(|| async {
         let w = world().await;
         let site = site_session(&w).await;
         let (status, _, body) = call(&w.r, Method::GET, SHOP, "/account", &[(SESSION(), &site)], &[]).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let user = user_of(&body);
-        assert_eq!((user["email"].clone(), user["outside"].clone(), user["admin"].clone()), (json!("admin@acme.test"), json!(true), json!(false)), "{user}");
+        assert_eq!((user["email"].clone(), user["outside"].clone(), user["admin"].clone()), (json!("pat@acme.test"), json!(true), json!(false)), "{user}");
         assert_eq!(user["roles"], json!([]), "portal roles only, and this workspace has none: {user}");
+    });
+}
+
+/// A member of staff gets no site session (S4-P4-fix-2, the lead's answer 1): the handoff refuses, pointing to the
+/// workspace's own address, and mints nothing.
+#[test]
+#[serial]
+fn a_member_gets_no_site_session() {
+    run(|| async {
+        let w = world().await;
+        let (_, h, _) = call(&w.r, Method::GET, SHOP, "/_auth/sign-in?next=/account", &[], &[]).await;
+        let (_, handoff) = location(&h);
+        let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.member)], &[]).await;
+        assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "{status} {body}");
+        assert!(body.contains("acme.ferrum.test"), "sent to the workspace's own address: {body}");
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let minted: i64 = sqlx::query_scalar("select count(*) from host_code").fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(minted, 0, "nothing minted");
     });
 }
 
@@ -284,7 +316,7 @@ fn handoff_refuses_foreign_host() {
         let w = world().await;
         for host in [GLOBEX_SHOP, PORTAL, "acme.ferrum.test", "nowhere.test"] {
             let path = format!("/_auth/handoff?host={host}&state=0123456789abcdef");
-            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &path, &[(SESSION(), &w.member)], &[]).await;
+            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &path, &[(SESSION(), &w.customer)], &[]).await;
             assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "{host}: {status} {body}");
         }
         let mut tx = w.k.db.system_tx().await.unwrap();
@@ -332,7 +364,7 @@ fn site_session_reaches_only_its_hosts_app() {
         let site = site_session(&w).await;
         let same = [("sec-fetch-site", "same-origin")];
         let (_, _, body) = call(&w.r, Method::GET, SHOP, "/api/site/acme/shop/orders", &[(SESSION(), &site)], &same).await;
-        assert_eq!(user_of(&body)["email"], "admin@acme.test", "{body}");
+        assert_eq!(user_of(&body)["email"], "pat@acme.test", "{body}");
         let (_, _, body) = call(&w.r, Method::GET, SHOP, "/api/site/acme/other/orders", &[(SESSION(), &site)], &same).await;
         assert_eq!(user_of(&body), Value::Null, "another app's routes on the same host");
     });
@@ -347,7 +379,7 @@ fn cross_site_post_refused() {
         let (status, _, body) = call(&w.r, Method::POST, SHOP, "/api/site/acme/shop/cart", &[(SESSION(), &site)], &[("sec-fetch-site", "cross-site")]).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         let (status, _, body) = call(&w.r, Method::POST, SHOP, "/api/site/acme/shop/cart", &[(SESSION(), &site)], &[("sec-fetch-site", "same-origin")]).await;
-        assert_eq!((status, user_of(&body)["email"].clone()), (StatusCode::OK, json!("admin@acme.test")), "{body}");
+        assert_eq!((status, user_of(&body)["email"].clone()), (StatusCode::OK, json!("pat@acme.test")), "{body}");
         // Signing out on the site ends that session there.
         let (status, h, _) = call(&w.r, Method::POST, SHOP, "/_auth/sign-out", &[(SESSION(), &site)], &[("sec-fetch-site", "same-origin")]).await;
         assert!(status.is_redirection(), "{status}");
@@ -384,7 +416,7 @@ fn handoff_takes_only_the_browsers_session() {
             let auth = format!("Bearer {bearer}");
             let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), "x")], &[("authorization", &auth)]).await;
             assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "{status} {body}");
-            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.member)], &[("authorization", &auth)]).await;
+            let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &w.customer)], &[("authorization", &auth)]).await;
             assert!(status.is_client_error() && h.get(header::LOCATION).is_none(), "not preferred beside the cookie either: {status} {body}");
         }
         let mut tx = w.k.db.system_tx().await.unwrap();
@@ -451,7 +483,7 @@ fn site_cannot_set_the_platforms_cookies() {
 fn handoff_refuses_a_setup_only_session() {
     run(|| async {
         let w = world().await;
-        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let s = w.k.login("acme", "pat@acme.test", PASSWORD).await.unwrap();
         let mut claims = serde_json::Map::new();
         claims.insert("tenant".into(), json!(s.tenant.to_string()));
         claims.insert("tv".into(), json!(s.token_version));
@@ -468,5 +500,69 @@ fn handoff_refuses_a_setup_only_session() {
         let minted: i64 = sqlx::query_scalar("select count(*) from host_code").fetch_one(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
         assert_eq!(minted, 0, "nothing minted");
+    });
+}
+
+/// Whether a role is a portal role, or held by every portal person, is changed by an administrator at a screen: never
+/// by a key (S4-P4-fix-2, the lead's answer 2).
+#[test]
+#[serial]
+fn portal_marks_are_set_at_a_screen() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        sqlx::query("insert into role (tenant_id, name) values ($1, 'Patrons')").bind(s.tenant).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let admin = w.k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+        let key = w.k.create_api_key(&admin, s.user, "it", None, None).await.unwrap().1;
+        let put = |auth: Option<String>, jar: Vec<(&'static str, String)>| {
+            let mut req = Request::builder()
+                .method(Method::PUT)
+                .uri("/api/admin/roles/Patrons/portal")
+                .header(header::HOST, PORTAL)
+                .header("x-forwarded-for", "203.0.113.5")
+                .header("sec-fetch-site", "same-origin")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(a) = auth {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {a}"));
+            }
+            if !jar.is_empty() {
+                req = req.header(header::COOKIE, jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; "));
+            }
+            let r = w.r.clone();
+            let req = req.body(Body::from(json!({"portal": true, "portal_default": true}).to_string())).unwrap();
+            async move { r.oneshot(req).await.unwrap().status() }
+        };
+        assert_eq!(put(Some(key), vec![]).await, StatusCode::FORBIDDEN, "a key");
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let marked: (bool, bool) = sqlx::query_as("select portal, portal_default from role where tenant_id = $1 and name = 'Patrons'")
+            .bind(s.tenant)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(marked, (false, false), "nothing changed");
+        assert_eq!(put(None, vec![(SESSION(), w.member.clone())]).await, StatusCode::NO_CONTENT, "an administrator at a screen");
+    });
+}
+
+/// An answer to a request carrying a site session is private to that browser, whatever the app set (S4-P4-fix-2,
+/// the lead's answer 4); one without is as the app set it.
+#[test]
+#[serial]
+fn a_signed_in_answer_is_never_cached_for_others() {
+    run(|| async {
+        let w = world().await;
+        let (_, h, _) = call(&w.r, Method::GET, SHOP, "/cached", &[], &[]).await;
+        assert_eq!(h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("public, max-age=60"), "nobody signed in: as the app said");
+        let site = site_session(&w).await;
+        let same = [("sec-fetch-site", "same-origin")];
+        for path in ["/cached", "/api/site/acme/shop/cached"] {
+            let (status, h, body) = call(&w.r, Method::GET, SHOP, path, &[(SESSION(), &site)], &same).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            assert_eq!(h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("private"), "{path}: {h:?}");
+            assert!(h.get_all(header::VARY).iter().any(|v| v.to_str().unwrap_or_default().to_ascii_lowercase().contains("cookie")), "{path}: {h:?}");
+        }
     });
 }

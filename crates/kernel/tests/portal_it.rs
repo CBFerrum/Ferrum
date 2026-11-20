@@ -271,6 +271,41 @@ async fn pack_mark() {
 }
 
 #[test]
+fn a_default_role_is_named_by_no_conflict_or_recipient() {
+    run(default_unnamed());
+}
+
+/// A role every portal person holds is in no conflict rule and is no `role:` recipient (refused when saved, and when a
+/// message or notice is sent); the evidence pack and a person's data copy say it is held by every portal person
+/// (S4-P4-fix-2, the lead's answer 3).
+async fn default_unnamed() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    k.set_role_permission(&admin, "Staff", &rule(json!({"entity": "Patient", "read": true}))).await.unwrap();
+    k.set_role_conflict(&admin, "Patients", "Staff", "kept apart").await.unwrap();
+    let e = k.set_role_portal_default(&admin, "Patients", true).await.expect_err("a conflict rule names it");
+    assert!(e.to_string().contains("every portal person"), "{e}");
+    k.delete_role_conflict(&admin, "Patients", "Staff").await.unwrap();
+    k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
+    let e = k.set_role_conflict(&admin, "Staff", "Patients", "kept apart").await.expect_err("names a default role");
+    assert!(e.to_string().contains("every portal person"), "{e}");
+    let notify = obj(json!({"name": "Tell", "entity": "Patient", "event": "created",
+        "actions": [{"type": "notify", "to": "role:Patients", "title": "'new'"}]}));
+    let e = ferrum_kernel::automation::save(&k, &admin, &notify).await.expect_err("a recipient naming a default role");
+    assert!(e.to_string().contains("every portal person"), "{e}");
+    let mut tx = k.db.tenant_tx(admin.tenant).await.unwrap();
+    let e = ferrum_kernel::messages::recipients(&k, &mut tx, &admin, "Patient", &json!({}), "role:Patients").await.expect_err("refused when sent");
+    tx.commit().await.unwrap();
+    assert!(e.to_string().contains("every portal person"), "{e}");
+    let _ann = portal_person(&k, &admin, "ann@x.test", &[]).await;
+    let pack = k.evidence_pack(&admin).await.unwrap().to_string();
+    assert!(pack.contains("held_by_every_portal_person") && pack.contains("Patients"), "the evidence pack says so");
+    let copy = k.personal_data(&admin, "ann@x.test").await.unwrap();
+    assert!(copy.to_string().contains("held_by_every_portal_person"), "the data copy says so: {copy}");
+}
+
+#[test]
 fn a_members_customer_self_owns_nothing_it_made_as_staff() {
     run(made_as_staff());
 }
