@@ -197,6 +197,24 @@ async fn action(
     Ok(if again { replayed(resp) } else { resp })
 }
 
+/// A collection action (bound to no record, API-2), through the gate: under the request's `Idempotency-Key` a repeat is
+/// answered once (`idempotent-replayed`).
+async fn collection(
+    Auth(ctx): Auth,
+    State(app): State<AppContext>,
+    Path((entity, action)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Option<Json<Value>>,
+) -> ApiResult<Response> {
+    let st = app_state(&app)?;
+    let params = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok());
+    let (mut done, again) = st.kernel.run_collection(&ctx, &entity, &action, params, key).await?;
+    said(&mut done, |e, n| ctx.schema.entity(e).map(|x| if n > 1 { x.def.plural_label() } else { x.def.label.clone() }).unwrap_or_else(|| e.to_string()));
+    let resp = Json(done).into_response();
+    Ok(if again { replayed(resp) } else { resp })
+}
+
 /// An action that does not say what it did is described from its answer: the record's new status
 /// and the records it made ("Now Admitted; made STU-2026-00001", "Made 2 Kitchen Tickets"), so a
 /// page never only says "done". `label(entity, how_many)` names a kind of record.
@@ -693,6 +711,7 @@ pub fn routes() -> Routes {
         .add("/{entity}/{id}/cancel", post(cancel))
         .add("/{entity}/{id}/amend", post(amend))
         .add("/{entity}/{id}/actions/{action}", post(action))
+        .add("/{entity}/_actions/{action}", post(collection))
         .add("/{entity}/{id}/workflow/{action}", post(transition))
         .add("/{entity}/{id}/approval", get(approval))
         .add("/{entity}/{id}/approval/decide", post(decide))
