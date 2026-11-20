@@ -132,7 +132,7 @@ pub async fn plugin_admitted(st: &AppState, ctx: &ferrum_kernel::Ctx, plugin: &s
 /// staff and administrators, and the caller's address as the server sees it (`ferrum task doctor`
 /// checks a public address with it). No secrets; limited like the other public endpoints.
 pub async fn answer(st: &AppState, headers: &HeaderMap) -> Result<serde_json::Value, crate::error::ApiError> {
-    st.public_limiter.check(&format!("{}|zone", crate::extract::client_ip(headers))).await?;
+    st.public_limiter.check_from(headers, "zone").await?;
     let entry = entry(st, headers, Credential::Cookie).await;
     let rule = entry.name().and_then(|n| st.zones.rule(n));
     let staff = match rule.and_then(|r| r.apps.as_ref()) {

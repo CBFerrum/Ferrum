@@ -188,8 +188,10 @@ async fn public(
     body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
-    st.public_limiter.check(&format!("{}|{}", client_ip(&headers), tenant.to_lowercase())).await?;
-    let (tenant, status) = st.kernel.tenant_by_slug(&tenant).await?;
+    // Counted per network and workspace once found; a workspace that does not exist counts on the network alone (BD-86).
+    let found = st.kernel.tenant_by_slug(&tenant).await;
+    st.public_limiter.check_from(&headers, &found.as_ref().map(|(id, _)| id.to_string()).unwrap_or_default()).await?;
+    let (tenant, status) = found?;
     if status != "active" || !st.shell.answers_for(&headers, tenant).await? {
         return Err(ApiError(Error::NotFound("tenant".into())));
     }

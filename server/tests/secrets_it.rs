@@ -40,7 +40,7 @@ fn config(address: &str, jwt: &str) -> Config {
     let mut config = Environment::Test.load_from_folder(&dir.join("config")).expect("config/test.yaml");
     ferrum_server::settings::set_database_url(&mut config, address.to_string());
     if let Some(s) = config.settings.as_mut() {
-        s["packages_dir"] = json!(dir.join("../packages").to_string_lossy());
+        s["packages_dir"] = json!(packages().to_string_lossy());
     }
     config.auth.as_mut().unwrap().jwt.as_mut().unwrap().secret = jwt.to_string();
     config.mailer = Some(
@@ -50,6 +50,26 @@ fn config(address: &str, jwt: &str) -> Config {
         .unwrap(),
     );
     config
+}
+
+/// The platform's packages, and `keep`, whose `Safe` holds a `secret` field (the records door's receipts).
+fn packages() -> std::path::PathBuf {
+    let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../packages").canonicalize().unwrap();
+    let dir = std::env::temp_dir().join(format!("ferrum-secrets-it-{}", std::process::id()));
+    if !dir.exists() {
+        std::fs::create_dir_all(dir.join("keep/entities")).unwrap();
+        for p in std::fs::read_dir(&here).unwrap().flatten() {
+            std::os::unix::fs::symlink(p.path(), dir.join(p.file_name())).unwrap();
+        }
+        let package = "package: keep\nversion: 0.1.0\ndepends: [core]\n";
+        std::fs::write(dir.join("keep/package.yaml"), package).unwrap();
+        std::fs::write(
+            dir.join("keep/entities/safe.yaml"),
+            "name: Safe\nlabel: Safe\nkind: master\nfields:\n  - {name: label, type: data}\n  - {name: pin, type: secret}\n",
+        )
+        .unwrap();
+    }
+    dir
 }
 
 async fn replica(config: Config) -> AppContext {
@@ -115,7 +135,7 @@ async fn serve_in(ctx: &AppContext, environment: Environment, zones: &str) -> Se
 }
 
 /// A zone that has the operator's routes, which every [`call`] is in by its address.
-const OPERATIONS: &str = r#"{"operations": {"operator": true, "networks": ["10.9.8.0/24"]}}"#;
+const OPERATIONS: &str = r#"{"operations": {"operator": true, "networks": ["10.9.0.0/16"]}}"#;
 
 /// [`serve_in`] the test environment and [`OPERATIONS`].
 async fn serve(ctx: &AppContext) -> Served {
@@ -189,6 +209,7 @@ async fn scenario() {
     tokens(&a, &a_ctx, &b_ctx, &mut needles).await;
     library(&a, &mut needles).await;
     people(&a, &a_ctx, &mut needles).await;
+    records_door(&a, &a_ctx).await;
 
     // ── No table holds a value or a token, the settings table no secret ──
     for name in ["session.1", "session.2", "session.3"] {
@@ -370,17 +391,17 @@ async fn tokens(a: &AppState, a_ctx: &AppContext, b_ctx: &AppContext, needles: &
         assert_eq!(answer(&r), as_unknown("/api/operator/settings/session_days"), "from {from}: {}", r.body);
     }
     // Tries are counted by address before the token is compared, as sign-ins are: 20 a minute, then refused whatever
-    // the token; another address has its own.
+    // the token; another network (an IPv4 /24) has its own.
     let from = |ip: &'static str, t: &str| {
         let (sa, t) = (&sa, t.to_string());
         async move { call(sa, Method::GET, "/api/operator/vault", &[("x-ferrum-operator-token", &t), ("x-forwarded-for", ip)], None).await.status }
     };
     for _ in 0..20 {
-        assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::FORBIDDEN);
+        assert_eq!(from("10.9.66.66", "a-guess-of-a-token").await, StatusCode::FORBIDDEN);
     }
-    assert_eq!(from("10.9.8.66", "a-guess-of-a-token").await, StatusCode::TOO_MANY_REQUESTS, "the 21st in a minute");
-    assert_eq!(from("10.9.8.66", &one).await, StatusCode::TOO_MANY_REQUESTS, "the right one too, from there");
-    assert_eq!(from("10.9.8.67", &one).await, StatusCode::OK, "another address");
+    assert_eq!(from("10.9.66.66", "a-guess-of-a-token").await, StatusCode::TOO_MANY_REQUESTS, "the 21st in a minute");
+    assert_eq!(from("10.9.66.66", &one).await, StatusCode::TOO_MANY_REQUESTS, "the right one too, from there");
+    assert_eq!(from("10.9.67.67", &one).await, StatusCode::OK, "another network");
     let status = operator(&one, &sb).await;
     assert_eq!((status.status, status.json()["open"].clone()), (StatusCode::OK, json!(true)), "the other replica takes it at once");
     let two = made(600).await;
@@ -623,6 +644,42 @@ async fn people(a: &AppState, a_ctx: &AppContext, needles: &mut Vec<String>) {
     let status = op(Method::GET, "/api/operator/vault", None).await;
     assert!(status.json()["slots"].as_array().is_some_and(|s| !s.is_empty()) && !status.body.contains("wrapped"), "{}", status.body);
     needles.extend(["Mp-8642-from-the-operator".to_string(), "Pk-9911-plugin-key".to_string(), "Mp-9753-fourth".to_string()]);
+}
+
+/// `the_records_door_digests_a_secret_field_keyed` (TP-S2): a create's receipt kept for 30 days holds no plain digest of
+/// a secret value; the same body again is the same request, another value other input.
+async fn records_door(a: &AppState, a_ctx: &AppContext) {
+    let s = serve(a_ctx).await;
+    let new = ferrum_kernel::tenant::NewTenant {
+        slug: "safes".into(),
+        name: "Safes".into(),
+        admin_email: "admin@safes.test".into(),
+        admin_password: PASSWORD.into(),
+        admin_name: None,
+        packages: vec!["keep".into()],
+        settings: None,
+    };
+    let tenant = a.kernel.create_tenant(new).await.unwrap();
+    let signed = call(&s, Method::POST, "/api/auth/login", &[], Some(json!({"tenant": "safes", "email": "admin@safes.test", "password": PASSWORD}))).await;
+    let bearer = format!("Bearer {}", signed.json()["token"].as_str().unwrap());
+    let make = |pin: &str| {
+        let (s, bearer) = (&s, bearer.clone());
+        let body = json!({"label": "Vault 1", "pin": pin});
+        async move { call(s, Method::POST, "/api/v1/Safe", &[("authorization", &bearer), ("idempotency-key", "safe-key-0001")], Some(body)).await }
+    };
+    let made = make("4821").await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let mut plain = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut plain, b"Safe");
+    sha2::Digest::update(&mut plain, ferrum_kernel::value::canonical_json(&json!({"label": "Vault 1", "pin": "4821"})));
+    let plain = hex::encode(sha2::Digest::finalize(plain));
+    let mut tx = a.kernel.db.tenant_tx(tenant).await.unwrap();
+    let kept: String = sqlx::query_scalar("select request_hash from idempotency_key where key = 'safe-key-0001'").fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_ne!(kept, plain, "the records door's digest of a secret field is keyed");
+    let again = make("4821").await;
+    assert!(again.status == StatusCode::OK && again.headers.contains_key("idempotent-replayed"), "the same pin again: {} {}", again.status, again.body);
+    assert!(!make("4822").await.status.is_success(), "another pin under the key is another request");
 }
 
 /// The tables of `schema` that hold any of `needles` (each looked for as it is written in a row's text).

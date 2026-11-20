@@ -415,7 +415,7 @@ same whether the workspace exists), whatever the reason. The first `POST` to a w
 `opened_at` once and raises the record's `opened` event (`link: {id, recipient}`; automations take `event: "opened"`);
 reading the page does not, so a link preview or a mail scanner opens nothing
 ([BD-38](builder/decisions.md#bd-38-signed-links-ended-by-an-app-dated-by-the-record-opened-with-lines)). Pages are never cached and send no referrer. Every request counts against the
-public limiter (per address and workspace, kept in the database).
+public limiter (per network and workspace, kept in the database).
 
 The effect `{"type": "link", "actions": [...], "show"?: [...], "columns"?: {...}, "params"?: {name: expression}, "days"?:
 n, "until"?: expression, "uses"?: n, "code_to"?: expression, "recipient"?: expression, "frame_origins"?: [...]}` issues one
@@ -512,7 +512,7 @@ answer is a Basic challenge, and wrong ones count against the address as failed 
 ## App endpoints
 
 Apps add HTTP endpoints under `/api/app/{package}/{path}` (signed in, any method) and
-`/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per IP, 300/min). Each
+`/api/site/{tenant}/{package}/{path}` (public pages, webhooks; rate-limited per network, an IPv4 /24 or an IPv6 /64, and workspace, 300/min). Each
 app documents its own in `packages/<package>/README.md` of its repository. Request bodies are
 limited per app and route (1 MB unless the app allows more, `Site::max_body_for`; at most 1 GiB,
 `server/src/controllers/sites.rs`); a larger one is refused with `413` (`too_large`) before it is read whole, as a
@@ -761,7 +761,7 @@ require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egr
 new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads, record_reads_declared}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `language` a language tag or `null` for
 English; `public_languages` 1 to 20 language tags, each once, the first the default, offered to visitors of public
-pages (`null`: the workspace's `language`, BD-86); `fiscal_year_start_month` 1 to 12; `require_two_factor`
+pages (`null`: the workspace's `language`, BD-87); `fiscal_year_start_month` 1 to 12; `require_two_factor`
 applies from each person's next sign-in; `offline` is `{allowed, hours}` ([offline](offline.md));
 `assistant` turns the assistant off for the workspace, with `assistant_model`, `assistant_monthly_tokens` and
 `assistant_egress` ([operations](operations.md#the-assistant)); `messages` is the workspace's calling code, quiet
@@ -847,7 +847,7 @@ zone.
   any target but `mail`; a brand that is not the workspace's: `422` ([BD-79](builder/decisions.md#bd-79-one-brand-every-public-page-reads)).
   On a `portal` address only `home` and `brand` apply: `home` is an app of the workspace with a public page, where the
   address's `/` leads (`302` to its shortest one, `/bookings/book/{workspace}/`); any other app: `422`
-  ([BD-86](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
+  ([BD-87](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
   never verified, a domain for mail or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
@@ -1110,14 +1110,14 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
   nobody (it may show the workspace's own pages in frames); every other page stays unframeable. A public page is served on the workspace's
   own addresses and on its `portal` address, and speaks the visitor's language among the workspace's `public_languages`
   (`?lang=`, then the `__Host-ferrum-lang` cookie, then `Accept-Language`; `locale.languages` lists them)
-  ([BD-86](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
+  ([BD-87](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
 * Later changes: a field that goes from the entity (its `add_field` switched off, a package upgrade), or may no longer be published, drops out of the list with a schema warning and the list stands (a customization that would do it, such as a `redefine_entity` without the field, is refused while the list names the field); a field added to the entity shows only once listed. A list whose filter or order names a field that went is taken down with a warning instead, as it would show more than was chosen. Switching the list's customization off takes it down.
 * Served, read as the workspace, for an active workspace only:
   * `GET /api/public/{workspace}/lists/{name}` → `{"label", "description", "fields": [{"name", "label", "type"}], "rows": [{…the listed fields…}], "more": bool}`: the first `limit` rows, and whether there are more. There is no next page: a cursor would carry the last record's id and time, which the list does not show.
   * `GET /api/public/{workspace}/lists/{name}.csv` when `csv` is true: a header of the labels, then the rows (CRLF); every cell passes the platform's guard against spreadsheet formulas (`ferrum_kernel::published::csv_cell`: text beginning `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`, a number stays one; quotes doubled, quoted when it holds a comma, a quote or a line break).
   * `/public/{workspace}/lists/{name}`: a plain page with the workspace's name, the list's label and description, a table and a link to the CSV when offered. Every value is escaped; no script; `Content-Security-Policy: default-src 'none'; style-src 'sha256-…'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`; `noindex` (a meta tag and `X-Robots-Tag`).
   * No such workspace, an inactive one, no such list, one taken down, and `.csv` of a list without CSV all answer the same `404 {"error": "not_found", "message": "there is no such list"}` (the page: the same 404 page).
-  * Every request counts against the public limiter (300 a minute per address and workspace, shared across replicas) before anything is looked up: past it, 429. An answer may be kept for a minute (`Cache-Control: public, max-age=60`); the query waits at most 5 seconds.
+  * Every request counts against the public limiter (300 a minute per network and workspace, shared across replicas) before the list is read: past it, 429. An answer may be kept for a minute (`Cache-Control: public, max-age=60`); the query waits at most 5 seconds.
 * `GET /api/meta/{Entity}` lists the entity's `published_lists` (`name`, `label`, `fields`, `csv`) to administrators only. Change sets and packs carry a list as any customization; a pack's plan says, as a warning to read before installing, `This pack publishes a list of Permits to anyone, without signing in (permits): Number, Holder, Type, Category, Issued on.`
 * `lists` is not a plugin's name: plugins' public routes are `/api/public/{workspace}/{plugin}/…`, and `public` is not an app's route.
 

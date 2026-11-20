@@ -420,7 +420,7 @@ impl Kernel {
                     }
                     clean.insert(k.clone(), v.clone());
                 }
-                // The languages people outside the workspace are offered, its default first (BD-86).
+                // The languages people outside the workspace are offered, its default first (BD-87).
                 "public_languages" if v.is_null() => {
                     clean.insert(k.clone(), Value::Null);
                 }

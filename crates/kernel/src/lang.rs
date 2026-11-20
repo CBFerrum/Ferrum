@@ -1,4 +1,4 @@
-//! The visitor's language on public pages (docs/builder/decisions.md BD-86): what a browser asks for
+//! The visitor's language on public pages (docs/builder/decisions.md BD-87): what a browser asks for
 //! (`Accept-Language`), matched against what the workspace offers its visitors (`public_languages`). The platform
 //! chooses for its own pages and `shell.public` pages; an app with content in languages of its own (a store's, a
 //! site's) gets the asked list and chooses among its own with [`choose`].

@@ -12,7 +12,7 @@
 //! The word `links` is kept from plugins (`ferrum_plugins::RESERVED_NAMES`).
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, client_ip};
+use crate::extract::Auth;
 use crate::shell::esc;
 use crate::state::app_state;
 use axum::Json;
@@ -182,10 +182,10 @@ fn footer_of(b: &PublicBrand) -> String {
 }
 
 async fn limited(st: &crate::state::AppState, headers: &HeaderMap, workspace: &str) -> Result<(), Response> {
-    st.public_limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await.map_err(|e| ApiError(e).into_response())
+    st.public_limiter.check_from(headers, &crate::extract::named_workspace(&st.kernel, workspace).await).await.map_err(|e| ApiError(e).into_response())
 }
 
-/// Whether this host may answer for `workspace` (BD-86): its own addresses and hosts of no workspace; another
+/// Whether this host may answer for `workspace` (BD-87): its own addresses and hosts of no workspace; another
 /// workspace's address answers as for a link that does not work, so nothing is learned.
 async fn answers_here(st: &crate::state::AppState, headers: &HeaderMap, workspace: &str) -> bool {
     match st.shell.workspace_by_slug(workspace).await {

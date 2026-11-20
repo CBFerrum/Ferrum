@@ -233,7 +233,7 @@ async fn authorize(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, 
     let Some(tenant) = workspace_at(st, &bare).await? else {
         // Another region's workspace: its accounts host takes the same request (asking the
         // regions costs requests: a budget per address).
-        st.public_limiter.check(&format!("{}|authorize", client_ip(headers))).await?;
+        st.public_limiter.check_from(headers, "authorize").await?;
         if let Some(there) = elsewhere(st, &bare).await {
             return Ok(Redirect::to(&format!("{there}/authorize?{}", uri.query().unwrap_or_default())).into_response());
         }
@@ -348,7 +348,7 @@ struct SignupCodeReq {
 /// `POST /api/accounts/signup/code`: a code to the address, to make a workspace with.
 async fn signup_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignupCodeReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|signup", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "accounts|signup").await?;
     st.kernel.send_signup_code(&req.email).await?;
     Ok(Json(json!({"sent": true})).into_response())
 }
@@ -357,7 +357,7 @@ async fn signup_code(State(app): State<AppContext>, headers: HeaderMap, Json(req
 /// subdomain. A new Ferrum account is signed in; someone who had one signs in to it.
 async fn sign_up(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignUp>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|{}", client_ip(&headers), req.email.trim().to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &format!("accounts|{}", crate::extract::named_address(&req.email))).await?;
     if req.code.len() > 32 || req.email.len() > 254 || req.password.len() > 1024 || req.full_name.as_ref().is_some_and(|n| n.len() > 200) {
         return Err(ApiError(Error::invalid("that is longer than a sign-up takes")));
     }
@@ -437,7 +437,7 @@ struct SignInReq {
 /// `POST /api/accounts/sign-in`: the password step.
 async fn sign_in(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SignInReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|{}", client_ip(&headers), req.email.trim().to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &format!("accounts|{}", crate::extract::named_address(&req.email))).await?;
     if req.password.len() > 256 || req.email.len() > 254 {
         return Err(ApiError(Error::Unauthorized("wrong email or password".into())));
     }
@@ -454,7 +454,7 @@ struct StepReq {
 /// `POST /api/accounts/sign-in/second-factor`: the authenticator's code (or a recovery code).
 async fn second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|second-factor", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "accounts|second-factor").await?;
     if req.code.len() > 64 {
         return Err(ApiError(Error::field("code", "is too long")));
     }
@@ -470,7 +470,7 @@ async fn second_factor(State(app): State<AppContext>, headers: HeaderMap, Json(r
 /// `POST /api/accounts/sign-in/verify`: the code sent to the address finishes making the account.
 async fn verify(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|verify", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "accounts|verify").await?;
     let m = from_ticket(&st, &req.ticket, "verify").await?;
     let s = st.kernel.account_verify(&m, &req.code).await?;
     answer(&st, &headers, AccountSignIn::Signed(s)).await
@@ -485,7 +485,7 @@ struct CodeReq {
 /// a first one). The answer says nothing about the address.
 async fn send_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<CodeReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|code", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "accounts|code").await?;
     let until = tokio::time::Instant::now() + CODE_ANSWER;
     let sent = st.kernel.send_email_code(&req.email, "set your Ferrum password").await;
     tokio::time::sleep_until(until).await;
@@ -504,7 +504,7 @@ struct PasswordReq {
 /// and signs in (the authenticator's code next, when the account has one).
 async fn set_password(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<PasswordReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|accounts|{}", client_ip(&headers), req.email.trim().to_lowercase())).await?;
+    st.login_limiter.check_from(&headers, &format!("accounts|{}", crate::extract::named_address(&req.email))).await?;
     if req.code.len() > 32 || req.email.len() > 254 {
         return Err(ApiError(Error::Unauthorized("that code is wrong or has expired; ask for a new one".into())));
     }
@@ -526,7 +526,7 @@ struct SsoFinishReq {
 /// address.
 async fn sso_finish(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<SsoFinishReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     let again = || ApiError(Error::Unauthorized("sign in again".into()));
     if req.state.len() > 200 || req.code.len() > 4096 || req.binding.len() > 200 || req.next.len() > 2000 {
         return Err(again());
@@ -574,7 +574,7 @@ async fn step_up_flow(st: &AppState, state: &str) -> Result<(ferrum_kernel::shel
 /// and a button that asks the device for the passkey, here, fresh (`step-up.js`); whoever is signed in here proves
 /// nothing. An unknown, used or expired request is a plain page saying so, the same for each. Framed by nothing.
 async fn step_up_page(st: &AppState, headers: &HeaderMap, q: &[(String, String)]) -> ApiResult<Response> {
-    st.login_limiter.check(&format!("{}|sso", client_ip(headers))).await?;
+    st.login_limiter.check_from(headers, "sso").await?;
     let flow = step_up_flow(st, query(q, "state").unwrap_or_default()).await;
     let who = match flow {
         Ok((who, _)) => who,
@@ -605,7 +605,7 @@ struct StepUpState {
 /// to verify the person. Limited per address, as the page is.
 async fn step_up_options(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepUpState>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.login_limiter.check(&format!("{}|sso", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "sso").await?;
     let (who, _) = step_up_flow(&st, &req.state).await?;
     let host = shell::request_host(&headers).unwrap_or_default().to_ascii_lowercase();
     let mut res = Json(st.kernel.passkey_step_up_options(&who, &host).await?).into_response();
@@ -627,7 +627,7 @@ struct StepUpAnswer {
 async fn step_up_answer(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<StepUpAnswer>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
     let (who, back) = step_up_flow(&st, &req.state).await?;
-    st.login_limiter.check(&format!("{}|step-up|{}", client_ip(&headers), who.user)).await?;
+    st.login_limiter.check_from(&headers, &format!("step-up|{}", who.user)).await?;
     let (_, origins) = super::auth::relying_party(&st, &headers)?;
     let from = super::auth::step_up_from(&st, &headers).await;
     let next = st.kernel.accounts_step_up_answer(&req.state, &who, &back, req.request, &origins, &req.credential, &from).await?;
@@ -714,7 +714,7 @@ struct JoinReq {
 /// sent to the address, or (an address already proven) confirming; then on into it.
 async fn join(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<JoinReq>) -> ApiResult<Response> {
     let (st, ctx) = account(&app, &headers, &Method::POST).await?;
-    st.login_limiter.check(&format!("{}|accounts|join|{}", client_ip(&headers), ctx.user)).await?;
+    st.login_limiter.check_from(&headers, &format!("accounts|join|{}", ctx.user)).await?;
     let (tenant, host, bare) = onward(&st, &req.host, &req.state).await?;
     let long = |v: &Option<String>, max: usize| v.as_ref().is_some_and(|v| v.len() > max);
     if long(&req.password, 256) || long(&req.code, 32) || long(&req.totp, 64) {
@@ -734,7 +734,7 @@ struct JoinCodeReq {
 /// `POST /api/accounts/join/code`: a code to the account's address, to add a workspace with.
 async fn join_code(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<JoinCodeReq>) -> ApiResult<Response> {
     let (st, ctx) = account(&app, &headers, &Method::POST).await?;
-    st.login_limiter.check(&format!("{}|accounts|code", client_ip(&headers))).await?;
+    st.login_limiter.check_from(&headers, "accounts|code").await?;
     let Some((_, bare)) = host_param(st.shell.secure, &req.host) else {
         return Err(ApiError(Error::invalid("go back to the workspace and sign in from there")));
     };
@@ -815,7 +815,7 @@ struct RegionTokenReq {
 /// with the verifier of the challenge it was bound to, and learns who the account is.
 async fn region_token(State(app): State<AppContext>, headers: HeaderMap, Json(req): Json<RegionTokenReq>) -> ApiResult<Response> {
     let st = here(&app, &headers).await?;
-    st.public_limiter.check(&format!("{}|region-token", client_ip(&headers))).await?;
+    st.public_limiter.check_from(&headers, "region-token").await?;
     if region_of_callback(&st, &req.redirect_uri).is_none() {
         return Err(ApiError(Error::Forbidden("not a region of this cluster's".into())));
     }

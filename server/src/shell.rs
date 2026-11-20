@@ -149,7 +149,7 @@ pub fn host_cookie(secure: bool, name: &str, value: &str, max_age: Duration) -> 
         .unwrap_or_else(|_| HeaderValue::from_static("ferrum_bad=; Max-Age=0"))
 }
 
-/// The visitor's language on public pages (BD-86): `__Host-ferrum-lang` (`ferrum-lang` on plain http), a year, readable
+/// The visitor's language on public pages (BD-87): `__Host-ferrum-lang` (`ferrum-lang` on plain http), a year, readable
 /// by the page's script (it holds a language tag only).
 pub fn lang_cookie_name(secure: bool) -> &'static str {
     if secure { "__Host-ferrum-lang" } else { "ferrum-lang" }

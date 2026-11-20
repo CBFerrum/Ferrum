@@ -214,7 +214,7 @@ fn sitemap_of(workspace: &str, addresses: &[(String, String)], origin: &str) -> 
 /// `?page=`, a list with a slug): the JSON says which page it is (`page`) and what was searched (`q`); a page past the
 /// last is a 404, as on the page.
 pub async fn answer(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, workspace: &str, name: &str, query: &[(String, String)]) -> Response {
-    if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
+    if let Err(e) = limiter.check_from(headers, &crate::extract::named_workspace(kernel, workspace).await).await {
         return crate::error::ApiError(e).into_response();
     }
     let (name, csv) = match name.strip_suffix(".csv") {
@@ -270,7 +270,7 @@ pub async fn page(
 ) -> Response {
     let parts: Vec<&str> = rest.split('/').collect();
     let Some(workspace) = parts.first().copied().filter(|w| !w.is_empty()) else { return not_found(true) };
-    if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
+    if let Err(e) = limiter.check_from(headers, &crate::extract::named_workspace(kernel, workspace).await).await {
         return crate::error::ApiError(e).into_response();
     }
     let ws = workspace.to_lowercase();
@@ -326,7 +326,7 @@ pub async fn count(kernel: &Kernel, limiter: &RateLimiter, headers: &HeaderMap, 
     let parts: Vec<&str> = rest.split('/').collect();
     let ["lists", ..] = parts.get(1..).unwrap_or_default() else { return not_found(true) };
     let (Some(workspace), Some(name), Some(address), 4) = (parts.first(), parts.get(2), parts.get(3), parts.len()) else { return not_found(true) };
-    if let Err(e) = limiter.check(&format!("{}|{}", client_ip(headers), workspace.to_lowercase())).await {
+    if let Err(e) = limiter.check_from(headers, &crate::extract::named_workspace(kernel, workspace).await).await {
         return crate::error::ApiError(e).into_response();
     }
     if !crate::shell::may_change(&axum::http::Method::POST, headers) {
@@ -399,7 +399,7 @@ async fn public(
         Ok(st) => st,
         Err(e) => return e.into_response(),
     };
-    // Another workspace's address answers as for a list that is not there (BD-86).
+    // Another workspace's address answers as for a list that is not there (BD-87).
     if let Ok(Some(t)) = st.shell.workspace_by_slug(&workspace).await
         && !st.shell.answers_for(&headers, t).await.unwrap_or(false)
     {

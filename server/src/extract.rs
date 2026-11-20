@@ -114,7 +114,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
                 ApiError(Error::Unauthorized("this key has a single purpose (calendar and contacts apps, or an identity provider) and works only there".into()))
             })?),
         };
-        st.user_limiter.check_local(&format!("{}|{}", s.tenant, s.user))?;
+        st.user_limiter.check_local(&net(address), &format!("{}|{}", s.tenant, s.user))?;
         crate::request_metrics::note_workspace(s.tenant);
         return Ok(TokenSession {
             session: s,
@@ -144,7 +144,7 @@ async fn session_of(st: &crate::state::AppState, token: &str, address: &str, act
         }
     };
     let (sid, bound) = (claim("sid")?, claim("bsid")?);
-    st.user_limiter.check_local(&format!("{tenant}|{user}"))?;
+    st.user_limiter.check_local(&net(address), &format!("{tenant}|{user}"))?;
     let mut step_up_at = None;
     if let Some(device) = sid.or(bound) {
         step_up_at = st.kernel.check_session_as(tenant, user, device, active).await?.step_up_at;
@@ -515,6 +515,44 @@ pub fn if_match(headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
     n.parse::<i64>().map(Some).map_err(|_| ApiError(Error::invalid("If-Match must carry the document version, e.g. \"v3\"")))
 }
 
+/// The network a client address counts in (docs/builder/decisions.md BD-86): an IPv4 address's /24, an IPv6 address's
+/// /64 (an IPv4 address written as IPv6 as IPv4), and `local` for a request with no address. Every limiter counts by it,
+/// never by the address itself: one machine holds a whole /64.
+pub fn net(addr: &str) -> String {
+    match addr.parse::<std::net::IpAddr>().map(|ip| ip.to_canonical()) {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            let [a, b, c, _] = ip.octets();
+            format!("{a}.{b}.{c}.0/24")
+        }
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let s = ip.segments();
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+        }
+        Err(_) => "local".into(),
+    }
+}
+
+/// The network of the request's client ([`net`] of [`client_ip`]).
+pub fn client_net(headers: &HeaderMap) -> String {
+    net(&client_ip(headers))
+}
+
+/// What a limiter counts a workspace named in a request by (BD-86): its id once found, else nothing, so that a name made
+/// up for each request makes no key of its own and counts on the caller's network alone.
+pub async fn named_workspace(kernel: &ferrum_kernel::Kernel, slug: &str) -> String {
+    let slug = slug.trim().to_ascii_lowercase();
+    if slug.is_empty() || slug.len() > 63 || !slug.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return String::new();
+    }
+    kernel.tenant_by_slug(&slug).await.map(|(id, _)| id.to_string()).unwrap_or_default()
+}
+
+/// What a limiter counts an address a caller sends by (BD-86): the address lower-cased once it has an address's form
+/// and length, else nothing, so that what is not an address makes no key of its own.
+pub fn named_address(email: &str) -> String {
+    ferrum_kernel::value::email_address(email).unwrap_or_default()
+}
+
 /// How many proxies in front of the server append to `X-Forwarded-For`: none (browsers reach it directly) is 0; the
 /// gateway alone is 1; a CDN or a load balancer before it makes 2 (`settings.proxy_hops`, at start and when it changes).
 pub static PROXY_HOPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -570,6 +608,16 @@ mod tests {
         assert_eq!((client_ip_behind(&cdn, 1), client_ip_behind(&cdn, 2)), ("192.0.2.10".into(), "203.0.113.7".into()));
         assert_eq!(client_ip_behind(&headers(&["203.0.113.7"]), 2), "203.0.113.7", "fewer proxies than configured");
         assert_eq!(client_ip_behind(&headers(&[" , "]), 1), "local");
+    }
+
+    #[test]
+    fn a_client_counts_in_its_network() {
+        assert_eq!(net("203.0.113.7"), "203.0.113.0/24");
+        assert_eq!(net("203.0.113.250"), net("203.0.113.7"), "one /24");
+        assert_eq!(net("2001:db8:5:6::1"), "2001:db8:5:6::/64");
+        assert_eq!(net("2001:db8:5:6:ffff:ffff:ffff:ffff"), net("2001:db8:5:6::1"), "one /64");
+        assert_eq!(net("::ffff:203.0.113.7"), "203.0.113.0/24", "an IPv4 address written as IPv6");
+        assert_eq!((net("local"), net("not an address")), ("local".to_string(), "local".to_string()));
     }
 
     #[test]

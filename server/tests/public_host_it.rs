@@ -1,4 +1,4 @@
-//! The customer's side on the workspace's own addresses (docs/builder/decisions.md BD-86), against a real PostgreSQL
+//! The customer's side on the workspace's own addresses (docs/builder/decisions.md BD-87), against a real PostgreSQL
 //! (`FERRUM_TEST_DATABASE_URL`; the database is reset by each test, which take their turn): the server as the binary
 //! boots it. A portal address serves the workspace's public pages, never another workspace's; its `/` can lead to one;
 //! links and published lists answer only on their own workspace's addresses; a public page speaks the visitor's

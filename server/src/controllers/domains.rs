@@ -163,7 +163,7 @@ async fn site_apps(st: &AppState, tenant: uuid::Uuid) -> ApiResult<Vec<Value>> {
 /// Refuses a `home` or an app in `apps` that is not one the caller can choose ([`shell::home_choices`]): an app the
 /// workspace does not have and one the caller's zone leaves out are refused alike, so neither is told apart.
 /// [`check_choices`], but a portal address's `home` is an app of the workspace with a public page, where its `/` leads
-/// (BD-86).
+/// (BD-87).
 async fn check_shape_choices(st: &AppState, ctx: &Ctx, portal: bool, home: Option<&str>, apps: Option<&[String]>) -> ApiResult<()> {
     match home {
         Some(home) if portal => {
@@ -309,7 +309,7 @@ fn text_or_null(key: &str, v: &Value) -> Result<Option<String>, Error> {
 /// clears one; one left out stays), and whether it forwards (`forward`, true or false). Never its zone, and never an
 /// operator's address. `brand` (a Brand's id, or `null` for the workspace's default) is the brand its pages wear, for
 /// an address of any target but `mail` (docs/builder/decisions.md BD-79). On a `portal` address only `home` (an app with a
-/// public page, where its `/` leads, BD-86) and `brand` apply.
+/// public page, where its `/` leads, BD-87) and `brand` apply.
 async fn reshape(
     Auth(ctx): Auth,
     State(app): State<AppContext>,
@@ -341,7 +341,7 @@ async fn reshape(
             other => return Err(Error::field(other, "is not something an address shows here (home, apps, label, forward, brand)").into()),
         }
     }
-    // A portal address's home is an app with a public page (BD-86); a shell address's, one with a page of its own.
+    // A portal address's home is an app with a public page (BD-87); a shell address's, one with a page of its own.
     let portal = st
         .kernel
         .list_hosts(&ctx)

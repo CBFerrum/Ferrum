@@ -6,7 +6,7 @@
 //! and the REST API both accept them.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{Auth, client_ip};
+use crate::extract::Auth;
 use crate::state::{AppState, app_state};
 use axum::Json;
 use axum::extract::{Form, Path, Query, State};
@@ -87,7 +87,7 @@ async fn register(State(app): State<AppContext>, headers: HeaderMap, Json(req): 
         Ok(st) => st,
         Err(e) => return e.into_response(),
     };
-    if let Err(e) = st.login_limiter.check(&format!("oauth-register|{}", client_ip(&headers))).await {
+    if let Err(e) = st.login_limiter.check_from(&headers, "oauth-register").await {
         return ApiError(e).into_response();
     }
     match st.kernel.oauth_register(req.client_name, req.redirect_uris).await {
@@ -411,7 +411,7 @@ async fn token(State(app): State<AppContext>, headers: HeaderMap, Form(req): For
     if let Some(answer) = super::oidc::token(&st, &headers, &req).await {
         return answer;
     }
-    if st.login_limiter.check(&format!("oauth-token|{}", client_ip(&headers))).await.is_err() {
+    if st.login_limiter.check_from(&headers, "oauth-token").await.is_err() {
         return oauth_error(StatusCode::TOO_MANY_REQUESTS, "slow_down", "too many token requests; try again shortly");
     }
     let Some(client_id) = req.client_id.as_deref().filter(|c| !c.is_empty()) else {
