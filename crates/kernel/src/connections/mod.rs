@@ -116,7 +116,7 @@ pub struct Description {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
     /// Only the listed `apps` call it: never the system, an administrator or a role (a payment provider: money moves only
-    /// through its app's checks). An administrator's "try" runs only its operations that change nothing.
+    /// through its app's checks). An administrator never tries it, and it has no pulls.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclusive: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1468,7 +1468,25 @@ pub struct CallAnswer {
 /// [`call`], answered as [`CallAnswer`]: `Err` only for the platform's own failures (its database), never for what the
 /// service or the connection's checks said.
 pub async fn call_answer(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<CallAnswer> {
-    k.call_answered(ctx, app, c).await
+    k.call_answered(ctx, app, c, None).await
+}
+
+/// The digest of a connection's whole description (as `connection_defs` lists it, or as an app wrote it): what a caller
+/// that checked the description passes to [`call_expecting`] so that the call goes out only under that description.
+pub fn description_digest(description: &Value) -> Result<String> {
+    let d: Description = serde_json::from_value(description.clone()).map_err(|e| Error::invalid(format!("not a description: {e}")))?;
+    Ok(digest(&serde_json::to_value(&d).map_err(Error::internal)?))
+}
+
+/// [`call`], made only while the stored description is the one whose [`description_digest`] is `expect`; otherwise
+/// refused (`description_changed`) with nothing sent and no attempt counted.
+pub async fn call_expecting(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call, expect: &str) -> Result<Value> {
+    k.call_waiting(ctx, app, c, Some(expect)).await
+}
+
+/// [`call_answer`], pinned as [`call_expecting`] is.
+pub async fn call_answer_expecting(k: &Kernel, ctx: &Ctx, app: Option<&str>, c: &Call, expect: &str) -> Result<CallAnswer> {
+    k.call_answered(ctx, app, c, Some(expect)).await
 }
 
 /// `app` holds connection `connection_id` for `reason`: deleting it is refused, naming both, until [`release`].
@@ -1508,12 +1526,12 @@ impl Kernel {
     /// A temporary failure is `RetryAfter` when the service (or the connection's limit) said when to come back, else
     /// `Unavailable` (BD-57).
     pub async fn call_connection(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
-        self.call_waiting(ctx, app, c).await
+        self.call_waiting(ctx, app, c, None).await
     }
 
-    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<Value> {
+    async fn call_waiting(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<Value> {
         // Boxed: an app's future that awaits a call stays within the compiler's depth for layouts.
-        let (outcome, ..) = Box::pin(self.call_outcome(ctx, app, c)).await?;
+        let (outcome, ..) = Box::pin(self.call_outcome(ctx, app, c, expect)).await?;
         match outcome {
             Outcome::Ok(result, _) => Ok(result),
             Outcome::Later(why, Some(secs)) => Err(Error::RetryAfter(why, secs)),
@@ -1522,8 +1540,8 @@ impl Kernel {
         }
     }
 
-    async fn call_answered(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<CallAnswer> {
-        let (outcome, status, sent, exists) = match Box::pin(self.call_outcome(ctx, app, c)).await {
+    async fn call_answered(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<CallAnswer> {
+        let (outcome, status, sent, exists) = match Box::pin(self.call_outcome(ctx, app, c, expect)).await {
             Ok(o) => o,
             // Refused before anything was sent: the connection's checks, its inputs, its rights, a key in use.
             Err(e @ (Error::Db(_) | Error::Internal(_))) => return Err(e),
@@ -1540,8 +1558,15 @@ impl Kernel {
 
     /// One call made, as `call` and `call_answer` both make it: the outcome, the status the service answered, and whether
     /// a request left the server.
-    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call) -> Result<(Outcome, Option<u16>, bool, bool)> {
+    async fn call_outcome(&self, ctx: &Ctx, app: Option<&str>, c: &Call, expect: Option<&str>) -> Result<(Outcome, Option<u16>, bool, bool)> {
         let conn = self.load_connection(ctx.tenant, &c.connection).await?;
+        // Pinned: only under the description the caller checked, read with the secrets the call uses; nothing sent and no
+        // attempt counted otherwise.
+        if let Some(expect) = expect
+            && digest(&serde_json::to_value(&conn.desc).map_err(Error::internal)?) != expect
+        {
+            return Err(Error::Conflict(format!("description_changed: the connection {} was changed after it was checked", conn.name)));
+        }
         if !conn.enabled {
             return Err(Error::invalid(format!("the connection {} is turned off", conn.name)));
         }
@@ -2558,12 +2583,10 @@ impl Kernel {
         if conn.desc.signs_in_with(operation) {
             return Err(Error::invalid(format!("{operation} is how {} signs in: it is not tried", conn.name)));
         }
-        if conn.desc.exclusive && conn.desc.changes(operation) {
-            return Err(Error::Forbidden(format!(
-                "{} is called only by {}: {operation} changes something, so it is not tried here",
-                conn.name,
-                conn.desc.apps.join(", ")
-            )));
+        // An exclusive connection is called by its apps' own calls alone: never tried here, whatever an operation says
+        // of itself.
+        if conn.desc.exclusive {
+            return Err(Error::Forbidden(format!("{} is called only by {}: it is not tried here", conn.name, conn.desc.apps.join(", "))));
         }
         if conn.desc.changes(operation) && key.is_none_or(|k| k.trim().is_empty()) {
             return Err(Error::invalid(format!("{operation} changes something at the service, so trying it needs a key")));
@@ -2755,7 +2778,7 @@ impl JobHandler for Queued {
             ctx.user = u;
         }
         // A "later" with the service's own Retry-After comes back when it said, capped.
-        let result = k.call_waiting(&ctx, None, &c).await?;
+        let result = k.call_waiting(&ctx, None, &c, None).await?;
         Ok(json!({"result": result}))
     }
 

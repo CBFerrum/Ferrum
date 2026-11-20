@@ -1407,8 +1407,10 @@ their own sign-ins, whose tokens go and are revoked at the provider where it say
 | `GET /api/connections/inbound/{id}?…` | no session: the check a service makes before it delivers, where the description declares `handshake: {token, challenge, secret, expect?}` beside its `inbound` (`{"token": "hub.verify_token", "challenge": "hub.challenge", "secret": "verify", "expect": {"hub.mode": "subscribe"}}`): the challenge as plain text when the token equals the named secret (compared in constant time) and `expect` holds, else the same `401` ([BD-78](builder/decisions.md#bd-78-an-inbound-addresss-verification-handshake)); rate-limited as the POST |
 
 **Only its apps** ([BD-82](builder/decisions.md#bd-82-connections-only-apps-call-an-answer-to-class-a-hold)):
-`exclusive: true` admits only the listed `apps`: never the system, an administrator or a role, and an administrator's
-*try* runs only operations that change nothing. `ferrum_kernel::connections::call_answer(&k, &ctx, app, &call)` answers
+`exclusive: true` admits only the listed `apps`: never the system, an administrator or a role; an administrator's
+*try* is refused on it, and it has no `pulls` (refused at save, never run). A caller that checked the description pins a
+call to it: `call_expecting` / `call_answer_expecting` take the `connections::description_digest` of the description it
+checked and refuse with `description_changed` (nothing sent) when the stored one differs at call time. `ferrum_kernel::connections::call_answer(&k, &ctx, app, &call)` answers
 `CallAnswer {sent, status, result, later, exists, wait, error}` (whether a request left the server, the service's status, the
 mapped result when it answered as described, whether to try later and when, why not; `Err` only for the platform's own
 failures), for a caller that moves money and must tell "refused" from "unknown"; `call` is unchanged. An operation's
