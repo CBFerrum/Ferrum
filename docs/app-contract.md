@@ -103,6 +103,11 @@ extends, with a contract: `hidden`, so that it is no button, and in the catalog 
 An action a package adds to another package's entity is the adding package's: `{adder}.{entity}.{action}`, at the
 adder's version. Its `permission` is for whoever reaches it directly: a person through the API, an agent, a process.
 
+**Callers outside the workspace.** An operation is staff only unless the package declares an `audience` and what
+goes with it (BD-88, `docs/guides/21-apis-and-docs.md`); a package holding an `internal` entity never does, and only
+such a package may declare `called_for_outside: {via: [<entity-name field>, <id field>], operations}` on its own
+entity, naming what another app's work may call while an outside caller's request runs.
+
 **Lists and rows as parameters.** An action's parameter may be a list of one value each,
 `{name: weekdays, label: Weekdays, type: list, of: select, options: [Monday, Sunday]}`, a list of rows,
 `{name: items, label: Items, type: list, max_items: 100, fields: [{name: item, label: Item, type: link, to: Item,

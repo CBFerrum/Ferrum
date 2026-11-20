@@ -2166,3 +2166,19 @@ Decided 19 November 2026.
   A page asked with `?lang=` keeps it in the cookie for a year (not `HttpOnly`: it holds a tag only), except framed
   (`?embed=1`), where the outside site, not the visitor, chose.
 
+## BD-88. Who outside may call an operation, declared and checked at load
+
+* **Staff by default.** Every operation and every record read is the workspace's staff's until its package says
+  otherwise (A11 2.3.1, API-1). What a package may say is checked when it loads, never left to the doors:
+  `crates/meta/src/api.rs` (`check_package`), `PermissionDef::visitor_problem`, and the customization paths
+  (`effective.rs` refuses a workspace's action carrying an audience, rate, guard, handle or refusals; `validate_entity`
+  a workspace's own entity carrying `api`, `called_for_outside` or an audience).
+* **The floor.** A package holding an `internal` entity, a ledger and a line stay staff only: no `api`, no audience,
+  no visitor rule, and no overlay of another package opens them. The money packages and A3's `decides` operations join
+  the floor in API-1b.
+* **Closed answers.** A customer-facing action's `returns` lists every property and item, so the output allow-list
+  (A11 2.14.5) can prune all of it.
+* **Visitor roles** are their own kind (never portal) and only read with a `where` or reference data, and run
+  collection or read-only actions; a rule naming a collection action carries no record condition.
+* **Not yet served.** Nothing here opens a door; the declarations are checked so that the doors (API-2 onward) only
+  honour what passed. Roles saved in a workspace carry no `visitor` flag yet (the role table has no column for it).

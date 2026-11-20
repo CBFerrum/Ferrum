@@ -2,6 +2,7 @@
 //!
 //! Pure (no I/O beyond reading package directories) so it is unit-testable and reusable by tools.
 
+pub mod api;
 pub mod catalog;
 pub mod effective;
 pub mod expr;

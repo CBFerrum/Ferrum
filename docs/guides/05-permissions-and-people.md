@@ -44,6 +44,12 @@ A rule (`PermissionDef`):
 | `actions` | the entity's actions its holders may run on the records it reaches, whatever each action's own `permission` asks |
 | `shared` | for a portal role: `read` or `add`, what of the record's comments and files its holders see |
 
+A role with `visitor: true` is held by anyone on the customer door, an anonymous visitor included (A11, BD-88; never
+also `portal`). Its rules name each entity (never `*`), read only with a `where` or on reference data holding no personal
+data, and name only collection or read-only actions; never write, create, delete, submit, cancel, export, import,
+`if_owner`, `via`, field groups or `shared`, and never an entity of a package with internal entities, a ledger or a
+line. A rule naming a collection action (any role's) carries no `where`, `via`, `if_owner` or `shared`.
+
 A role may hold several rules for one entity; a record qualifies through any of them. **Field groups follow the rule
 that reaches the record**: a grouped field shows on a record, and may be written there, only when a rule reaching that
 record grants its group (`read_groups`, `write_groups`, and the same role's group-only rows, which grant groups without

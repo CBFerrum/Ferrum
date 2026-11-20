@@ -354,6 +354,9 @@ impl Catalog {
                 if role.name.trim().is_empty() {
                     return invalid(format!("{name}: role without a name"));
                 }
+                if role.visitor && role.portal {
+                    return invalid(format!("{name}: role {}: a role is visitor or portal, never both", role.name));
+                }
                 for perm in &role.permissions {
                     if perm.entity != "*" && !self.entities.contains_key(&perm.entity) {
                         return invalid(format!("{name}: role {} references unknown entity {}", role.name, perm.entity));
@@ -376,6 +379,8 @@ impl Catalog {
                     }
                 }
             }
+            crate::api::check_package(&crate::api::Loaded { entities: &self.entities, packages: &self.packages }, name, p)
+                .map_err(|m| MetaError::Invalid(format!("{name}: {m}")))?;
             for wf in &p.manifest.workflows {
                 validate_workflow(wf, &self.entities).map_err(|m| MetaError::Invalid(format!("{name}: workflow {}: {m}", wf.name)))?;
             }
@@ -871,6 +876,10 @@ fn shaped(p: &crate::ActionParam) -> Result<(), String> {
 }
 
 pub(crate) fn validate_entity(e: &EntityDef, all: &HashMap<&str, &EntityDef>, custom: bool) -> Result<(), String> {
+    // A workspace's own entity faces its staff only (A11 2.3.1): no api, no outside calls, no audience on its actions.
+    if custom && (e.api.is_some() || e.called_for_outside.is_some() || e.actions.iter().any(|a| crate::api::audience_of(a) != crate::api::Audience::Staff)) {
+        return Err("a workspace's own entity faces its staff only: no api, called_for_outside or audience".into());
+    }
     if e.label.trim().is_empty() {
         return Err("label is required".into());
     }
