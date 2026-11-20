@@ -118,6 +118,11 @@ a file, a list or a row. A list takes 500 items at most (`max_items` lowers it).
 handler runs, a list over its length, an item of another type, a row key it does not declare and a required field
 missing; the handler gets the JSON as given. The catalog, MCP and the OpenAPI document show the same schema.
 
+**A parameter no dialog asks for.** `ask: false` on an action's parameter (the lines a record page's own selection
+gives, ids code passes): declared and checked like any other, an ordinary optional property in the catalog, MCP and
+OpenAPI, but left out of a generic action dialog and of a visitor's link page, and refused when a visitor gives it.
+It cannot be `required`.
+
 **Declaring a use.** The package that needs another app's operation says so, within what it depends on:
 
 ```yaml

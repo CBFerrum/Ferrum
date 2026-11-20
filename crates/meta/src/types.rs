@@ -1155,6 +1155,10 @@ pub struct ActionParam {
     /// A `list`'s most items: [`MAX_LIST_ITEMS`] unless declared lower.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_items: Option<u32>,
+    /// `false`: declared and checked, given by code, by a caller of the operation or by a page's own selection, never
+    /// asked for by a generic action dialog or a visitor's link page. Never required.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub ask: bool,
 }
 
 /// The types a `list`'s items and a row's fields may have: one value each, never a file, a list or a row.
