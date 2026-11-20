@@ -215,6 +215,8 @@ pub(crate) fn system(ctx: &Ctx) -> Ctx {
         made: crate::ctx::Made::System,
         // An effect inside an app's call never acts as that app (BD-83).
         app: None,
+        // Nor under the key of the write that set it going (TP-K).
+        effect_key: None,
         is_admin: true,
         egress: None,
         scopes: BTreeMap::new(),

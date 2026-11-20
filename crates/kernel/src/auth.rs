@@ -965,6 +965,7 @@ impl Kernel {
             proof,
             app: None,
             made,
+            effect_key: None,
             reads: Default::default(),
         })
     }

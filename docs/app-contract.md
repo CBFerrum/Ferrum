@@ -160,6 +160,13 @@ automation, an API key, a job, an approval completing later, the assistant, anot
 `ferrum_domain::util::elevated`, never `is_system = true` alone: `scripts/check_contexts.py` refuses that, in every app.
 An approval policy with `people_at_screens: true` refuses asking and deciding by anyone not at a screen.
 
+**The key of a write.** `ctx.effect_key` is the effect key the write in hand was claimed under: the gate's key (an app's
+`call_tx` key as `{app}:{key}`), or the records door's `Idempotency-Key` on a create, an update or an action. It is
+none for a write made without one, and for every write a write sets going (its effects, automations, jobs). A hook whose
+create does something outside the system (sends, calls, charges) may refuse a write without a key, so that a retry by any
+door does it at most once; a key with a prefix an app reserves (`platform:` for a provider's own sends) it may refuse from
+anyone but the caller it is reserved to, by `ctx.user`.
+
 ## Files an app keeps for its own work
 
 What an app keeps for its own work in the platform's file store (built artifacts, databases' backups, a customer's
