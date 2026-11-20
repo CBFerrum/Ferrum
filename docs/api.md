@@ -756,11 +756,12 @@ has when it runs, not when they asked. A bulk job's `result` is `{total, succeed
 Every route under `/api/admin/` answers portal people and guests `403` before it reads anything of the request; for
 staff, each route's own check decides (most are an administrator's alone, reading the settings among them).
 
-Workspace settings: `GET /api/admin/settings` → `{timezone, language, fiscal_year_start_month, require_two_factor,
+Workspace settings: `GET /api/admin/settings` → `{timezone, language, public_languages, fiscal_year_start_month, require_two_factor,
 require_sso, assistant, assistant_model, assistant_monthly_tokens, assistant_egress, offline, messages,
 new_device_notice, break_glass, idle_minutes, staff_networks, step_up, record_reads, record_reads_declared}`;
 `PUT` with any of them (`timezone` is an IANA name such as `Asia/Kolkata`; `language` a language tag or `null` for
-English; `fiscal_year_start_month` 1 to 12; `require_two_factor`
+English; `public_languages` 1 to 20 language tags, each once, the first the default, offered to visitors of public
+pages (`null`: the workspace's `language`, BD-86); `fiscal_year_start_month` 1 to 12; `require_two_factor`
 applies from each person's next sign-in; `offline` is `{allowed, hours}` ([offline](offline.md));
 `assistant` turns the assistant off for the workspace, with `assistant_model`, `assistant_monthly_tokens` and
 `assistant_egress` ([operations](operations.md#the-assistant)); `messages` is the workspace's calling code, quiet
@@ -844,6 +845,9 @@ zone.
   `422`. An operator's address: `403`, "this address is the operator's: only the operator changes or removes it".
   `brand` (a Brand's id, or `null` for the workspace's default) is the brand the address's pages wear, on an address of
   any target but `mail`; a brand that is not the workspace's: `422` ([BD-79](builder/decisions.md#bd-79-one-brand-every-public-page-reads)).
+  On a `portal` address only `home` and `brand` apply: `home` is an app of the workspace with a public page, where the
+  address's `/` leads (`302` to its shortest one, `/bookings/book/{workspace}/`); any other app: `422`
+  ([BD-86](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
 * `DELETE /api/admin/domains/{host}` removes a custom domain or a name under the base → `{host, leaving_until}`: one in
   use keeps serving the people signed in there until `leaving_until`, then redirects (`null`: it stopped at once, being
   never verified, a domain for mail or with `FERRUM_HOST_LEAVING_DAYS=0`); the main address hands its place to another of the workspace's
@@ -1103,7 +1107,10 @@ and `q` when searched; a page past the last is a `404` there too). It is offered
   ([BD-80](builder/decisions.md#bd-80-who-may-frame-a-public-page)); opened with `?embed=1` its bootstrap carries
   `embed: {origins}` and it posts its height to those origins, which `/_shell/v1/embed.js` on the framing site reads to
   size `<iframe data-ferrum-embed>` (and `ferrum:done` when the page calls `ferrum.embedDone()`). A site page is framed by
-  nobody (it may show the workspace's own pages in frames); every other page stays unframeable.
+  nobody (it may show the workspace's own pages in frames); every other page stays unframeable. A public page is served on the workspace's
+  own addresses and on its `portal` address, and speaks the visitor's language among the workspace's `public_languages`
+  (`?lang=`, then the `__Host-ferrum-lang` cookie, then `Accept-Language`; `locale.languages` lists them)
+  ([BD-86](builder/decisions.md#bd-86-the-public-host-and-the-visitors-language)).
 * Later changes: a field that goes from the entity (its `add_field` switched off, a package upgrade), or may no longer be published, drops out of the list with a schema warning and the list stands (a customization that would do it, such as a `redefine_entity` without the field, is refused while the list names the field); a field added to the entity shows only once listed. A list whose filter or order names a field that went is taken down with a warning instead, as it would show more than was chosen. Switching the list's customization off takes it down.
 * Served, read as the workspace, for an active workspace only:
   * `GET /api/public/{workspace}/lists/{name}` → `{"label", "description", "fields": [{"name", "label", "type"}], "rows": [{…the listed fields…}], "more": bool}`: the first `limit` rows, and whether there are more. There is no next page: a cursor would carry the last record's id and time, which the list does not show.

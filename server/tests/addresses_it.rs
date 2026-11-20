@@ -485,7 +485,8 @@ async fn shapes(base: &AppContext, st: &AppState) {
         (json!({"host": "x.ferrum.test"}), "give a name instead"),
         (json!({"name": "x", "zone": "office"}), "only the operator"),
         (json!({"name": "x", "host": "x.example"}), "either host"),
-        (json!({"name": "help", "target": "portal", "home": "crm"}), "addresses that open the workspace"),
+        (json!({"name": "help", "target": "portal", "home": "crm"}), "crm is no app of this workspace with a public page"),
+        (json!({"name": "help", "target": "portal", "apps": ["crm"]}), "addresses that open the workspace"),
         (json!({"name": "x", "home": "nosuch"}), "nosuch is no app of this workspace"),
     ] {
         let (status, body) = api(Method::POST, MAIN, "/api/admin/domains", Some(refused.clone())).await;

@@ -44,6 +44,7 @@ pub mod hooks;
 pub mod identity;
 pub mod jobs;
 pub mod kms;
+pub mod lang;
 pub mod layout;
 pub mod lifecycle;
 mod links;

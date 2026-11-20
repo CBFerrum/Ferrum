@@ -576,7 +576,10 @@ async fn names_and_what_addresses_show(k: &Kernel) {
     for (name, why) in [("accounts", "kept"), ("sa--les", "two hyphens"), ("Sales!", "not a name")] {
         assert!(matches!(k.add_name(&admin, BASE, name, "shell", &HostShape::default()).await, Err(Error::Validation(_))), "{why}");
     }
-    assert!(matches!(k.add_name(&admin, BASE, "help", "portal", &shape(Some("crm"), None, None)).await, Err(Error::Validation(_))), "a portal shows no apps");
+    assert!(
+        matches!(k.add_name(&admin, BASE, "help", "portal", &shape(None, Some(&["crm"]), None)).await, Err(Error::Validation(_))),
+        "a portal shows no apps"
+    );
     let portal = k.add_name(&admin, BASE, "help", "portal", &HostShape::default()).await.unwrap();
     assert!(portal.is_primary, "the first address of a target is its main one");
     // Another workspace's names end in its own slug; it cannot take this one by any way in.

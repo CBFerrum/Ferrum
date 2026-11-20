@@ -2120,3 +2120,28 @@ Decided 19 November 2026 (API-K1, `gapclose/design/A11-app-apis.md` 2.6.1, R11).
   refuses such a key anywhere but `Door::Capabilities`, so every consumer of credentials refuses it without a check of
   its own (records, metadata, apps' endpoints, administration, files, the setup routes, sockets, co-editing, the
   assistant and shell pages, `/mcp`). `Kernel::verify_api_key_from`, which knows no door, refuses one too.
+
+## BD-86. The public host and the visitor's language
+
+Decided 19 November 2026.
+
+* **The gap**: a `portal` address served only the portal, so a workspace's booking or form page lived under its
+  workspace address; published lists and links answered on any workspace's host; a site host sent `/_shell` and
+  `/_auth` to the app; a public page spoke the workspace's own language whatever the visitor's browser asked for.
+* **Portal host**: a `portal` address serves the portal, signing in (`/_auth`), links to records, published lists
+  (`/public`) and every `shell.public` page of its own workspace; another workspace's public page there is gone (`404`),
+  as on a workspace's address. Its shape takes `home` only (an app of the workspace with a public page, else `422`):
+  `/` then answers `302` to that app's shortest public page for the workspace (`/bookings/book/{workspace}/`); without
+  it, `/portal/`.
+* **Site host**: `/_shell` and `/_auth` are the platform's before the app's routes. The app is told the address's
+  brand (`x-ferrum-brand`), the language chosen for the visitor (`x-ferrum-language`) and what the browser asked for
+  (`x-ferrum-languages`, in its order); the server sets them and drops any a caller sends.
+* **Links and lists**: `/api/public/{workspace}/links/…` and `/api/public/{workspace}/lists/…` answer `404` on a host
+  of another workspace (`answers_for`).
+* **Languages**: `public_languages` in the workspace's settings, 1 to 20 language tags each once, the first the default;
+  absent, the workspace's `language`, else English. A public page chooses `?lang=` (one offered), else the language
+  cookie (`__Host-ferrum-lang`; `ferrum-lang` on plain http), else `Accept-Language` by its weights, matched by tag and
+  then by first part (`de-AT` takes `de`); none: the default. The bootstrap's `locale.languages` lists what is offered.
+  A page asked with `?lang=` keeps it in the cookie for a year (not `HttpOnly`: it holds a tag only), except framed
+  (`?embed=1`), where the outside site, not the visitor, chose.
+
