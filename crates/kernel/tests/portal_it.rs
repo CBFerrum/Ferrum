@@ -849,23 +849,27 @@ async fn record_roles() {
     assert!(pages.contains(&"Visit".to_string()), "the portal's pages: {pages:?}");
 }
 
-/// A task and a case of the role Patients, opened in a run of a stand-in solution.
-async fn tasks_of(k: &Kernel, admin: &Ctx) -> (Uuid, Uuid) {
+/// A task and a case of the role Patients, opened in a run of a stand-in solution about `subject` (a visit), or about no
+/// record.
+async fn tasks_of(k: &Kernel, admin: &Ctx, subject: Option<Uuid>) -> (Uuid, Uuid) {
     let mut tx = k.db.system_tx().await.unwrap();
     let release: Uuid = sqlx::query_scalar(
         "insert into logic_release (tenant_id, solution, version, source_digest, artifact_digest, compiler, profile, source, release) \
-         values ($1, 'clinic', '1.0.0', 'x', 'x', 'x', 'core', '{}', '{}') returning id",
+         values ($1, 'clinic', $2, 'x', 'x', 'x', 'core', '{}', '{}') returning id",
     )
     .bind(admin.tenant)
+    .bind(format!("1.0.{}", Uuid::now_v7().simple()).chars().take(32).collect::<String>())
     .fetch_one(&mut *tx)
     .await
     .unwrap();
     let run: Uuid = sqlx::query_scalar(
-        "insert into logic_run (tenant_id, release_id, solution, process, business_key, trigger, workflow_id) \
-         values ($1, $2, 'clinic', 'visits', 'k', '{}', 'w') returning id",
+        "insert into logic_run (tenant_id, release_id, solution, process, business_key, trigger, workflow_id, subject_entity, subject_id) \
+         values ($1, $2, 'clinic', 'visits', $3, '{}', 'w', case when $4::uuid is null then null else 'Visit' end, $4) returning id",
     )
     .bind(admin.tenant)
     .bind(release)
+    .bind(Uuid::now_v7().to_string())
+    .bind(subject)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -895,19 +899,47 @@ fn a_default_role_decides_no_task_or_case() {
 /// A task or a case is decided and seen by those GIVEN its role (BD-89, second read): held by default, a role lists,
 /// opens, decides and closes nothing.
 async fn no_tasks() {
-    let (k, admin, ann, bob, _, _) = held_by_default().await;
-    let (task, case) = tasks_of(&k, &admin).await;
-    let listed = |v: Vec<Value>| v.iter().any(|t| t["id"] == json!(task));
-    assert!(!listed(k.my_logic_tasks(&ann).await.unwrap()), "not listed by default");
-    assert!(listed(k.my_logic_tasks(&bob).await.unwrap()), "listed when given");
+    let (k, admin, ann, bob, anns, bobs) = held_by_default().await;
+    // Each about the record of the person asking, so that the role alone decides.
+    let (task, case) = tasks_of(&k, &admin, Some(anns)).await;
+    let (btask, bcase) = tasks_of(&k, &admin, Some(bobs)).await;
+    let listed = |v: Vec<Value>, id: Uuid| v.iter().any(|t| t["id"] == json!(id));
+    assert!(!listed(k.my_logic_tasks(&ann).await.unwrap(), task), "not listed by default");
+    assert!(listed(k.my_logic_tasks(&bob).await.unwrap(), btask), "listed when given");
     assert!(matches!(k.logic_task(&ann, task).await, Err(Error::NotFound(_))), "not opened by default");
-    k.logic_task(&bob, task).await.expect("opened when given");
+    k.logic_task(&bob, btask).await.expect("opened when given");
     let e = k.decide_logic_task(&ann, task, true, "stale", &json!({}), "").await.expect_err("not decided by default");
     assert!(matches!(e, Error::Forbidden(_)), "{e}");
-    let e = k.decide_logic_task(&bob, task, true, "stale", &json!({}), "").await.expect_err("past the role, the stale digest");
-    assert!(!matches!(e, Error::Forbidden(_)), "given: {e}");
+    let e = k.decide_logic_task(&bob, btask, true, "stale", &json!({}), "").await.expect_err("past the role, the stale digest");
+    assert!(!matches!(e, Error::Forbidden(_) | Error::NotFound(_)), "given: {e}");
     assert!(matches!(k.close_case(&ann, case).await, Err(Error::Forbidden(_))), "a case not closed by default");
-    assert!(!matches!(k.close_case(&bob, case).await, Err(Error::Forbidden(_))), "given: past the role");
+    assert!(!matches!(k.close_case(&bob, bcase).await, Err(Error::Forbidden(_) | Error::NotFound(_))), "given: past the role");
+}
+
+#[test]
+fn a_portal_person_decides_only_tasks_on_records_they_read() {
+    run(tasks_as_caller());
+}
+
+/// A portal person given a task's role lists, opens, decides, hands on and closes it only when they may read, as
+/// themselves, the record it is about; one about no record is the workspace's (task-decide-as-caller).
+async fn tasks_as_caller() {
+    let (k, admin, _, bob, anns, bobs) = held_by_default().await;
+    let (theirs, their_case) = tasks_of(&k, &admin, Some(anns)).await;
+    let (nobodys, _) = tasks_of(&k, &admin, None).await;
+    let (own, _) = tasks_of(&k, &admin, Some(bobs)).await;
+    let listed: Vec<Value> = k.my_logic_tasks(&bob).await.unwrap();
+    let ids: Vec<&Value> = listed.iter().map(|t| &t["id"]).collect();
+    assert!(ids.contains(&&json!(own)) && !ids.contains(&&json!(theirs)) && !ids.contains(&&json!(nobodys)), "{listed:?}");
+    for task in [theirs, nobodys] {
+        assert!(matches!(k.logic_task(&bob, task).await, Err(Error::NotFound(_))), "not opened");
+        let e = k.decide_logic_task(&bob, task, true, "stale", &json!({}), "").await.expect_err("not decided");
+        assert!(matches!(e, Error::NotFound(_)), "{e}");
+        let e = k.delegate_logic_task(&bob, task, admin.user, "away").await.expect_err("not handed on");
+        assert!(matches!(e, Error::NotFound(_)), "{e}");
+    }
+    assert!(matches!(k.close_case(&bob, their_case).await, Err(Error::NotFound(_))), "another's case");
+    assert!(matches!(k.case_task_done(&bob, their_case, "x", &json!({})).await, Err(Error::NotFound(_))), "another's case's part");
 }
 
 #[test]

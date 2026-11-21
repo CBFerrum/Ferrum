@@ -1480,6 +1480,32 @@ impl Kernel {
         Ok(())
     }
 
+    /// Whether `ctx` reaches task `id`'s record (task-decide-as-caller): a portal person or a guest lists, opens and
+    /// decides a task only when they may read, as themselves, the record its run is about; one about no record is the
+    /// workspace's. Members are held to the task's role alone.
+    async fn reaches_task_record(&self, ctx: &Ctx, id: Uuid) -> Result<bool> {
+        if !ctx.outside {
+            return Ok(true);
+        }
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        let subject: Option<(Option<String>, Option<Uuid>)> = sqlx::query_as(
+            "select r.subject_entity, r.subject_id from logic_task t join logic_run r on r.tenant_id = t.tenant_id and r.id = t.run_id \
+             where t.tenant_id = $1 and t.id = $2",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let Some((Some(entity), Some(record))) = subject else { return Ok(false) };
+        Ok(self.get(ctx, &entity, record, false).await.is_ok())
+    }
+
+    /// Refused unless [`Kernel::reaches_task_record`]: as if the task were not there.
+    async fn reach_task_record(&self, ctx: &Ctx, id: Uuid, what: &str) -> Result<()> {
+        if self.reaches_task_record(ctx, id).await? { Ok(()) } else { Err(Error::NotFound(what.into())) }
+    }
+
     /// The people `ctx` stands in for today, while they are away (FEO-034).
     async fn standing_for(tx: &mut crate::Tx, ctx: &Ctx) -> Result<Vec<Uuid>> {
         // ponytail: the server's day, not the workspace's time zone; a stand-in may start or end a few hours off.
@@ -1613,20 +1639,24 @@ impl Kernel {
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(rows
-            .into_iter()
-            .filter(|(_, kind, _, role, exclude, delegated, _)| match kind.as_str() {
+        let mut out = vec![];
+        for (id, kind, label, role, exclude, delegated, deadline) in rows {
+            let mine = match kind.as_str() {
                 // What needs recovering or looking at is an administrator's.
                 "recovery" | "attention" => ctx.is_admin,
-                _ => Self::may_decide(ctx, role, exclude, delegated, &standing).is_ok(),
-            })
-            .map(|(id, kind, label, role, _, _, deadline)| json!({"id": id, "kind": kind, "label": label, "role": role, "deadline": deadline}))
-            .collect())
+                _ => Self::may_decide(ctx, &role, &exclude, &delegated, &standing).is_ok(),
+            };
+            if mine && self.reaches_task_record(ctx, id).await? {
+                out.push(json!({"id": id, "kind": kind, "label": label, "role": role, "deadline": deadline}));
+            }
+        }
+        Ok(out)
     }
 
     /// One task with what it is about, for someone who may decide it or an administrator: another task's material
     /// is not theirs to read (FLC-HUMAN-006).
     pub async fn logic_task(&self, ctx: &Ctx, id: Uuid) -> Result<Value> {
+        self.reach_task_record(ctx, id, "task").await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Value, String, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
             "select jsonb_build_object('id', id, 'run', run_id, 'activation', activation, 'kind', kind, 'label', label, 'role', role, 'material', material, \
@@ -1709,6 +1739,7 @@ impl Kernel {
     /// Decides a person's task, on the material shown to them: approved once enough different people approve,
     /// rejected by one. A task that has timed out, or been decided, is not decided again.
     pub async fn decide_logic_task(&self, ctx: &Ctx, id: Uuid, approve: bool, shown: &str, values: &Value, reason: &str) -> Result<Value> {
+        self.reach_task_record(ctx, id, "task").await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Uuid, String, String, String, i32, Vec<Uuid>, Vec<Uuid>, String)> =
             sqlx::query_as("select run_id, activation, role, digest, approvals, exclude, delegated, status from logic_task where tenant_id = $1 and id = $2 and kind = 'task' for update")
@@ -1798,6 +1829,7 @@ impl Kernel {
     }
 
     pub async fn delegate_logic_task(&self, ctx: &Ctx, id: Uuid, to: Uuid, reason: &str) -> Result<()> {
+        self.reach_task_record(ctx, id, "task").await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(String, i32, Vec<Uuid>, Vec<Uuid>, String)> =
             sqlx::query_as("select role, delegation, exclude, delegated, status from logic_task where tenant_id = $1 and id = $2 and kind = 'task' for update")
@@ -1848,6 +1880,7 @@ impl Kernel {
     /// Records one of a case's listed tasks as done; a task the case does not list, or whose dependencies are not
     /// done, is refused: a case owner directs listed work, never new work (FLC-HUMAN-007).
     pub async fn case_task_done(&self, ctx: &Ctx, id: Uuid, part: &str, values: &Value) -> Result<()> {
+        self.reach_task_record(ctx, id, "case").await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Uuid, String, Value, Vec<Uuid>, String)> =
             sqlx::query_as("select run_id, activation, detail, exclude, status from logic_task where tenant_id = $1 and id = $2 and kind = 'case' for update")
@@ -1899,6 +1932,7 @@ impl Kernel {
 
     /// Closes a case, by its owner, once its required tasks are done.
     pub async fn close_case(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
+        self.reach_task_record(ctx, id, "case").await?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row: Option<(Uuid, String, String, Value, Vec<Uuid>, String)> = sqlx::query_as(
             "select run_id, activation, role, detail, exclude, status from logic_task where tenant_id = $1 and id = $2 and kind = 'case' for update",
