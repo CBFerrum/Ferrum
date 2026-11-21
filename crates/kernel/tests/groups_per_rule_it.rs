@@ -252,7 +252,7 @@ fn a_records_key_keeps_its_owner_s_field_hiding() {
         let asha = w.person("asha@gp.test", &["HrUser", "SelfService"]).await;
         let declared: BTreeMap<String, BTreeSet<String>> =
             [("GpEmployee".to_string(), ["read", "read field group bank"].into_iter().map(String::from).collect())].into();
-        let key = Ctx { perms: Arc::new(asha.perms.limited_to(&declared, &BTreeSet::new())), ..asha.clone() };
+        let key = Ctx { perms: Arc::new(asha.perms.limited_to(&declared, &BTreeSet::new(), &asha.schema)), ..asha.clone() };
         assert!(!shows(&w.read(&key, w.bo).await, "bank_account"), "a key narrows; it never widens a group to others' records");
         assert!(shows(&w.read(&key, w.asha).await, "bank_account"));
     });

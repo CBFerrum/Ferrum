@@ -641,6 +641,7 @@ impl Hooks for App {
         AppRoutes::with_default_routes()
             .add_route(controllers::system::routes())
             .add_route(controllers::auth::routes())
+            .add_route(controllers::agents::routes())
             .add_route(controllers::accounts::routes())
             .add_route(controllers::meta::routes())
             .add_route(controllers::docs::routes())

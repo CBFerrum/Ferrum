@@ -1482,6 +1482,7 @@ pub(crate) mod tests {
             made: ferrum_kernel::Made::Key,
             effect_key: None,
             reads: Default::default(),
+            agent: None,
         }
     }
 

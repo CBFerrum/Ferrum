@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod admin;
+pub mod agents;
 pub mod apps;
 pub mod assistant;
 pub mod auth;

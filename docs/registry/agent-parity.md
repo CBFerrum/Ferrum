@@ -314,6 +314,13 @@ Actions without a contract allowed: 595
 | `server/src/controllers/admin.rs` | PUT | `/api/admin/users/{id}/roles` | `set_roles` | administration |
 | `server/src/controllers/admin.rs` | PUT | `/api/admin/users/{id}/scopes` | `set_scopes` | administration |
 | `server/src/controllers/admin.rs` | PUT | `/api/customize/{id}/active` | `toggle_custom` | administration |
+| `server/src/controllers/agents.rs` | DELETE | `/api/agents/{id}/keys/{key}` | `revoke_key` | identity |
+| `server/src/controllers/agents.rs` | PATCH | `/api/agents/{id}` | `change` | identity |
+| `server/src/controllers/agents.rs` | POST | `/api/agents/` | `create` | identity |
+| `server/src/controllers/agents.rs` | POST | `/api/agents/{id}/keys` | `make_key` | identity |
+| `server/src/controllers/agents.rs` | POST | `/api/agents/{id}/pause` | `pause` | identity |
+| `server/src/controllers/agents.rs` | POST | `/api/agents/{id}/resume` | `resume` | identity |
+| `server/src/controllers/agents.rs` | POST | `/api/agents/{id}/revoke` | `revoke` | identity |
 | `server/src/controllers/apps.rs` | DELETE | `/api/admin/apps/store` | `uninstall` | administration |
 | `server/src/controllers/apps.rs` | DELETE | `/api/admin/apps/upload` | `uninstall` | administration |
 | `server/src/controllers/apps.rs` | DELETE | `/api/admin/apps/{id}` | `uninstall` | administration |
@@ -401,9 +408,9 @@ Actions without a contract allowed: 595
 | `server/src/controllers/docs.rs` | DELETE | `/api/v1/{entity}/{id}` | `remove` | operation: *.delete |
 | `server/src/controllers/docs.rs` | PATCH | `/api/v1/{entity}/{id}` | `update` | operation: *.update |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}` | `create` | operation: *.create |
+| `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_actions/{action}` | `collection` | operation: *.{action} |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_bulk` | `bulk` | debt |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_bulk/jobs` | `bulk_job` | debt |
-| `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_actions/{action}` | `collection` | operation: *.{action} |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_calc` | `calc` | operation: preview_record |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/_import` | `import` | debt |
 | `server/src/controllers/docs.rs` | POST | `/api/v1/{entity}/{id}/actions/{action}` | `action` | operation: *.{action} |

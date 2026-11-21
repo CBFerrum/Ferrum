@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ferrum-kernel = { path = "../kernel" }
+ferrum-kernel = { path = "../kernel", features = ["agents-preview"] }
 ferrum-meta = { path = "../meta" }
 ferrum-domain = { path = "../domain" }
 async-trait = { workspace = true }

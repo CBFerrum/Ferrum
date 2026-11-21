@@ -2259,3 +2259,21 @@ call's words are kept, as every secret is.
 
 **Why.** Push services and service accounts ask for a token signed by a key the customer holds (TP-1). Which service,
 which claims and which address answer the exchange are description data, never Rust.
+
+## BD-93. Agents: who an agent acts for, and what it may hold
+
+**Decision.** An agent is a record one member owns (`crates/kernel/src/agent.rs`, A2-A3). Every request it makes is its
+owner's as they stand now, narrowed by its grants as a records key is: never more than the owner, never an
+administrator, a machine where a step-up is asked, and what it reads is held to its data policy as the assistant's is.
+Its row, its owner and the workspace's `agents` setting are read on every request, so a pause, a revocation or the
+switch refuses its next request on every replica. Its keys are rows of `api_key` whose person the database ties to the
+agent's owner; they never open the owner's account. Making, changing, pausing and revoking agents and their keys is a
+person's at a screen, never a key's (the owner's own included). Per class of operation the workspace and each agent say
+`allowed`, `needs_person` or `forbidden`: an administrator's choice for one agent stands as set; an owner's only makes
+it stricter and counts at least as the workspace's does now; `decides` and `unclassified` never run without a person.
+Narrowing keeps the actions the owner's rules name as narrow as those rules (records keys and app screens too), and a
+narrowed context takes a role-gated transition only with leave to change the record. Until every check an agent's call
+meets has landed (AG-9) the build refuses every agent credential.
+
+**Why.** An agent must be a bounded, accountable actor that a person authorised, not a program holding a person's whole
+reach (A2-A3 2.1). A workspace made stricter later must bind every agent an owner configured earlier.

@@ -80,10 +80,10 @@ impl Proof {
     }
 }
 
-/// The credentials that cannot step up: keys of every scope, app passwords and OAuth clients (MCP among them).
+/// The credentials that cannot step up: keys of every scope, app passwords, OAuth clients (MCP among them) and agents.
 pub fn cannot_step_up(c: crate::zones::Credential) -> bool {
     use crate::zones::Credential as C;
-    matches!(c, C::ApiKey | C::Scim | C::Dav | C::OAuth)
+    matches!(c, C::ApiKey | C::Scim | C::Dav | C::OAuth | C::Agent)
 }
 
 impl Ctx {

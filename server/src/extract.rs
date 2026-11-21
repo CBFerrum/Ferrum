@@ -416,7 +416,7 @@ impl FromRequestParts<AppContext> for Auth {
             if !records_may_call(parts.uri.path()) {
                 return Err(ApiError(Error::Forbidden(RECORDS_ONLY.into())));
             }
-            ctx.perms = Arc::new(ctx.perms.limited_to(&grants, &BTreeSet::new()));
+            ctx.perms = Arc::new(ctx.perms.limited_to(&grants, &BTreeSet::new(), &ctx.schema));
             ctx.is_admin = false;
         }
         // Support access is seen by the customer, request by request (crates/kernel/src/support.rs).
@@ -471,7 +471,7 @@ async fn screen_ctx(st: &crate::state::AppState, mut ctx: Ctx, app: &HeaderValue
     let Some((entities, own_entities)) = st.apps.screen_scope(ctx.tenant, app).await? else {
         return Err(ApiError(Error::Forbidden(format!("{app} has no screens in this workspace"))));
     };
-    ctx.perms = Arc::new(ctx.perms.limited_to(&entities, &own_entities));
+    ctx.perms = Arc::new(ctx.perms.limited_to(&entities, &own_entities, &ctx.schema));
     ctx.is_admin = false;
     Ok(ctx)
 }

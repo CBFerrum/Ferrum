@@ -908,7 +908,7 @@ async fn scenario() {
     assert!(dev.screen_scope(tenant, "board-late").await.unwrap().is_none(), "an app without an interface has no bridge");
     let (entities, own) = dev.screen_scope(tenant, "board").await.unwrap().expect("board has an interface");
     assert!(entities.is_empty() && own.contains("BdCard"), "{entities:?} {own:?}");
-    let screen = admin.perms.limited_to(&entities, &own);
+    let screen = admin.perms.limited_to(&entities, &own, &admin.schema);
     assert_eq!(screen.access("BdCard", Action::Read), Access::All);
     assert_eq!(screen.access("Customer", Action::Read), Access::None, "an administrator's page reaches only what the app declared");
     dev.set_enabled(&admin, "board-late", false).await.unwrap();

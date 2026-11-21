@@ -1303,7 +1303,7 @@ async fn list_keys(Auth(ctx): Auth, State(app): State<AppContext>) -> ApiResult<
         Option<String>,
         Option<Vec<String>>,
     )> = sqlx::query_as(
-        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at, scope, networks from api_key where tenant_id = $1 and user_id = $2 order by created_at desc",
+        "select id, name, prefix, created_at, expires_at, revoked_at, last_used_at, scope, networks from api_key where tenant_id = $1 and user_id = $2 and agent_id is null order by created_at desc",
     )
     .bind(ctx.tenant)
     .bind(ctx.user)
