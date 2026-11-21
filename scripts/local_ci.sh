@@ -283,6 +283,8 @@ job_replica() {
 
 job_release() {
   run "release build" cargo build --release --locked -p ferrum-server --bin ferrum || return
+  run "release: no agent is let in (agents-preview stays out of the server's own build)" \
+    sh -c '! cargo tree --locked -p ferrum-server -e features --edges normal --features saml,process | grep -q "agents-preview"'
   run "release: the server without apps" cargo check --locked -p ferrum-server --no-default-features
   run "release: the server with crm and helpdesk" cargo check --locked -p ferrum-server --no-default-features --features crm,helpdesk
 }
@@ -343,7 +345,9 @@ managed_tests() { # name args...
 
 job_window() {
   has weed || { skip window "$WEED_NEEDED"; return; }
-  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --example oidc_rehearsal --locked || return
+  # Apart: an example builds the dev-dependencies, which let agents in (agents-preview); the server binary never does.
+  run "window build (no apps)" cargo build -p ferrum-server --no-default-features --bin ferrum --locked || return
+  run "window build (its rehearsal client)" cargo build -p ferrum-server --no-default-features --example oidc_rehearsal --locked || return
   run "window rehearsal" scripts/window_rehearsal.sh "${WINDOW_OLD:-8a34644e}" "ferrum_windowrehearsal$SFX"
 }
 

@@ -575,6 +575,12 @@ async fn erase_account(tx: &mut Tx, ctx: &Ctx, id: Uuid, reason: &str) -> Result
     .bind((!ctx.user.is_nil()).then_some(ctx.user))
     .execute(&mut **tx)
     .await?;
+    // Their names, and their keys', go from the audit trail and the activity page too, as a passkey's do (AG-1-2-fix 4).
+    let agents: Vec<Uuid> =
+        sqlx::query_scalar("select id from agent where tenant_id = $1 and owner_id = $2").bind(tenant).bind(id).fetch_all(&mut **tx).await?;
+    for agent in agents {
+        redact(tx, ctx, "Agent", agent, &["name".to_string()], reason).await?;
+    }
     // A passkey's name ("Pat's phone") went into its history when they added it, also for one
     // removed since; it goes from there too.
     let passkeys: Vec<Uuid> =

@@ -490,10 +490,23 @@ fn taken(e: Error, name: &str) -> Error {
 }
 
 impl Kernel {
+    /// Whether this kernel lets agents in at all: refused (403 `agents_closed`) in a build without `agents-preview`
+    /// (until AG-9), or once [`Kernel::close_agents`] shut them out. Nobody makes an agent or a key, and no agent's
+    /// credential opens anything, while it refuses (AG-1-2-fix 5).
+    pub fn agents_admitted(&self) -> Result<()> {
+        admitted(OPEN && !self.agents_closed.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Shuts agents out of this kernel as a build without them does: what a test asks of such a build. Never opens.
+    pub fn close_agents(&self) {
+        self.agents_closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes an agent (§2.5, F1), at a screen: a member for themselves where the workspace lets members; an
     /// administrator for any active member, and the fields that are an administrator's. Refused while agents are off,
     /// and at the owner's 21st live agent (counted under a lock of the owner's, so two at once cannot pass it).
     pub async fn create_agent(&self, ctx: &Ctx, input: &Value) -> Result<Value> {
+        self.agents_admitted()?;
         ctx.person_only("making an agent")?;
         let n: New = serde_json::from_value(input.clone()).map_err(|e| Error::invalid(e.to_string()))?;
         let owner = n.owner.unwrap_or(ctx.user);
@@ -589,6 +602,9 @@ impl Kernel {
             return Err(Error::Conflict("this agent changed since it was read: read it again".into()));
         }
         let ws = settings(&mut tx, ctx.tenant).await?;
+        // Where members do not make their own, an agent an administrator made for one is the administrator's choice: its
+        // owner may narrow it, never widen it (AG-1-2-fix 1).
+        let narrow_only = !ctx.is_admin && row.created_by != row.owner_id && !ws.members_may_create;
         admins_only(ctx, c.data_policy.is_some(), "an agent's data policy")?;
         admins_only(ctx, c.approver_role.is_some(), "an agent's approver")?;
         admins_only(ctx, c.oauth_client.is_some(), "binding an OAuth client")?;
@@ -596,6 +612,9 @@ impl Kernel {
         let grants = match c.grants {
             Some(g) => {
                 check_grants(ctx, &g)?;
+                if narrow_only && !narrower(&g, &row.grants()?) {
+                    return Err(Error::Forbidden(ADMINS_CHOICE.into()));
+                }
                 g
             }
             None => row.grants()?,
@@ -616,7 +635,7 @@ impl Kernel {
                 }
                 l
             }
-            None => old_limits,
+            None => old_limits.clone(),
         };
         let (old_classes, old_admin) = (row.classes()?, row.admin_classes()?);
         let (classes, admin_classes) = match c.classes {
@@ -654,6 +673,15 @@ impl Kernel {
             Some(at) => future(at)?,
             None => row.expires_at,
         };
+        if narrow_only {
+            let old_nets: BTreeSet<&String> = row.networks.iter().flatten().collect();
+            let nets_widened = !old_nets.is_empty() && networks.as_ref().is_none_or(|n| n.iter().any(|x| !old_nets.contains(x)));
+            let later = row.expires_at.is_some_and(|old| expires_at.is_none_or(|new| new > old));
+            let limits_raised = limits.effective(&ws.caps) != limits_lowered(&limits.effective(&ws.caps), &old_limits.effective(&ws.caps));
+            if nets_widened || later || limits_raised {
+                return Err(Error::Forbidden(ADMINS_CHOICE.into()));
+            }
+        }
         let admin_classes: Vec<&str> = admin_classes.iter().map(|c| c.as_str()).collect();
         sqlx::query(
             "update agent set name = $3, grants = $4, classes = $5, admin_classes = $6, limits = $7, data_policy = $8, approver_role = $9, \
@@ -705,6 +733,18 @@ impl Kernel {
             Some("revoked") if state != "revoked" => return Err(Error::Conflict("this agent is revoked for good".into())),
             _ => {}
         }
+        // An agent an administrator paused is resumed only by an administrator (AG-1-2-fix 1).
+        if state == "active" && !ctx.is_admin {
+            let paused_by: Option<Uuid> = sqlx::query_scalar("select paused_by from agent where tenant_id = $1 and id = $2 and state = 'paused'")
+                .bind(ctx.tenant)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
+            if paused_by.is_some_and(|p| p != ctx.user) {
+                return Err(Error::Forbidden("an administrator paused this agent: ask one to resume it".into()));
+            }
+        }
         let changed = sqlx::query(
             "update agent set state = $3, paused_by = case when $3 = 'paused' then $4 end, \
              revoked_at = case when $3 = 'revoked' then now() end, revoked_by = case when $3 = 'revoked' then $4 end, updated_at = now() \
@@ -737,6 +777,7 @@ impl Kernel {
     /// its person the agent's owner, no scope. Never for a revoked agent, nor past five live keys (counted under the
     /// agent's row lock). The key, shown this once.
     pub async fn create_agent_key(&self, ctx: &Ctx, id: Uuid, name: &str, expires_at: Option<DateTime<Utc>>) -> Result<(Uuid, String)> {
+        self.agents_admitted()?;
         ctx.person_only("making an agent's key")?;
         let name = clean_name(name)?;
         let expires_at = future(expires_at)?;
@@ -768,7 +809,8 @@ impl Kernel {
             .bind(expires_at)
             .execute(&mut *tx)
             .await?;
-        crate::audit::record_admin(&mut tx, ctx, "Agent", id, "key", None, json!({"key": key, "name": name, "expires_at": expires_at})).await?;
+        let line = json!({"key": key, "name": name, "expires_at": expires_at, "owner": row.owner_id});
+        crate::audit::record_admin(&mut tx, ctx, "Agent", id, "key", None, line).await?;
         tx.commit().await?;
         Ok((key, format!("fk_{prefix}_{secret}")))
     }
@@ -777,7 +819,7 @@ impl Kernel {
     pub async fn revoke_agent_key(&self, ctx: &Ctx, id: Uuid, key: Uuid) -> Result<()> {
         ctx.person_only("revoking an agent's key")?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        locked(&mut tx, ctx, id).await?;
+        let row = locked(&mut tx, ctx, id).await?;
         let n = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and id = $2 and agent_id = $3 and revoked_at is null")
             .bind(ctx.tenant)
             .bind(key)
@@ -788,13 +830,14 @@ impl Kernel {
         if n == 0 {
             return Err(Error::NotFound("key".into()));
         }
-        crate::audit::record_admin(&mut tx, ctx, "Agent", id, "revoke_key", None, json!({"key": key})).await?;
+        crate::audit::record_admin(&mut tx, ctx, "Agent", id, "revoke_key", None, json!({"key": key, "owner": row.owner_id})).await?;
         tx.commit().await?;
         Ok(())
     }
 
     /// Agent `id`'s keys, newest first: never a secret.
     pub async fn agent_keys(&self, ctx: &Ctx, id: Uuid) -> Result<Vec<Value>> {
+        no_agent(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let row = seen(&mut tx, ctx, id).await?;
         let out = keys(&mut tx, ctx.tenant, row.id).await?;
@@ -805,6 +848,7 @@ impl Kernel {
     /// The agents `ctx` may see (§2.11): an administrator's, everyone's (of `owner` and in `state` when given); anyone
     /// else's, their own.
     pub async fn agents(&self, ctx: &Ctx, owner: Option<Uuid>, state: Option<&str>) -> Result<Vec<Value>> {
+        no_agent(ctx)?;
         if owner.is_some_and(|o| o != ctx.user) && !ctx.is_admin {
             return Err(Error::Forbidden("you see your own agents only".into()));
         }
@@ -828,6 +872,7 @@ impl Kernel {
 
     /// Agent `id` as the console shows it (§2.11): to its owner and to administrators.
     pub async fn agent(&self, ctx: &Ctx, id: Uuid) -> Result<Value> {
+        no_agent(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         seen(&mut tx, ctx, id).await?;
         let ws = settings(&mut tx, ctx.tenant).await?;
@@ -838,6 +883,7 @@ impl Kernel {
 
     /// Agent `id`'s days, the last `days` (1 to 400) of the workspace's, newest first.
     pub async fn agent_usage(&self, ctx: &Ctx, id: Uuid, days: u32) -> Result<Value> {
+        no_agent(ctx)?;
         if !(1..=400).contains(&days) {
             return Err(Error::field("days", "1 to 400"));
         }
@@ -860,6 +906,7 @@ impl Kernel {
     /// What was done with agent `id` (its audit lines), newest first, `limit` (1 to 200) at a time from before `before`;
     /// `next_before` while more are left.
     pub async fn agent_activity(&self, ctx: &Ctx, id: Uuid, before: Option<i64>, limit: u32) -> Result<Value> {
+        no_agent(ctx)?;
         if !(1..=200).contains(&limit) {
             return Err(Error::field("limit", "1 to 200"));
         }
@@ -885,7 +932,7 @@ impl Kernel {
     /// the staff networks, asked; its calls and its owner's counted across replicas; its owner's rights narrowed by its
     /// grants ([`as_agent`]).
     pub async fn agent_ctx(&self, ctx: &Ctx, agent: Uuid) -> Result<Ctx> {
-        admitted(OPEN)?;
+        self.agents_admitted()?;
         let invalid = || Error::Unauthorized("this agent's credential is not valid".into());
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
         let found: Option<Row> =
@@ -896,15 +943,16 @@ impl Kernel {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some(a) = found else { return Err(invalid()) };
-        let (kind, active, ws, nets, frozen): (String, bool, Option<Value>, Option<Value>, bool) = sqlx::query_as(
-            "select u.kind, u.is_active, t.settings->'agents', t.settings->'staff_networks', ferrum_workspace_frozen(t.id::text) \
+        let (kind, active, ws, nets, frozen, open): (String, bool, Option<Value>, Option<Value>, bool, bool) = sqlx::query_as(
+            "select u.kind, u.is_active, t.settings->'agents', t.settings->'staff_networks', ferrum_workspace_frozen(t.id::text), t.status = 'active' \
              from app_user u join tenant t on t.id = u.tenant_id where u.tenant_id = $1 and u.id = $2",
         )
         .bind(ctx.tenant)
         .bind(a.owner_id)
         .fetch_one(&mut *tx)
         .await?;
-        if a.state == "revoked" || a.expires_at.is_some_and(|at| at <= Utc::now()) {
+        // A workspace that is not active opens no agent, as it opens no key (AG-1-2-fix 8).
+        if a.state == "revoked" || a.expires_at.is_some_and(|at| at <= Utc::now()) || !open {
             return Err(invalid());
         }
         let ws = Settings::of(ws.as_ref());
@@ -939,8 +987,10 @@ impl Kernel {
         let limits = a.limits()?.effective(&ws.caps);
         let minute = Duration::from_secs(60);
         let calls = self.db.count_hit(&format!("agent|{}|{}", ctx.tenant, a.id), minute).await?;
-        let owners = self.db.count_hit(&format!("agent-owner|{}|{}", ctx.tenant, a.owner_id), minute).await?;
-        let over = calls > i64::from(limits.calls_per_minute) || owners > i64::from(ws.caps.owner_calls_per_minute);
+        // Its owner's share is counted only for a call its own limit lets through: one agent looping is refused alone
+        // (AG-1-2-fix 7).
+        let over = calls > i64::from(limits.calls_per_minute)
+            || self.db.count_hit(&format!("agent-owner|{}|{}", ctx.tenant, a.owner_id), minute).await? > i64::from(ws.caps.owner_calls_per_minute);
         if !frozen {
             let counted = if over { "refused" } else { "calls" };
             sqlx::query(AssertSqlSafe(format!(
@@ -978,6 +1028,40 @@ impl Kernel {
     }
 }
 
+/// What an owner is told when they try to widen what an administrator chose for their agent.
+const ADMINS_CHOICE: &str = "an administrator chose this for your agent: you may narrow it, pause it or revoke it, never widen it";
+
+/// The console is a person's: an agent reads none of it (AG-1-2-fix 8).
+fn no_agent(ctx: &Ctx) -> Result<()> {
+    match ctx.agent {
+        Some(_) => Err(Error::Forbidden("an agent's console is its owner's and administrators', at a screen".into())),
+        None => Ok(()),
+    }
+}
+
+/// Whether `new` grants nothing `old` does not: each verb on each entity given by `old` there or on `*` (an own-records
+/// verb by the verb itself too), and capabilities only within those named (none named: every one).
+fn narrower(new: &Grants, old: &Grants) -> bool {
+    let gives = |entity: &str, verb: &str| [entity, "*"].iter().any(|e| old.entities.get(*e).is_some_and(|v| v.contains(verb)));
+    let entities =
+        new.entities.iter().all(|(e, verbs)| verbs.iter().all(|v| gives(e, v) || v.strip_suffix(" (own records)").is_some_and(|base| gives(e, base))));
+    let covered = |op: &str| old.operations.iter().any(|o| o == op || o.strip_suffix('*').is_some_and(|p| op.starts_with(p)));
+    let operations = old.operations.is_empty() || (!new.operations.is_empty() && new.operations.iter().all(|op| covered(op)));
+    entities && operations
+}
+
+/// `new`'s limits, none above `old`'s: what an owner may set on an administrator's agent.
+fn limits_lowered(new: &Effective, old: &Effective) -> Effective {
+    Effective {
+        calls_per_minute: new.calls_per_minute.min(old.calls_per_minute),
+        rows_per_minute: new.rows_per_minute.min(old.rows_per_minute),
+        records_per_call: new.records_per_call.min(old.records_per_call),
+        asks_per_day: new.asks_per_day.min(old.asks_per_day),
+        upload_mb_per_day: new.upload_mb_per_day.min(old.upload_mb_per_day),
+        money: old.money.clone(),
+    }
+}
+
 /// The only place an agent's reach is made: its owner's context narrowed by its grants (named actions kept as narrow as
 /// the owner's rules), never an administrator, its data policy the egress of what it reads, a machine where a step-up
 /// is asked, made [`Made::Agent`], carrying [`AgentCtx`].
@@ -997,6 +1081,10 @@ fn as_agent(ctx: &Ctx, a: &Row, ws: &Settings) -> Result<Ctx> {
         perms: Arc::new(ctx.perms.limited_to(&grants.entities, &BTreeSet::new(), &ctx.schema)),
         is_admin: false,
         admin_since: None,
+        // Never the system, an app or a key's write, whatever context it was built from (AG-1-2-fix 8).
+        is_system: false,
+        app: None,
+        effect_key: None,
         egress: Some(Arc::new(a.data_policy()?)),
         proof: Proof::Machine,
         made: Made::Agent,
