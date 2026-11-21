@@ -771,7 +771,22 @@ impl Ctx {
         self.now_local().date_naive()
     }
 
+    /// The `user` of an expression evaluated ON A RECORD (a field's default or computation, a validation,
+    /// `read_only_if`, an action's condition, a transition's guard, `refuse_if`, a record's targets, a solution's rule on
+    /// a save): `user.roles` holds the roles given and those held by default, as a record's own roles do (BD-89, second
+    /// read). An expression evaluated for an approval, a recipient, an automation's audience or a task takes
+    /// [`Ctx::user_value_given`]. This pair is the one place that decides.
     pub fn user_value(&self) -> Value {
+        let mut user = self.user_value_given();
+        if !self.default_roles.is_empty() {
+            user["roles"] = json!(self.roles.iter().chain(&self.default_roles).collect::<Vec<_>>());
+        }
+        user
+    }
+
+    /// The `user` of an expression evaluated for an approval, a recipient, an automation's audience or a task:
+    /// `user.roles` holds the roles given alone.
+    pub fn user_value_given(&self) -> Value {
         let now = self.now_local();
         let mut user = json!({
             "today": now.format("%Y-%m-%d").to_string(),

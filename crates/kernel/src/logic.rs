@@ -813,7 +813,8 @@ async fn evidence(k: &Kernel, ctx: &Ctx, entity: &str, record: Option<Uuid>, r: 
 }
 
 fn user_fact(ctx: &Ctx) -> Value {
-    json!({"id": ctx.user.to_string(), "email": ctx.email, "roles": ctx.roles})
+    // A solution's rule on a save is a record's rule: both sets (Ctx::user_value).
+    json!({"id": ctx.user.to_string(), "email": ctx.email, "roles": ctx.roles.iter().chain(&ctx.default_roles).collect::<Vec<_>>()})
 }
 
 /// Active releases' rules, for every entity of every workspace (registered by [`Kernel::boot`]).

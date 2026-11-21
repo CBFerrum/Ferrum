@@ -89,6 +89,8 @@ const ENTITIES: &str = r#"
   fields:
     - {name: patient, type: link, to: Patient, required: true}
     - {name: reason, type: data, required: true}
+    # The government pack's shape: filled from the filer's role, by a default (S4-P4-fix-3b).
+    - {name: filer, type: data, default_expr: "'Patients' in user.roles ? user.email : null"}
   actions:
     - {name: confirm, label: Confirm, permission: read, roles: [Patients], effects: [{type: set_fields, values: {reason: "'confirmed'"}}]}
 - name: Claim
@@ -102,7 +104,12 @@ const ENTITIES: &str = r#"
 "#;
 
 fn catalog() -> Catalog {
-    let dir = std::env::temp_dir().join(format!("ferrum-portal-it-{}", std::process::id()));
+    catalog_with("package: clinic\nversion: 0.1.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors, portal: true, portal_default: true}\n")
+}
+
+/// The catalog with `clinic` as its package.yaml says.
+fn catalog_with(clinic: &str) -> Catalog {
+    let dir = std::env::temp_dir().join(format!("ferrum-portal-it-{}-{}", std::process::id(), Uuid::now_v7().simple()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("school/entities")).unwrap();
     std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core").canonicalize().unwrap(), dir.join("core")).unwrap();
@@ -110,17 +117,15 @@ fn catalog() -> Catalog {
     std::fs::write(
         dir.join("school/package.yaml"),
         "package: school\nversion: 0.1.0\nlabel: School\ndepends: [core]\nworkflows:\n  - name: Visit flow\n    entity: Visit\n    initial_state: Open\n    \
-         states:\n      - {name: Open, edit_roles: [Patients]}\n      - {name: Seen}\n    transitions:\n      - {action: see, from: Open, to: Seen, roles: [Patients]}\n",
+         states:\n      - {name: Open, edit_roles: [Patients]}\n      - {name: Seen}\n    transitions:\n      - {action: see, from: Open, to: Seen, roles: [Patients]}\n\
+         approvals:\n  - entity: Visit\n    on: {action: confirm}\n    \
+         policy: {steps: [{label: Staff, when: \"'Patients' in user.roles\", approvers: {expr: \"'admin@school.test'\"}}]}\n",
     )
     .unwrap();
     std::fs::write(dir.join("school/entities/school.yaml"), ENTITIES).unwrap();
     // A package whose customer role every portal person holds (installed by the test that needs it).
     std::fs::create_dir_all(dir.join("clinic")).unwrap();
-    std::fs::write(
-        dir.join("clinic/package.yaml"),
-        "package: clinic\nversion: 0.1.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors, portal: true, portal_default: true}\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("clinic/package.yaml"), clinic).unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
     c
@@ -815,7 +820,9 @@ async fn files(k: &Kernel, admin: &Ctx) {
 async fn held_by_default() -> (Arc<Kernel>, Ctx, Ctx, Ctx, Uuid, Uuid) {
     let (k, _, admin) = school().await;
     k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
-    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Visit", "read": true, "write": true, "via": "patient.email"}))).await.unwrap();
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Visit", "read": true, "write": true, "create": true, "via": "patient.email"})))
+        .await
+        .unwrap();
     k.set_role_portal(&admin, "Patients", true).await.unwrap();
     k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
     let mut visits = vec![];
@@ -1038,4 +1045,103 @@ async fn marks_together() {
     marking.commit().await.unwrap();
     let e = saving.await.unwrap().expect_err("the default mark came first");
     assert!(e.to_string().contains("every portal person"), "{e}");
+}
+
+#[test]
+fn a_records_expressions_see_a_default_role_an_approvals_do_not() {
+    run(expressions());
+}
+
+/// An expression on a record sees the roles held by default in `user.roles` (a default filling a field from the role);
+/// one for an approval sees the roles given only (S4-P4-fix-3b, point 1).
+async fn expressions() {
+    let (k, admin, ann, bob, anns, bobs) = held_by_default().await;
+    let patient = k.get(&admin, "Visit", anns, false).await.unwrap()["patient"].clone();
+    let filed = k.insert(&ann, "Visit", obj(json!({"patient": patient, "reason": "Filed"}))).await.expect("a default holder files");
+    assert_eq!(filed["filer"], json!("ann@x.test"), "the record's default sees the role: {filed:?}");
+    // The approval step asked when the asker holds Patients: given, Bob is asked; by default, Ann is not.
+    k.run_action(&ann, "Visit", anns, "confirm", json!({})).await.expect("ran");
+    assert_eq!(k.get(&admin, "Visit", anns, false).await.unwrap()["reason"], json!("confirmed"), "no approval for a default holder");
+    let _ = k.run_action(&bob, "Visit", bobs, "confirm", json!({})).await;
+    assert_ne!(k.get(&admin, "Visit", bobs, false).await.unwrap()["reason"], json!("confirmed"), "given: the approval is asked");
+}
+
+#[test]
+fn explain_access_names_a_default_roles_rule() {
+    run(explained());
+}
+
+/// Why a portal person may read: the rule of the role every portal person holds, said so (S4-P4-fix-3b, point 2).
+async fn explained() {
+    let (k, admin, ann, _, _, _) = held_by_default().await;
+    let why = k.explain_access(&admin, ann.user, "Visit", Action::Read, None, None).await.unwrap();
+    assert_eq!(why["default_roles"], json!(["Patients"]), "{why}");
+    let rules = why["rules"].as_array().unwrap();
+    assert!(rules.iter().any(|r| r["role"] == "Patients" && r["held_by_every_portal_person"] == json!(true)), "{why}");
+}
+
+#[test]
+fn a_package_version_dropping_the_portal_mark_audits_the_default() {
+    run(package_drop());
+}
+
+/// A package version that drops a role's portal mark records the default mark it clears (S4-P4-fix-3b, point 5).
+async fn package_drop() {
+    let (k, tenant, _) = school().await;
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    // The next version of the package, on the same database.
+    let db = k.db.clone();
+    let next = catalog_with("package: clinic\nversion: 0.2.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors}\n");
+    let k = Kernel::boot(db, next, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot the next version");
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (portal, default): (bool, bool) =
+        sqlx::query_as("select portal, portal_default from role where tenant_id = $1 and name = 'Visitors'").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_event where tenant_id = $1 and entity = 'Role' and action = 'portal_default' and diff->>'role' = 'Visitors' and diff->>'portal_default' = 'false'",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((portal, default, audited), (false, false, 1), "the cleared default mark is in the audit trail");
+}
+
+#[test]
+fn a_pack_and_a_conflict_rule_take_roles_in_one_order() {
+    run(lock_order());
+}
+
+/// A pack's install takes its roles in name order, as a conflict rule does: one holding the first role makes the install
+/// wait before it takes the second, so the two never deadlock (S4-P4-fix-3b, point 4).
+async fn lock_order() {
+    let (k, tenant, admin) = school().await;
+    for r in ["Patients", "Staff"] {
+        k.set_role_permission(&admin, r, &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+        k.set_role_portal(&admin, r, true).await.unwrap();
+    }
+    let options = ferrum_kernel::pack::ExportOptions { name: "both".into(), label: "Both".into(), version: 1, records: vec![] };
+    let mut pack = k.export_pack(&admin, &options).await.unwrap();
+    // Both made defaults, listed against name order.
+    let mut roles: Vec<Value> = pack["roles"].as_array().unwrap().iter().filter(|r| r["name"] == "Patients" || r["name"] == "Staff").cloned().collect();
+    roles.reverse();
+    for r in &mut roles {
+        r["portal_default"] = json!(true);
+    }
+    pack["roles"] = json!(roles);
+    let screen = Ctx { made: ferrum_kernel::ctx::Made::Screen, ..admin.clone() };
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    let mut holder = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("select 1 from role where tenant_id = $1 and name = 'Patients' for share").bind(tenant).execute(&mut *holder).await.unwrap();
+    let (k2, s2) = (k.clone(), screen.clone());
+    let install = tokio::spawn(async move { k2.install_pack(&s2, &pack, &digest).await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sqlx::query("select 1 from role where tenant_id = $1 and name = 'Staff' for share")
+        .bind(tenant)
+        .execute(&mut *holder)
+        .await
+        .expect("the second role is free");
+    holder.commit().await.unwrap();
+    install.await.unwrap().expect("the install went on once the first role was free");
 }
