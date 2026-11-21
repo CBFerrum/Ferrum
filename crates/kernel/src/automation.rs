@@ -466,7 +466,7 @@ pub async fn preview_mail(
     };
     let id = found.as_ref().and_then(|d| d.get("id")).and_then(Value::as_str).and_then(|s| s.parse().ok());
     let doc = ent.cel_view(&Value::Object(found.unwrap_or_default()), &ctx.schema);
-    Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value(), &[])?, id))
+    Ok((render_mail(body.unwrap_or("''"), template, &doc, &ctx.user_value_given(), &[])?, id))
 }
 
 pub fn validate_actions(actions: &Value) -> Result<Vec<Step>> {
@@ -1097,7 +1097,7 @@ async fn run_one(
             settings.extend(settings_used(&action)?);
         }
         let ctx = crate::settings::with(k, &ctx, &mut tx, settings).await?.into_owned();
-        let user = ctx.user_value();
+        let user = ctx.user_value_given();
         let links = match ctx.schema.entity(entity).cloned() {
             Some(ent) => crate::links::load(k, &ctx, &mut tx, &ent, cel_doc, &names).await?,
             None => Value::Object(Map::new()),

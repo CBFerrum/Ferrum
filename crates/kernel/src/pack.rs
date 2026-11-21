@@ -955,6 +955,14 @@ impl Kernel {
         }
         // What follows sees the entities and fields just defined.
         let ctx = &Ctx { schema: Arc::new(schema), ..ctx.clone() };
+        // The pack's roles locked in name order before any changes, the order a conflict rule takes them in, so two
+        // administrators wait for each other instead of one being aborted (BD-89, second read).
+        let names: Vec<&str> = pack.roles.iter().map(|r| r.name.as_str()).collect();
+        sqlx::query("select 1 from role where tenant_id = $1 and name = any($2) order by name for update")
+            .bind(ctx.tenant)
+            .bind(&names)
+            .fetch_all(&mut **tx)
+            .await?;
         for role in &pack.roles {
             let status = self.install_role(ctx, tx, role, here.contains(&role.name)).await.map_err(|e| about(&format!("role {}", role.name), e))?;
             let status = if here.contains(&role.name) { status } else { "created" };

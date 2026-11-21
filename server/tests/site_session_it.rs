@@ -717,3 +717,25 @@ fn a_released_site_address_ends_its_sessions() {
         assert_eq!((serde_json::from_str::<Value>(&body).unwrap()["site"].clone(), user_of(&body)), (json!("other"), Value::Null), "{body}");
     });
 }
+
+/// The screen is told the roles a portal person holds by default, which their records' roles count (S4-P4-fix-3b, 3).
+#[test]
+#[serial]
+fn me_names_the_roles_held_by_default() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        sqlx::query("insert into role (tenant_id, name, portal, portal_default) values ($1, 'Patrons', true, true)")
+            .bind(s.tenant)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        w.k.invalidate_tenant_users(s.tenant);
+        let (status, _, body) = call(&w.r, Method::GET, PORTAL, "/api/auth/me", &[(SESSION(), &w.customer)], &[("sec-fetch-site", "same-origin")]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let me: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((me["user"]["roles"].clone(), me["user"]["default_roles"].clone()), (json!([]), json!(["Patrons"])), "{body}");
+    });
+}
