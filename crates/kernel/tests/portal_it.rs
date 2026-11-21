@@ -82,6 +82,17 @@ const ENTITIES: &str = r#"
   kind: child
   fields:
     - {name: file, type: attach}
+- name: Visit
+  label: Visit
+  kind: master
+  title_field: reason
+  fields:
+    - {name: patient, type: link, to: Patient, required: true}
+    - {name: reason, type: data, required: true}
+    # The government pack's shape: filled from the filer's role, by a default (S4-P4-fix-3b).
+    - {name: filer, type: data, default_expr: "'Patients' in user.roles ? user.email : null"}
+  actions:
+    - {name: confirm, label: Confirm, permission: read, roles: [Patients], effects: [{type: set_fields, values: {reason: "'confirmed'"}}]}
 - name: Claim
   label: Claim
   kind: document
@@ -93,19 +104,28 @@ const ENTITIES: &str = r#"
 "#;
 
 fn catalog() -> Catalog {
-    let dir = std::env::temp_dir().join(format!("ferrum-portal-it-{}", std::process::id()));
+    catalog_with("package: clinic\nversion: 0.1.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors, portal: true, portal_default: true}\n")
+}
+
+/// The catalog with `clinic` as its package.yaml says.
+fn catalog_with(clinic: &str) -> Catalog {
+    let dir = std::env::temp_dir().join(format!("ferrum-portal-it-{}-{}", std::process::id(), Uuid::now_v7().simple()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("school/entities")).unwrap();
     std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/core").canonicalize().unwrap(), dir.join("core")).unwrap();
-    std::fs::write(dir.join("school/package.yaml"), "package: school\nversion: 0.1.0\nlabel: School\ndepends: [core]\n").unwrap();
+    // A visit's workflow: its roles are a record's roles, which a role every portal person holds may fill (BD-89).
+    std::fs::write(
+        dir.join("school/package.yaml"),
+        "package: school\nversion: 0.1.0\nlabel: School\ndepends: [core]\nworkflows:\n  - name: Visit flow\n    entity: Visit\n    initial_state: Open\n    \
+         states:\n      - {name: Open, edit_roles: [Patients]}\n      - {name: Seen}\n    transitions:\n      - {action: see, from: Open, to: Seen, roles: [Patients]}\n\
+         approvals:\n  - entity: Visit\n    on: {action: confirm}\n    \
+         policy: {steps: [{label: Staff, when: \"'Patients' in user.roles\", approvers: {expr: \"'admin@school.test'\"}}]}\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("school/entities/school.yaml"), ENTITIES).unwrap();
     // A package whose customer role every portal person holds (installed by the test that needs it).
     std::fs::create_dir_all(dir.join("clinic")).unwrap();
-    std::fs::write(
-        dir.join("clinic/package.yaml"),
-        "package: clinic\nversion: 0.1.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors, portal: true, portal_default: true}\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("clinic/package.yaml"), clinic).unwrap();
     let c = Catalog::load_dir(&dir).expect("catalog");
     let _ = std::fs::remove_dir_all(&dir);
     c
@@ -360,12 +380,12 @@ async fn defaults_reach() {
     k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
     let ann = k.load_ctx(admin.tenant, ann.user, None, "it".into()).await.unwrap();
     let bob = k.load_ctx(admin.tenant, bob.user, None, "it".into()).await.unwrap();
-    assert_eq!(ann.roles, vec!["Patients".to_string()], "held without being given");
+    assert_eq!((ann.roles.clone(), ann.default_roles.clone()), (vec![], vec!["Patients".to_string()]), "held without being given");
     assert_eq!(reach(&k, &ann, "Patient", &all, "name").await, names(&["Ann"]));
     assert_eq!(reach(&k, &bob, "Patient", &all, "name").await, names(&["Bob"]));
     // A member as a customer (a site session, BD-89): outside, no administrator, the portal roles alone.
     let me = k.customer_ctx(admin.tenant, admin.user, None, "it".into(), None).await.unwrap();
-    assert!(me.outside && !me.is_admin && me.roles == vec!["Patients".to_string()], "{:?}", me.roles);
+    assert!(me.outside && !me.is_admin && me.roles.is_empty() && me.default_roles == vec!["Patients".to_string()], "{:?}", me.default_roles);
     assert_eq!(reach(&k, &me, "Patient", &all, "name").await, names(&["Admin"]));
     // Unmarked as a portal role, it is no default either.
     k.set_role_portal(&admin, "Patients", false).await.unwrap();
@@ -793,4 +813,335 @@ async fn files(k: &Kernel, admin: &Ctx) {
     k.file_info(&ava, hers).await.expect("she reads her own record's file");
     k.file_info(&editor, hers).await.expect("and so do its other readers");
     assert!(k.attachments(&editor, "Application", app).await.unwrap().iter().any(|f| f["id"] == json!(hers)));
+}
+
+/// The school with the role Patients every portal person holds (reaching their own patient and visits), Ann holding it
+/// only so, Bob given it as well, and one visit of each.
+async fn held_by_default() -> (Arc<Kernel>, Ctx, Ctx, Ctx, Uuid, Uuid) {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Visit", "read": true, "write": true, "create": true, "via": "patient.email"})))
+        .await
+        .unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    k.set_role_portal_default(&admin, "Patients", true).await.unwrap();
+    let mut visits = vec![];
+    for (name, email) in [("Ann", "ann@x.test"), ("Bob", "bob@x.test")] {
+        let patient = id_of(&k.insert(&admin, "Patient", obj(json!({"name": name, "email": email}))).await.unwrap());
+        visits.push(id_of(&k.insert(&admin, "Visit", obj(json!({"patient": patient.to_string(), "reason": name}))).await.unwrap()));
+    }
+    let ann = portal_person(&k, &admin, "ann@x.test", &[]).await;
+    let bob = portal_person(&k, &admin, "bob@x.test", &["Patients"]).await;
+    // Ann's two sets are `defaults_reach`'s to check: here each door is.
+    assert_eq!(bob.roles, vec!["Patients".to_string()]);
+    (k, admin, ann, bob, visits[0], visits[1])
+}
+
+#[test]
+fn a_default_role_counts_for_a_records_actions_transitions_and_states() {
+    run(record_roles());
+}
+
+/// Held by default, a role counts for an action's, a transition's and a workflow state's roles on a record the person
+/// may reach, and for the portal's own pages (BD-89, second read); never on a record out of reach.
+async fn record_roles() {
+    let (k, _, ann, bob, anns, bobs) = held_by_default().await;
+    k.run_action(&ann, "Visit", anns, "confirm", json!({})).await.expect("an action's role");
+    assert!(k.run_action(&ann, "Visit", bobs, "confirm", json!({})).await.is_err(), "not on another's record");
+    k.update(&ann, "Visit", anns, obj(json!({"reason": "Ann, again"})), None).await.expect("a state's edit role");
+    k.transition(&ann, "Visit", anns, "see", None).await.expect("a transition's role");
+    assert!(k.transition(&ann, "Visit", bobs, "see", None).await.is_err(), "not on another's record");
+    k.transition(&bob, "Visit", bobs, "see", None).await.expect("given");
+    let pages: Vec<String> = k.portal_entities(&ann).await.unwrap().iter().filter_map(|e| e["name"].as_str().map(str::to_string)).collect();
+    assert!(pages.contains(&"Visit".to_string()), "the portal's pages: {pages:?}");
+}
+
+/// A task and a case of the role Patients, opened in a run of a stand-in solution about `subject` (a visit), or about no
+/// record.
+async fn tasks_of(k: &Kernel, admin: &Ctx, subject: Option<Uuid>) -> (Uuid, Uuid) {
+    let mut tx = k.db.system_tx().await.unwrap();
+    let release: Uuid = sqlx::query_scalar(
+        "insert into logic_release (tenant_id, solution, version, source_digest, artifact_digest, compiler, profile, source, release) \
+         values ($1, 'clinic', $2, 'x', 'x', 'x', 'core', '{}', '{}') returning id",
+    )
+    .bind(admin.tenant)
+    .bind(format!("1.0.{}", Uuid::now_v7().simple()).chars().take(32).collect::<String>())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let run: Uuid = sqlx::query_scalar(
+        "insert into logic_run (tenant_id, release_id, solution, process, business_key, trigger, workflow_id, subject_entity, subject_id) \
+         values ($1, $2, 'clinic', 'visits', $3, '{}', 'w', case when $4::uuid is null then null else 'Visit' end, $4) returning id",
+    )
+    .bind(admin.tenant)
+    .bind(release)
+    .bind(Uuid::now_v7().to_string())
+    .bind(subject)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let mut ids = vec![];
+    for kind in ["task", "case"] {
+        ids.push(
+            sqlx::query_scalar::<_, Uuid>(
+                "insert into logic_task (tenant_id, run_id, activation, kind, label, role, digest) values ($1, $2, $3, $3, 'Look', 'Patients', 'd') returning id",
+            )
+            .bind(admin.tenant)
+            .bind(run)
+            .bind(kind)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        );
+    }
+    tx.commit().await.unwrap();
+    (ids[0], ids[1])
+}
+
+#[test]
+fn a_default_role_decides_no_task_or_case() {
+    run(no_tasks());
+}
+
+/// A task or a case is decided and seen by those GIVEN its role (BD-89, second read): held by default, a role lists,
+/// opens, decides and closes nothing.
+async fn no_tasks() {
+    let (k, admin, ann, bob, anns, bobs) = held_by_default().await;
+    // Each about the record of the person asking, so that the role alone decides.
+    let (task, case) = tasks_of(&k, &admin, Some(anns)).await;
+    let (btask, bcase) = tasks_of(&k, &admin, Some(bobs)).await;
+    let listed = |v: Vec<Value>, id: Uuid| v.iter().any(|t| t["id"] == json!(id));
+    assert!(!listed(k.my_logic_tasks(&ann).await.unwrap(), task), "not listed by default");
+    assert!(listed(k.my_logic_tasks(&bob).await.unwrap(), btask), "listed when given");
+    assert!(matches!(k.logic_task(&ann, task).await, Err(Error::NotFound(_))), "not opened by default");
+    k.logic_task(&bob, btask).await.expect("opened when given");
+    let e = k.decide_logic_task(&ann, task, true, "stale", &json!({}), "").await.expect_err("not decided by default");
+    assert!(matches!(e, Error::Forbidden(_)), "{e}");
+    let e = k.decide_logic_task(&bob, btask, true, "stale", &json!({}), "").await.expect_err("past the role, the stale digest");
+    assert!(!matches!(e, Error::Forbidden(_) | Error::NotFound(_)), "given: {e}");
+    assert!(matches!(k.close_case(&ann, case).await, Err(Error::Forbidden(_))), "a case not closed by default");
+    assert!(!matches!(k.close_case(&bob, bcase).await, Err(Error::Forbidden(_) | Error::NotFound(_))), "given: past the role");
+}
+
+#[test]
+fn a_portal_person_decides_only_tasks_on_records_they_read() {
+    run(tasks_as_caller());
+}
+
+/// A portal person given a task's role lists, opens, decides, hands on and closes it only when they may read, as
+/// themselves, the record it is about; one about no record is the workspace's (task-decide-as-caller).
+async fn tasks_as_caller() {
+    let (k, admin, _, bob, anns, bobs) = held_by_default().await;
+    let (theirs, their_case) = tasks_of(&k, &admin, Some(anns)).await;
+    let (nobodys, _) = tasks_of(&k, &admin, None).await;
+    let (own, _) = tasks_of(&k, &admin, Some(bobs)).await;
+    let listed: Vec<Value> = k.my_logic_tasks(&bob).await.unwrap();
+    let ids: Vec<&Value> = listed.iter().map(|t| &t["id"]).collect();
+    assert!(ids.contains(&&json!(own)) && !ids.contains(&&json!(theirs)) && !ids.contains(&&json!(nobodys)), "{listed:?}");
+    for task in [theirs, nobodys] {
+        assert!(matches!(k.logic_task(&bob, task).await, Err(Error::NotFound(_))), "not opened");
+        let e = k.decide_logic_task(&bob, task, true, "stale", &json!({}), "").await.expect_err("not decided");
+        assert!(matches!(e, Error::NotFound(_)), "{e}");
+        let e = k.delegate_logic_task(&bob, task, admin.user, "away").await.expect_err("not handed on");
+        assert!(matches!(e, Error::NotFound(_)), "{e}");
+    }
+    assert!(matches!(k.close_case(&bob, their_case).await, Err(Error::NotFound(_))), "another's case");
+    assert!(matches!(k.case_task_done(&bob, their_case, "x", &json!({})).await, Err(Error::NotFound(_))), "another's case's part");
+}
+
+#[test]
+fn a_default_role_uses_no_connection() {
+    run(no_connection());
+}
+
+/// A connection's `roles` are roles GIVEN (BD-89, second read).
+async fn no_connection() {
+    let (k, admin, ann, bob, _, _) = held_by_default().await;
+    let input = serde_json::from_value(json!({"name": "clinic", "label": "Clinic", "enabled": true,
+        "description": {"base": "https://clinic.example.test", "roles": ["Patients"], "operations": {"ping": {"path": "/ping"}}}}))
+    .unwrap();
+    k.save_connection_def(&admin, None, &input).await.unwrap();
+    let call = ferrum_kernel::connections::Call { connection: "clinic".into(), operation: "nope".into(), ..Default::default() };
+    let e = ferrum_kernel::connections::call(&k, &ann, None, &call).await.expect_err("not by default");
+    assert!(matches!(e, Error::Forbidden(_)), "{e}");
+    let e = ferrum_kernel::connections::call(&k, &bob, None, &call).await.expect_err("given: past the role, no such operation");
+    assert!(!matches!(e, Error::Forbidden(_)) && e.to_string().contains("no operation"), "{e}");
+}
+
+#[test]
+fn a_pack_changes_an_existing_roles_marks_only_at_a_screen() {
+    run(pack_marks_existing());
+}
+
+/// A pack may bring a NEW role marked for the portal; changing an existing role's portal mark, or any role's default
+/// mark, is an administrator's at a screen (BD-89, second read, 3).
+async fn pack_marks_existing() {
+    let (k, _, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    let options = ferrum_kernel::pack::ExportOptions { name: "patients".into(), label: "Patients".into(), version: 1, records: vec![] };
+    let pack = k.export_pack(&admin, &options).await.unwrap();
+    let (elsewhere, other) = workspace(&k, "elsewhere").await;
+    let screen = Ctx { made: ferrum_kernel::ctx::Made::Screen, ..other.clone() };
+    // A new role: a key may bring it marked.
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    k.install_pack(&other, &pack, &digest).await.expect("a new portal role by a key");
+    // The same role, unmarked here: a key may not mark it again.
+    k.set_role_portal(&other, "Patients", false).await.unwrap();
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    let e = k.install_pack(&other, &pack, &digest).await.expect_err("an existing role's portal mark by a key");
+    assert!(e.to_string().contains("Patients") && e.to_string().contains("screen"), "{e}");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let portal: bool =
+        sqlx::query_scalar("select portal from role where tenant_id = $1 and name = 'Patients'").bind(elsewhere).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(!portal, "nothing changed");
+    k.install_pack(&screen, &pack, &digest).await.expect("at a screen");
+    // Held by every portal person here; the pack says not: a key may not clear it either.
+    k.set_role_portal_default(&other, "Patients", true).await.unwrap();
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    let e = k.install_pack(&other, &pack, &digest).await.expect_err("a default mark cleared by a key");
+    assert!(e.to_string().contains("Patients"), "{e}");
+}
+
+#[test]
+fn portal_marks_change_together_and_are_audited() {
+    run(marks_together());
+}
+
+/// Removing the portal mark records the default mark it clears; the two marks an administrator sets together are one
+/// change, both or neither (BD-89, second read, 4).
+async fn marks_together() {
+    let (k, tenant, admin) = school().await;
+    k.set_role_permission(&admin, "Patients", &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+    k.set_role_portal_marks(&admin, "Patients", true, Some(true)).await.unwrap();
+    k.set_role_portal(&admin, "Patients", false).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let cleared: i64 = sqlx::query_scalar(
+        "select count(*) from audit_event where tenant_id = $1 and entity = 'Role' and action = 'portal_default' and diff = '{\"role\": \"Patients\", \"portal_default\": false}'::jsonb",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(cleared, 1, "the cleared default mark is in the audit trail");
+    k.set_role_permission(&admin, "Staff", &rule(json!({"entity": "Patient", "read": true}))).await.unwrap();
+    k.set_role_conflict(&admin, "Patients", "Staff", "kept apart").await.unwrap();
+    k.set_role_portal_marks(&admin, "Patients", true, Some(true)).await.expect_err("a conflict rule names it");
+    let mut tx = k.db.system_tx().await.unwrap();
+    let marks: (bool, bool) =
+        sqlx::query_as("select portal, portal_default from role where tenant_id = $1 and name = 'Patients'").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(marks, (false, false), "neither mark");
+    // A conflict rule saved while the role is being made one every portal person holds waits for it, and is refused.
+    k.delete_role_conflict(&admin, "Patients", "Staff").await.unwrap();
+    k.set_role_portal(&admin, "Patients", true).await.unwrap();
+    let mut marking = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("update role set portal_default = true where tenant_id = $1 and name = 'Patients'").bind(tenant).execute(&mut *marking).await.unwrap();
+    let (k2, admin2) = (k.clone(), admin.clone());
+    let saving = tokio::spawn(async move { k2.set_role_conflict(&admin2, "Patients", "Staff", "kept apart").await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    marking.commit().await.unwrap();
+    let e = saving.await.unwrap().expect_err("the default mark came first");
+    assert!(e.to_string().contains("every portal person"), "{e}");
+}
+
+#[test]
+fn a_records_expressions_see_a_default_role_an_approvals_do_not() {
+    run(expressions());
+}
+
+/// An expression on a record sees the roles held by default in `user.roles` (a default filling a field from the role);
+/// one for an approval sees the roles given only (S4-P4-fix-3b, point 1).
+async fn expressions() {
+    let (k, admin, ann, bob, anns, bobs) = held_by_default().await;
+    let patient = k.get(&admin, "Visit", anns, false).await.unwrap()["patient"].clone();
+    let filed = k.insert(&ann, "Visit", obj(json!({"patient": patient, "reason": "Filed"}))).await.expect("a default holder files");
+    assert_eq!(filed["filer"], json!("ann@x.test"), "the record's default sees the role: {filed:?}");
+    // The approval step asked when the asker holds Patients: given, Bob is asked; by default, Ann is not.
+    k.run_action(&ann, "Visit", anns, "confirm", json!({})).await.expect("ran");
+    assert_eq!(k.get(&admin, "Visit", anns, false).await.unwrap()["reason"], json!("confirmed"), "no approval for a default holder");
+    let _ = k.run_action(&bob, "Visit", bobs, "confirm", json!({})).await;
+    assert_ne!(k.get(&admin, "Visit", bobs, false).await.unwrap()["reason"], json!("confirmed"), "given: the approval is asked");
+}
+
+#[test]
+fn explain_access_names_a_default_roles_rule() {
+    run(explained());
+}
+
+/// Why a portal person may read: the rule of the role every portal person holds, said so (S4-P4-fix-3b, point 2).
+async fn explained() {
+    let (k, admin, ann, _, _, _) = held_by_default().await;
+    let why = k.explain_access(&admin, ann.user, "Visit", Action::Read, None, None).await.unwrap();
+    assert_eq!(why["default_roles"], json!(["Patients"]), "{why}");
+    let rules = why["rules"].as_array().unwrap();
+    assert!(rules.iter().any(|r| r["role"] == "Patients" && r["held_by_every_portal_person"] == json!(true)), "{why}");
+}
+
+#[test]
+fn a_package_version_dropping_the_portal_mark_audits_the_default() {
+    run(package_drop());
+}
+
+/// A package version that drops a role's portal mark records the default mark it clears (S4-P4-fix-3b, point 5).
+async fn package_drop() {
+    let (k, tenant, _) = school().await;
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    // The next version of the package, on the same database.
+    let db = k.db.clone();
+    let next = catalog_with("package: clinic\nversion: 0.2.0\nlabel: Clinic\ndepends: [school]\nroles:\n  - {name: Visitors}\n");
+    let k = Kernel::boot(db, next, HookRegistry::default(), KernelSettings::default(), None).await.expect("boot the next version");
+    k.install_packages(tenant, &["clinic".into()]).await.unwrap();
+    let mut tx = k.db.system_tx().await.unwrap();
+    let (portal, default): (bool, bool) =
+        sqlx::query_as("select portal, portal_default from role where tenant_id = $1 and name = 'Visitors'").bind(tenant).fetch_one(&mut *tx).await.unwrap();
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_event where tenant_id = $1 and entity = 'Role' and action = 'portal_default' and diff->>'role' = 'Visitors' and diff->>'portal_default' = 'false'",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!((portal, default, audited), (false, false, 1), "the cleared default mark is in the audit trail");
+}
+
+#[test]
+fn a_pack_and_a_conflict_rule_take_roles_in_one_order() {
+    run(lock_order());
+}
+
+/// A pack's install takes its roles in name order, as a conflict rule does: one holding the first role makes the install
+/// wait before it takes the second, so the two never deadlock (S4-P4-fix-3b, point 4).
+async fn lock_order() {
+    let (k, tenant, admin) = school().await;
+    for r in ["Patients", "Staff"] {
+        k.set_role_permission(&admin, r, &rule(json!({"entity": "Patient", "read": true, "via": "email"}))).await.unwrap();
+        k.set_role_portal(&admin, r, true).await.unwrap();
+    }
+    let options = ferrum_kernel::pack::ExportOptions { name: "both".into(), label: "Both".into(), version: 1, records: vec![] };
+    let mut pack = k.export_pack(&admin, &options).await.unwrap();
+    // Both made defaults, listed against name order.
+    let mut roles: Vec<Value> = pack["roles"].as_array().unwrap().iter().filter(|r| r["name"] == "Patients" || r["name"] == "Staff").cloned().collect();
+    roles.reverse();
+    for r in &mut roles {
+        r["portal_default"] = json!(true);
+    }
+    pack["roles"] = json!(roles);
+    let screen = Ctx { made: ferrum_kernel::ctx::Made::Screen, ..admin.clone() };
+    let digest = k.plan_pack(&screen, &pack).await.unwrap()["digest"].as_str().unwrap().to_string();
+    let mut holder = k.db.tenant_tx(tenant).await.unwrap();
+    sqlx::query("select 1 from role where tenant_id = $1 and name = 'Patients' for share").bind(tenant).execute(&mut *holder).await.unwrap();
+    let (k2, s2) = (k.clone(), screen.clone());
+    let install = tokio::spawn(async move { k2.install_pack(&s2, &pack, &digest).await });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    sqlx::query("select 1 from role where tenant_id = $1 and name = 'Staff' for share")
+        .bind(tenant)
+        .execute(&mut *holder)
+        .await
+        .expect("the second role is free");
+    holder.commit().await.unwrap();
+    install.await.unwrap().expect("the install went on once the first role was free");
 }

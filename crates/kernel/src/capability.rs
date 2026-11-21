@@ -129,7 +129,9 @@ fn allowed_as(ctx: &Ctx, cap: &Capability, granted: bool) -> bool {
         _ => false,
     };
     cap.permissions.iter().all(|p| match p.split_once(':') {
-        Some(("role", role)) => ctx.is_admin || ctx.has_role(role),
+        // A transition's role is a record's role (BD-89, second read): one every portal person holds counts there only.
+        Some(("role", role)) if matches!(cap.operation, Operation::Transition(_)) => ctx.has_record_role(role),
+        Some(("role", role)) => ctx.has_role(role),
         Some((entity, _)) if named && cap.entity.as_deref() == Some(entity) => true,
         Some((entity, action)) => Action::parse(action).is_some_and(|a| ctx.perms.access(entity, a) != Access::None),
         None => p == "admin" && (ctx.is_admin || granted),
@@ -939,5 +941,27 @@ impl IntoPointer for Error {
             Error::Refused { code, status, message, .. } => Error::Refused { code, status, message, pointer: Some(pointer.to_string()) },
             other => other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A role every portal person holds counts for a transition's role and for no other `role:` grant (BD-89, second
+    /// read); a role given counts for both.
+    #[test]
+    fn a_default_role_grants_only_a_transition() {
+        let mut ctx = Ctx::system(Uuid::nil(), Arc::new(ferrum_meta::Schema::default()));
+        (ctx.is_admin, ctx.is_system, ctx.perms) = (false, false, Arc::new(crate::ctx::PermSet::default()));
+        ctx.default_roles = vec!["Patients".into()];
+        let cap = |operation: Operation| {
+            capability("x.y".into(), "1.0.0", "x", Some("Visit"), operation, "X".into(), Effect::Query, vec!["role:Patients".into()], json!({}), json!({}), "")
+        };
+        assert!(allowed(&ctx, &cap(Operation::Transition("see".into()))), "a transition's role");
+        assert!(!allowed(&ctx, &cap(Operation::Action("see".into()))), "any other role: grant");
+        (ctx.roles, ctx.default_roles) = (vec!["Patients".into()], vec![]);
+        assert!(allowed(&ctx, &cap(Operation::Action("see".into()))), "given");
     }
 }

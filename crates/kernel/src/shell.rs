@@ -1606,6 +1606,7 @@ impl Kernel {
             .await?;
         tx.commit().await?;
         self.hosts.clear();
+        self.sessions.retain(|k, _| k.0 != ctx.tenant);
         Ok(until)
     }
 
@@ -1638,6 +1639,7 @@ impl Kernel {
         .await?;
         tx.commit().await?;
         self.hosts.clear();
+        self.sessions.retain(|k, _| k.0 != tenant);
         Ok((tenant, until))
     }
 
@@ -1691,6 +1693,7 @@ impl Kernel {
         .bind(if mail { 0 } else { days })
         .fetch_one(&mut **tx)
         .await?;
+        end_host_sessions(tx, tenant, Some(host)).await?;
         Ok(until)
     }
 
@@ -1702,8 +1705,10 @@ impl Kernel {
             .execute(&mut *tx)
             .await?
             .rows_affected();
+        end_host_sessions(&mut tx, tenant, None).await?;
         tx.commit().await?;
         self.hosts.clear();
+        self.sessions.retain(|k, _| k.0 != tenant);
         Ok(n)
     }
 
@@ -2026,6 +2031,23 @@ async fn primary_in(tx: &mut crate::db::Tx, tenant: Uuid, host: &str) -> Result<
     .execute(&mut **tx)
     .await?;
     sqlx::query("update tenant_host set is_primary = true where tenant_id = $1 and host = $2").bind(tenant).bind(host).execute(&mut **tx).await?;
+    Ok(())
+}
+
+/// Ends the site sessions made for `host` of `tenant` (every site host's when `None`): a released address takes its
+/// sessions with it, so a host given back, moved or given to another app never revives one (BD-89, second read).
+async fn end_host_sessions(tx: &mut crate::db::Tx, tenant: Uuid, host: Option<&str>) -> Result<()> {
+    let ended: Vec<Uuid> = sqlx::query_scalar(
+        "update user_session set revoked_at = now() where tenant_id = $1 and host is not null and ($2::text is null or host = $2) \
+         and revoked_at is null returning id",
+    )
+    .bind(tenant)
+    .bind(host)
+    .fetch_all(&mut **tx)
+    .await?;
+    for sid in ended {
+        crate::gate::session_ended(tx, tenant, sid, "site_address_released").await?;
+    }
     Ok(())
 }
 

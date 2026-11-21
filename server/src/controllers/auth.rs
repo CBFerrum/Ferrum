@@ -548,7 +548,7 @@ async fn me(MeAuth(ctx, setup_only): MeAuth, State(app): State<AppContext>, head
     };
     Ok(Json(json!({
         "tenant": ctx.tenant,
-        "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "is_admin": ctx.is_admin, "roles": ctx.roles},
+        "user": {"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "is_admin": ctx.is_admin, "roles": ctx.roles, "default_roles": ctx.default_roles},
         "default_company": ctx.default_company,
         "scopes": ctx.scopes,
         "fiscal_year_start_month": ctx.fy_start_month,

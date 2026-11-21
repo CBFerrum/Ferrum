@@ -225,10 +225,7 @@ async fn set_role_portal(Auth(ctx): Auth, State(app): State<AppContext>, Path(ro
     if p.portal_default == Some(true) && !p.portal {
         return Err(ApiError(Error::field("portal_default", "only a portal role is held by every portal person")));
     }
-    k.set_role_portal(&ctx, role.trim(), p.portal).await?;
-    if let Some(on) = p.portal_default {
-        k.set_role_portal_default(&ctx, role.trim(), on).await?;
-    }
+    k.set_role_portal_marks(&ctx, role.trim(), p.portal, p.portal_default).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

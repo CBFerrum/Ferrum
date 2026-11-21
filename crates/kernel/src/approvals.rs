@@ -195,7 +195,7 @@ fn holds(ent: &EffEntity, ctx: &Ctx, doc: &Doc, src: Option<&str>) -> Result<boo
     let Some(src) = src else { return Ok(true) };
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
     let e = Expr::compile(src).map_err(Error::invalid)?;
-    e.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value() }).map_err(|m| Error::invalid(format!("approval '{src}': {m}")))
+    e.eval_bool(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value_given() }).map_err(|m| Error::invalid(format!("approval '{src}': {m}")))
 }
 
 /// How long a person has been an administrator before an `administrators` step counts them (BD-83).
@@ -230,7 +230,8 @@ async fn resolve(ctx: &Ctx, tx: &mut Tx, ent: &EffEntity, doc: &Doc, who: &Appro
         (_, Some(src)) => {
             let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
             let e = Expr::compile(src).map_err(Error::invalid)?;
-            e.eval(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value() }).map_err(|m| Error::invalid(format!("approvers '{src}': {m}")))?
+            e.eval(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value_given() })
+                .map_err(|m| Error::invalid(format!("approvers '{src}': {m}")))?
         }
         _ => Value::Null,
     };
@@ -417,8 +418,9 @@ fn first_states(ent: &EffEntity, ctx: &Ctx, doc: &Doc, policy: &ApprovalPolicy) 
 fn count(ent: &EffEntity, ctx: &Ctx, doc: &Doc, src: &str) -> Result<i64> {
     let view = ent.cel_view(&Value::Object(doc.clone()), &ctx.schema);
     let e = Expr::compile(src).map_err(Error::invalid)?;
-    let v =
-        e.eval(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value() }).map_err(|m| Error::invalid(format!("approval need '{src}': {m}")))?;
+    let v = e
+        .eval(&Scope { doc: &view, old: None, parent: None, user: &ctx.user_value_given() })
+        .map_err(|m| Error::invalid(format!("approval need '{src}': {m}")))?;
     v.as_i64()
         .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
         .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))

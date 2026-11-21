@@ -377,7 +377,7 @@ pub fn reply_error(reply: &Value) -> Option<Error> {
 }
 
 pub fn user_json(ctx: &Ctx) -> Value {
-    json!({"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "roles": ctx.roles, "is_admin": ctx.is_admin})
+    json!({"id": ctx.user, "email": ctx.email, "full_name": ctx.full_name, "roles": ctx.roles, "default_roles": ctx.default_roles, "is_admin": ctx.is_admin})
 }
 
 impl PluginHost {

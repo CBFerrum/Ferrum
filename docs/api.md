@@ -1203,8 +1203,9 @@ oauth_tokens_revoked, assignments_moved, assignments_left_open, tasks_handed_on,
 /api/admin/scim/groups/{id}/roles` `{roles}`.
 
 Why someone may or may not do something: `GET
-/api/admin/access/explain?user=&entity=&action=&record=&roles=` → `{allowed, reason, roles, rules:
-[{role, entity, if_owner, where}], scoped_by, simulated, record?: {id, reached}}`. `action` is read,
+/api/admin/access/explain?user=&entity=&action=&record=&roles=` → `{allowed, reason, roles, default_roles, rules:
+[{role, entity, if_owner, where, held_by_every_portal_person}], scoped_by, simulated, record?: {id, reached}}`
+(`default_roles`: a portal person's roles held because every portal person holds them, BD-89; none when simulated). `action` is read,
 write, create, delete, submit, cancel, export or import; `record` asks about one record; `roles`
 (comma-separated) answers for those roles instead of the person's own. Nothing changes by asking.
 

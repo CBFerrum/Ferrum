@@ -584,7 +584,11 @@ pub struct Ctx {
     pub user: Uuid,
     pub email: String,
     pub full_name: String,
+    /// The roles the person was given: what [`Ctx::has_role`] asks.
     pub roles: Vec<String>,
+    /// The portal roles held only because every portal person holds them (BD-89, second read): they count for entity
+    /// rights (in `perms`) and for a record's action and transition roles ([`Ctx::has_record_role`]), nowhere else.
+    pub default_roles: Vec<String>,
     pub is_admin: bool,
     /// Since when they have been an administrator (BD-83): an `administrators` approval step counts them after seven
     /// days, and an app can ask the same of an asker. None for everyone else.
@@ -742,6 +746,7 @@ impl Ctx {
             email: "system@ferrum.local".into(),
             full_name: "System".into(),
             roles: vec![],
+            default_roles: vec![],
             is_admin: true,
             admin_since: None,
             is_system: true,
@@ -805,7 +810,22 @@ impl Ctx {
         self.now_local().date_naive()
     }
 
+    /// The `user` of an expression evaluated ON A RECORD (a field's default or computation, a validation,
+    /// `read_only_if`, an action's condition, a transition's guard, `refuse_if`, a record's targets, a solution's rule on
+    /// a save): `user.roles` holds the roles given and those held by default, as a record's own roles do (BD-89, second
+    /// read). An expression evaluated for an approval, a recipient, an automation's audience or a task takes
+    /// [`Ctx::user_value_given`]. This pair is the one place that decides.
     pub fn user_value(&self) -> Value {
+        let mut user = self.user_value_given();
+        if !self.default_roles.is_empty() {
+            user["roles"] = json!(self.roles.iter().chain(&self.default_roles).collect::<Vec<_>>());
+        }
+        user
+    }
+
+    /// The `user` of an expression evaluated for an approval, a recipient, an automation's audience or a task:
+    /// `user.roles` holds the roles given alone.
+    pub fn user_value_given(&self) -> Value {
         let now = self.now_local();
         let mut user = json!({
             "today": now.format("%Y-%m-%d").to_string(),
@@ -829,8 +849,15 @@ impl Ctx {
         user
     }
 
+    /// A role given to the person (every role for an administrator). A role held only by default is not one.
     pub fn has_role(&self, role: &str) -> bool {
         self.is_admin || self.roles.iter().any(|r| r == role)
+    }
+
+    /// [`Ctx::has_role`], or a role every portal person holds: only for a record's action, transition and state roles, on
+    /// a record the rules let them reach (BD-89, second read).
+    pub fn has_record_role(&self, role: &str) -> bool {
+        self.has_role(role) || self.default_roles.iter().any(|r| r == role)
     }
 
     pub fn require(&self, entity: &str, action: Action) -> Result<Access> {
@@ -1088,7 +1115,7 @@ pub fn action_scope(ctx: &Ctx, ent: &EffEntity, name: &str, perm: Action) -> Res
 /// entity's description (`may_run`) both ask this.
 pub fn action_gate(ctx: &Ctx, ent: &EffEntity, def: &ferrum_meta::ActionDef) -> Result<RowScope> {
     let scope = action_scope(ctx, ent, &def.name, Action::parse(&def.permission).unwrap_or(Action::Write))?;
-    if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_role(r)) {
+    if !def.roles.is_empty() && !def.roles.iter().any(|r| ctx.has_record_role(r)) {
         return Err(Error::Forbidden(format!("'{}' is for {}", def.label, def.roles.join(", "))));
     }
     Ok(scope)
@@ -1104,7 +1131,7 @@ pub fn transition_gate(ctx: &Ctx, ent: &EffEntity, t: &ferrum_meta::WorkflowTran
         }
         return row_scope(ctx, ent, Action::Write);
     }
-    if !t.roles.iter().any(|r| ctx.has_role(r)) {
+    if !t.roles.iter().any(|r| ctx.has_record_role(r)) {
         return Err(Error::Forbidden(format!("'{}' requires one of the roles: {}", t.action, t.roles.join(", "))));
     }
     // Narrowed (a records key, an app's screen, an agent): the role is the person's, not a grant of the narrowing, so it

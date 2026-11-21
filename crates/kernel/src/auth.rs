@@ -122,7 +122,11 @@ pub struct CtxCore {
     pub read_only: bool,
     pub email: String,
     pub full_name: String,
+    /// The roles given.
     pub roles: Vec<String>,
+    /// The portal roles held only because every portal person holds them (BD-89): in `perms`, and asked by
+    /// [`Ctx::has_record_role`]; never in `roles`.
+    pub default_roles: Vec<String>,
     pub is_admin: bool,
     /// Since when (BD-83).
     pub admin_since: Option<DateTime<Utc>>,
@@ -707,13 +711,15 @@ impl Kernel {
         let kind = if customer && kind != "guest" { "portal".to_string() } else { kind };
         let outside = matches!(kind.as_str(), "portal" | "guest");
         let is_admin = is_admin && !outside;
-        let roles: Vec<(String, Option<DateTime<Utc>>)> =
+        // (name, until, given): a role every portal person holds and they were not given is held by default only.
+        let roles: Vec<(String, Option<DateTime<Utc>>, bool)> =
             match kind.as_str() {
                 "guest" => vec![],
                 // The portal roles given, and those every portal person holds (BD-89).
                 "portal" => {
                     sqlx::query_as(
-                        "select r.name, case when r.portal_default then null else ur.expires_at end from role r \
+                        "select r.name, case when ur.expires_at > now() then ur.expires_at end, \
+                           ur.user_id is not null and (ur.expires_at is null or ur.expires_at > now()) from role r \
                          left join user_role ur on ur.tenant_id = r.tenant_id and ur.role = r.name and ur.user_id = $2 \
                          where r.tenant_id = $1 and r.portal \
                            and (r.portal_default or (ur.user_id is not null and (ur.expires_at is null or ur.expires_at > now()))) order by r.name",
@@ -724,7 +730,7 @@ impl Kernel {
                     .await?
                 }
                 _ => sqlx::query_as(
-                    "select role, expires_at from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now()) order by role",
+                    "select role, expires_at, true from user_role where tenant_id = $1 and user_id = $2 and (expires_at is null or expires_at > now()) order by role",
                 )
                 .bind(tenant)
                 .bind(user)
@@ -732,7 +738,12 @@ impl Kernel {
                 .await?,
             };
         let until = roles.iter().filter_map(|r| r.1).min();
-        let roles: Vec<String> = roles.into_iter().map(|r| r.0).collect();
+        // Two sets (BD-89, second read): a role held only by default counts for entity rights and a record's action and
+        // transition roles ([`Ctx::has_record_role`]), and nowhere else a role is asked for.
+        let (given, default): (Vec<_>, Vec<_>) = roles.into_iter().partition(|r| r.2);
+        let roles: Vec<String> = given.into_iter().map(|r| r.0).collect();
+        let default_roles: Vec<String> = default.into_iter().map(|r| r.0).collect();
+        let held: Vec<String> = roles.iter().chain(&default_roles).cloned().collect();
         let scope_rows: Vec<(String, Uuid, bool)> = sqlx::query_as("select entity, value, is_default from user_scope where tenant_id = $1 and user_id = $2")
             .bind(tenant)
             .bind(user)
@@ -753,7 +764,7 @@ impl Kernel {
                 default_company = Some(*one);
             }
         }
-        let mut perms = PermSet::load(&mut tx, tenant, &roles, is_admin, &schema).await?;
+        let mut perms = PermSet::load(&mut tx, tenant, &held, is_admin, &schema).await?;
         perms.own_by_address = own_by_address;
         let role_perms = if is_admin { Some(Arc::new(PermSet::load(&mut tx, tenant, &roles, false, &schema).await?)) } else { None };
         tx.commit().await?;
@@ -770,6 +781,7 @@ impl Kernel {
             email,
             full_name,
             roles,
+            default_roles,
             is_admin,
             admin_since: admin_since.filter(|_| is_admin),
             token_version,
@@ -1012,6 +1024,7 @@ impl Kernel {
             email: core.email.clone(),
             full_name: core.full_name.clone(),
             roles,
+            default_roles: core.default_roles.clone(),
             is_admin,
             admin_since: core.admin_since.filter(|_| is_admin),
             is_system: false,
@@ -1224,13 +1237,6 @@ impl Kernel {
     pub async fn set_role_conflict(&self, ctx: &Ctx, a: &str, b: &str, reason: &str) -> Result<()> {
         Self::require_admin(ctx)?;
         let (a, b, reason) = (a.trim(), b.trim(), reason.trim());
-        {
-            let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-            for r in [a, b] {
-                not_held_by_every_portal_person(&mut tx, ctx.tenant, r, "a conflict rule").await?;
-            }
-            tx.commit().await?;
-        }
         if a == b {
             return Err(Error::field("role_b", "a role is never in conflict with itself"));
         }
@@ -1238,6 +1244,17 @@ impl Kernel {
             return Err(Error::field("reason", "say why one person may not hold both (up to 500 characters)"));
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        // Under the lock the default mark takes (the role's row), so a role cannot become one every portal person holds
+        // while a conflict rule naming it is being saved.
+        sqlx::query("select 1 from role where tenant_id = $1 and name in ($2, $3) order by name for share")
+            .bind(ctx.tenant)
+            .bind(a)
+            .bind(b)
+            .fetch_all(&mut *tx)
+            .await?;
+        for r in [a, b] {
+            not_held_by_every_portal_person(&mut tx, ctx.tenant, r, "a conflict rule").await?;
+        }
         // The database orders the pair, as its check does.
         sqlx::query(
             "insert into role_conflict (tenant_id, role_a, role_b, reason, created_by) values ($1, least($2::text, $3::text), greatest($2::text, $3::text), $4, $5) \
@@ -1665,14 +1682,35 @@ impl Kernel {
                 return Err(Error::field("portal", format!("its rules must change first: {}", problems.join("; "))));
             }
         }
-        // Unmarked, it is no longer held by every portal person either.
+        // Unmarked, it is no longer held by every portal person either, and the audit trail says so.
+        let default: Option<bool> = sqlx::query_scalar("select portal_default from role where tenant_id = $1 and name = $2 for update")
+            .bind(ctx.tenant)
+            .bind(role)
+            .fetch_optional(&mut **tx)
+            .await?;
         sqlx::query("update role set portal = $3, portal_default = portal_default and $3 where tenant_id = $1 and name = $2")
             .bind(ctx.tenant)
             .bind(role)
             .bind(portal)
             .execute(&mut **tx)
             .await?;
+        if default == Some(true) && !portal {
+            crate::audit::record_admin(tx, ctx, "Role", Uuid::nil(), "portal_default", None, serde_json::json!({"role": role, "portal_default": false}))
+                .await?;
+        }
         notify_users(tx, ctx.tenant, None).await
+    }
+
+    /// A role's portal mark and, when given, its default mark, in one transaction: both or neither (BD-89, second read).
+    pub async fn set_role_portal_marks(&self, ctx: &Ctx, role: &str, portal: bool, default: Option<bool>) -> Result<()> {
+        let mut tx = self.db.tenant_tx(ctx.tenant).await?;
+        self.set_role_portal_in(ctx, &mut tx, role, portal).await?;
+        if let Some(on) = default {
+            self.set_role_portal_default_in(ctx, &mut tx, role, on).await?;
+        }
+        tx.commit().await?;
+        self.invalidate_tenant_users(ctx.tenant);
+        Ok(())
     }
 
     /// Makes a portal role one every portal person holds without being given it, or not (docs/builder/decisions.md

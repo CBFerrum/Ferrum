@@ -139,6 +139,21 @@ impl Kernel {
             .execute(&mut *tx)
             .await?;
             for role in &pkg.manifest.roles {
+                // A version that drops the portal mark clears the default mark too, and the audit trail says so (BD-89).
+                if !role.portal {
+                    let cleared: bool =
+                        sqlx::query_scalar("select exists (select 1 from role where tenant_id = $1 and name = $2 and package = $3 and portal_default)")
+                            .bind(tenant)
+                            .bind(&role.name)
+                            .bind(name)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    if cleared {
+                        let diff = serde_json::json!({"role": role.name, "portal_default": false, "by": format!("package {name}")});
+                        crate::audit::record_as(&mut tx, tenant, None, "package", crate::audit::ADMIN, "Role", Uuid::nil(), "portal_default", None, diff)
+                            .await?;
+                    }
+                }
                 // A package's portal mark follows its version (BD-02); its roles stay its own. Whether every portal person
                 // holds one is the workspace's once it has the role: set on install, never again (BD-89).
                 sqlx::query(

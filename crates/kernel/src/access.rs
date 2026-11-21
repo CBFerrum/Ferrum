@@ -32,10 +32,13 @@ impl Kernel {
             who.perms = Arc::new(PermSet::load(&mut tx, ctx.tenant, &roles, false, &ctx.schema).await?);
             who.is_admin = false;
             who.roles = roles;
+            who.default_roles = vec![];
         }
         if who.is_admin {
             tx.commit().await?;
-            return Ok(json!({"allowed": true, "reason": "administrators may do anything in their workspace", "roles": who.roles, "simulated": simulated}));
+            return Ok(
+                json!({"allowed": true, "reason": "administrators may do anything in their workspace", "roles": who.roles, "default_roles": who.default_roles, "simulated": simulated}),
+            );
         }
         let column = format!("can_{}", action.verb());
         let rules: Vec<Value> = sqlx::query_scalar(AssertSqlSafe(format!(
@@ -43,22 +46,33 @@ impl Kernel {
              where tenant_id = $1 and role = any($2) and entity in ($3, '*') and {column} order by role, rule_key"
         )))
         .bind(ctx.tenant)
-        .bind(&who.roles)
+        .bind(who.roles.iter().chain(&who.default_roles).collect::<Vec<_>>())
         .bind(entity)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
+        // A rule of a role every portal person holds says so (BD-89).
+        let rules: Vec<Value> = rules
+            .into_iter()
+            .map(|mut r| {
+                let held = r["role"].as_str().is_some_and(|n| who.default_roles.iter().any(|d| d == n));
+                r["held_by_every_portal_person"] = json!(held);
+                r
+            })
+            .collect();
         let verb = action.verb();
         let scope = match row_scope(&who, &ent, action) {
             Ok(scope) => scope,
             Err(_) => {
                 let reason = format!("none of their roles allows them to {verb} {entity}");
-                return Ok(json!({"allowed": false, "reason": reason, "roles": who.roles, "rules": rules, "simulated": simulated}));
+                return Ok(
+                    json!({"allowed": false, "reason": reason, "roles": who.roles, "default_roles": who.default_roles, "rules": rules, "simulated": simulated}),
+                );
             }
         };
         let scopes: Vec<&str> = scope.conds.iter().map(|c| c.field.as_deref().unwrap_or("id")).collect();
         let mut answer = json!({
-            "allowed": true, "roles": who.roles, "rules": rules, "scoped_by": scopes, "simulated": simulated,
+            "allowed": true, "roles": who.roles, "default_roles": who.default_roles, "rules": rules, "scoped_by": scopes, "simulated": simulated,
             "reason": if scope.is_unrestricted() { format!("they may {verb} every {entity}") } else { format!("they may {verb} some of {entity}: those their rules reach") },
         });
         if let Some(id) = record {
@@ -91,7 +105,9 @@ impl Kernel {
     /// BD-02), for the portal's generic pages, each with what they may do there; reference data they
     /// may read whole to pick from is not listed. Empty for someone holding none.
     pub async fn portal_entities(&self, ctx: &Ctx) -> Result<Vec<Value>> {
-        if ctx.roles.is_empty() {
+        // Entity rights: the roles held by default count (BD-89).
+        let held: Vec<String> = ctx.roles.iter().chain(&ctx.default_roles).cloned().collect();
+        if held.is_empty() {
             return Ok(vec![]);
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -100,7 +116,7 @@ impl Kernel {
              where p.tenant_id = $1 and r.portal and p.role = any($2) and p.can_read and (p.if_owner or p.via is not null) order by 1",
         )
         .bind(ctx.tenant)
-        .bind(&ctx.roles)
+        .bind(&held)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;

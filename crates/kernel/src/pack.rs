@@ -955,8 +955,16 @@ impl Kernel {
         }
         // What follows sees the entities and fields just defined.
         let ctx = &Ctx { schema: Arc::new(schema), ..ctx.clone() };
+        // The pack's roles locked in name order before any changes, the order a conflict rule takes them in, so two
+        // administrators wait for each other instead of one being aborted (BD-89, second read).
+        let names: Vec<&str> = pack.roles.iter().map(|r| r.name.as_str()).collect();
+        sqlx::query("select 1 from role where tenant_id = $1 and name = any($2) order by name for update")
+            .bind(ctx.tenant)
+            .bind(&names)
+            .fetch_all(&mut **tx)
+            .await?;
         for role in &pack.roles {
-            let status = self.install_role(ctx, tx, role).await.map_err(|e| about(&format!("role {}", role.name), e))?;
+            let status = self.install_role(ctx, tx, role, here.contains(&role.name)).await.map_err(|e| about(&format!("role {}", role.name), e))?;
             let status = if here.contains(&role.name) { status } else { "created" };
             summary.entry("roles").or_default().add(role.name.clone(), status);
         }
@@ -997,7 +1005,8 @@ impl Kernel {
         Ok(summary)
     }
 
-    async fn install_role(&self, ctx: &Ctx, tx: &mut Tx, role: &RoleDef) -> Result<&'static str> {
+    /// `existed`: the role was the workspace's before this install began (one an earlier step of it made is new).
+    async fn install_role(&self, ctx: &Ctx, tx: &mut Tx, role: &RoleDef, existed: bool) -> Result<&'static str> {
         if MACHINE_ROLES.iter().any(|p| role.name.starts_with(p)) || role.name.trim().is_empty() || role.name.len() > 100 {
             return Err(Error::invalid("not a role a pack may carry"));
         }
@@ -1015,10 +1024,11 @@ impl Kernel {
         let describe = found.as_ref().is_some_and(|(d, pkg, ..)| pkg.is_none() && role.description.is_some() && *d != role.description);
         let portal = found.as_ref().map_or(role.portal, |f| f.2 != role.portal);
         let default = found.as_ref().map_or(role.portal_default, |f| f.3 != role.portal_default);
-        // Every portal person holding a role is applied by an administrator at a screen, never by a key or a job (BD-89).
-        if default && role.portal_default && !ctx.at_screen() {
+        // A new role may come marked for the portal; changing an existing role's portal mark, or any role's default mark,
+        // is an administrator's at a screen, never a key's, an agent's or a job's (BD-89, second read).
+        if (default || (portal && existed)) && !ctx.at_screen() {
             return Err(Error::Forbidden(format!(
-                "{}: a pack that makes a role every portal person holds is installed by an administrator at a screen",
+                "{}: a pack that changes whether a role is for the portal, or held by every portal person, is installed by an administrator at a screen",
                 role.name
             )));
         }
