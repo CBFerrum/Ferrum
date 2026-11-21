@@ -364,6 +364,8 @@ pub struct Kernel {
     pub(crate) background: tokio::sync::Semaphore,
     /// The event sinks at work on this replica, and their share of those turns (outbox.rs).
     pub(crate) sinks: outbox::Sinks,
+    /// Agents shut out of this kernel as a build without them shuts them out (crate::agent::Kernel::close_agents).
+    pub(crate) agents_closed: std::sync::atomic::AtomicBool,
 }
 
 impl Kernel {
@@ -546,6 +548,7 @@ impl Kernel {
             marker: Default::default(),
             background,
             sinks: Default::default(),
+            agents_closed: Default::default(),
         });
         kernel.notice_restore().await?;
         Ok(kernel)

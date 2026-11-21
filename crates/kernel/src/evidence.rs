@@ -35,8 +35,17 @@ impl Kernel {
         let keys = rows!(
             tx,
             ctx,
-            "select k.name, k.scope, u.email as owner, k.created_at, k.expires_at, k.revoked_at, k.last_used_at \
-             from api_key k left join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id where k.tenant_id = $1 order by k.created_at"
+            // An agent's key is that agent's, reaching what its grants do, never the whole API (AG-1-2-fix 3).
+            "select k.name, case when k.agent_id is null then k.scope else 'agent' end as scope, u.email as owner, a.name as agent, \
+             a.grants as agent_grants, k.created_at, k.expires_at, k.revoked_at, k.last_used_at \
+             from api_key k left join app_user u on u.tenant_id = k.tenant_id and u.id = k.user_id \
+             left join agent a on a.tenant_id = k.tenant_id and a.id = k.agent_id where k.tenant_id = $1 order by k.created_at"
+        );
+        let agents = rows!(
+            tx,
+            ctx,
+            "select a.name, a.state, u.email as owner, a.grants, a.classes, a.oauth_client, a.created_at, a.expires_at, a.last_used_at, a.revoked_at \
+             from agent a join app_user u on u.tenant_id = a.tenant_id and u.id = a.owner_id where a.tenant_id = $1 order by a.created_at"
         );
         let support = rows!(
             tx,
@@ -64,7 +73,7 @@ impl Kernel {
             "generated_at": chrono::Utc::now(),
             "platform": env!("CARGO_PKG_VERSION"),
             "note": "Facts read from the system when asked. Not a claim of compliance with any standard.",
-            "access": {"people": people, "role_conflicts": role_conflicts, "api_keys": keys, "support_grants": support, "single_sign_on": sign_in},
+            "access": {"people": people, "role_conflicts": role_conflicts, "api_keys": keys, "agents": agents, "support_grants": support, "single_sign_on": sign_in},
             "outside_parties": {"connections": connections, "plugins": plugins},
             "personal_data": {
                 "declared": ctx.schema.personal_data,

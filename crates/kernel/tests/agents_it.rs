@@ -291,6 +291,10 @@ fn members_may_not_when_the_workspace_says_so() {
         // The setting is an administrator's, at a screen, checked whole.
         let patch = json!({"agents": {"members_may_create": false}});
         refused(k.update_tenant_settings(&ws.admin, patch.as_object().unwrap()).await, "at screen", "by a person at a screen");
+        // Nor an administrator's own key (AG-1-2-fix 9).
+        let admins_key = request(k, &ws.admin, "10.1.2.3").await;
+        assert!(admins_key.is_admin && admins_key.made == Made::Key);
+        refused(k.update_tenant_settings(&admins_key, patch.as_object().unwrap()).await, "at screen", "changing what agents may do");
         refused(
             k.update_tenant_settings(&admin, json!({"agents": {"classes": {"unclassified": "allowed"}}}).as_object().unwrap()).await,
             "invalid",
@@ -621,6 +625,13 @@ fn only_its_owners_live_credential_opens_it() {
         let second = make(k, &screen, json!({"name": "Second"})).await;
         k.set_agent_state(&admin, second, "revoke").await.unwrap();
         refused(as_agent(k, &asha, second).await, "unauthorized", "not valid");
+        // A workspace that is not active opens no agent, as it opens no key (AG-1-2-fix 8).
+        let third = make(k, &screen, json!({"name": "Third"})).await;
+        let owner = request(k, &asha, "10.1.2.3").await;
+        let mut tx = k.db.system_tx().await.unwrap();
+        sqlx::query("update tenant set status = 'suspended' where id = $1").bind(ws.tenant).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        refused(k.agent_ctx(&owner, third).await, "unauthorized", "not valid");
     });
 }
 
@@ -661,7 +672,9 @@ fn owner_and_agent_rates_are_counted() {
             as_agent(k, &asha, one).await.unwrap();
         }
         refused(as_agent(k, &asha, one).await, "too many requests", "too many calls this minute");
-        // Its owner's agents together: four counted so far, the fifth passes, the sixth does not.
+        // Its owner's agents together: the call one's own limit refused is not its owner's (AG-1-2-fix 7), so three are
+        // counted; the fourth and fifth pass, the sixth does not.
+        as_agent(k, &asha, two).await.unwrap();
         as_agent(k, &asha, two).await.unwrap();
         refused(as_agent(k, &asha, two).await, "too many requests", "too many calls this minute");
         let usage = k.agent_usage(&admin, one, 30).await.unwrap();
@@ -693,6 +706,16 @@ fn erasing_the_owner_revokes_and_blanks_their_agents() {
         assert!(name.starts_with("Erased agent ") && !name.contains("Asha"), "{name}");
         let keys: i64 = scalar(k, "select count(*) from api_key where agent_id = $1", id).await;
         assert_eq!(keys, 0);
+        // Its name and its key's are gone from the audit trail and the activity page, as a passkey's are (AG-1-2-fix 4).
+        let named: i64 = scalar(
+            k,
+            "select count(*) from audit_event where entity = 'Agent' and record_id = $1 and (diff::text like '%helper%' or diff::text like '%laptop%')",
+            id,
+        )
+        .await;
+        assert_eq!(named, 0, "the audit trail names no one");
+        let activity = k.agent_activity(&admin, id, None, 50).await.unwrap().to_string();
+        assert!(!activity.contains("helper") && !activity.contains("laptop"), "{activity}");
     });
 }
 
@@ -733,5 +756,211 @@ fn a_sandbox_copies_agents_revoked() {
         assert_eq!((days, keys), (0, 0), "its days and keys are the live workspace's");
         // The live one is untouched.
         assert_eq!(k.agent(&admin, id).await.unwrap()["state"], "active");
+    });
+}
+
+#[test]
+fn an_administrators_pause_is_lifted_only_by_one() {
+    run(async {
+        let (kit, ws, admin) = workspace("pause").await;
+        let k = &kit.k;
+        let mia = at_screen(k, &ws.user("mia@pause.test", &["Clerk"]).await).await;
+        let own = make(k, &mia, json!({"name": "Hers"})).await;
+        k.set_agent_state(&admin, own, "pause").await.unwrap();
+        refused(k.set_agent_state(&mia, own, "resume").await, "forbidden", "an administrator paused this agent");
+        k.set_agent_state(&admin, own, "resume").await.unwrap();
+        // Her own pause is hers to lift.
+        k.set_agent_state(&mia, own, "pause").await.unwrap();
+        assert_eq!(k.set_agent_state(&mia, own, "resume").await.unwrap()["state"], "active");
+    });
+}
+
+/// A workspace where members make none of their own, Mia, and an agent an administrator made for her: grants on Quote,
+/// its networks, an expiry and a rate.
+async fn given(slug: &str) -> (&'static Kit, Ctx, Uuid, chrono::DateTime<chrono::Utc>) {
+    let (kit, ws, admin) = workspace(slug).await;
+    let k = &kit.k;
+    let mia = at_screen(k, &ws.user(&format!("mia@{slug}.test"), &["North Approver"]).await).await;
+    settings(k, &admin, json!({"members_may_create": false})).await;
+    let until = chrono::Utc::now() + chrono::Duration::days(30);
+    let grants = json!({"entities": {"Quote": ["read", "write"]}, "operations": ["agentest.quote.*"]});
+    let made =
+        json!({"name": "Given", "owner": mia.user, "grants": grants, "networks": ["10.9.0.0/16"], "expires_at": until, "limits": {"calls_per_minute": 60}});
+    let id = make(k, &admin, made).await;
+    (kit, mia, id, until)
+}
+
+#[test]
+fn an_owner_may_narrow_an_administrators_agent_never_widen_its_grants() {
+    run(async {
+        let (kit, mia, id, until) = given("narrow-grants").await;
+        let k = &kit.k;
+        for grants in [
+            json!({"entities": {"Quote": ["read", "write", "delete"]}, "operations": ["agentest.quote.*"]}),
+            json!({"entities": {"*": ["read"]}, "operations": ["agentest.quote.*"]}),
+            json!({"entities": {"Quote": ["read"]}, "operations": []}),
+        ] {
+            refused(k.update_agent(&mia, id, &json!({"revision": 1, "grants": grants})).await, "forbidden", "an administrator chose this");
+        }
+        let narrower = json!({"entities": {"Quote": ["read", "write (own records)"]}, "operations": ["agentest.quote.approve"]});
+        let a = k
+            .update_agent(&mia, id, &json!({"revision": 1, "grants": narrower, "name": "Mine now", "expires_at": until - chrono::Duration::days(1)}))
+            .await
+            .unwrap();
+        assert_eq!(a["grants"], narrower);
+        k.set_agent_state(&mia, id, "pause").await.unwrap();
+        k.set_agent_state(&mia, id, "revoke").await.unwrap();
+    });
+}
+
+#[test]
+fn an_owner_never_clears_or_widens_an_administrators_networks_or_expiry() {
+    run(async {
+        let (kit, mia, id, until) = given("narrow-reach").await;
+        let k = &kit.k;
+        for (field, value) in [
+            ("networks", Value::Null),
+            ("networks", json!(["10.0.0.0/8"])),
+            ("expires_at", Value::Null),
+            ("expires_at", json!(until + chrono::Duration::days(1))),
+        ] {
+            refused(k.update_agent(&mia, id, &json!({"revision": 1, field: value})).await, "forbidden", "an administrator chose this");
+        }
+    });
+}
+
+#[test]
+fn an_owner_never_raises_an_administrators_limits() {
+    run(async {
+        let (kit, mia, id, _) = given("narrow-limits").await;
+        let k = &kit.k;
+        refused(k.update_agent(&mia, id, &json!({"revision": 1, "limits": {"calls_per_minute": 120}})).await, "forbidden", "an administrator chose this");
+        k.update_agent(&mia, id, &json!({"revision": 1, "limits": {"calls_per_minute": 30}})).await.unwrap();
+    });
+}
+
+#[test]
+fn a_persons_key_routes_never_touch_an_agents_keys() {
+    run(async {
+        let (kit, ws, _admin) = workspace("personkeys").await;
+        let k = &kit.k;
+        let asha = at_screen(k, &ws.user("asha@personkeys.test", &["Clerk"]).await).await;
+        let id = make(k, &asha, json!({"name": "Mine"})).await;
+        let (key, _) = k.create_agent_key(&asha, id, "laptop", None).await.unwrap();
+        refused(k.set_api_key_networks(&asha, key, &["10.0.0.0/8".to_string()]).await, "not found", "API key");
+        refused(k.revoke_api_key(&asha, key).await, "not found", "API key");
+        let untouched: i64 = scalar(k, "select count(*) from api_key where id = $1 and revoked_at is null and networks is null", key).await;
+        assert_eq!(untouched, 1);
+    });
+}
+
+#[test]
+fn an_agents_key_line_is_filed_under_it_naming_its_owner() {
+    run(async {
+        let (kit, ws, admin) = workspace("keyline").await;
+        let k = &kit.k;
+        let asha = ws.user("asha@keyline.test", &["Clerk"]).await;
+        let id = make(k, &admin, json!({"name": "Hers", "owner": asha.user})).await;
+        let (key, _) = k.create_agent_key(&admin, id, "laptop", None).await.unwrap();
+        k.revoke_agent_key(&admin, id, key).await.unwrap();
+        let owners: Vec<Value> = {
+            let mut tx = k.db.system_tx().await.unwrap();
+            let v = sqlx::query_scalar(
+                "select coalesce(diff->'owner', 'null') from audit_event where entity = 'Agent' and record_id = $1 and action in ('key', 'revoke_key')",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            v
+        };
+        assert_eq!(owners, vec![json!(asha.user), json!(asha.user)]);
+    });
+}
+
+#[test]
+fn the_evidence_export_lists_agents() {
+    run(async {
+        let (kit, ws, admin) = workspace("evidence").await;
+        let k = &kit.k;
+        make(k, &admin, json!({"name": "Bookkeeper", "grants": {"entities": {"Quote": ["read"]}}})).await;
+        let pack = k.evidence_pack(&ws.admin).await.unwrap();
+        let agents = pack["access"]["agents"].as_array().cloned().unwrap_or_default();
+        assert!(agents.iter().any(|a| a["name"] == "Bookkeeper" && a["grants"]["entities"]["Quote"] == json!(["read"])), "the export lists agents: {agents:?}");
+    });
+}
+
+#[test]
+fn the_evidence_export_lists_an_agents_key_as_its() {
+    run(async {
+        let (kit, ws, admin) = workspace("evidencekey").await;
+        let k = &kit.k;
+        let id = make(k, &admin, json!({"name": "Bookkeeper", "grants": {"entities": {"Quote": ["read"]}}})).await;
+        k.create_agent_key(&admin, id, "laptop", None).await.unwrap();
+        let pack = k.evidence_pack(&ws.admin).await.unwrap();
+        let keys = pack["access"]["api_keys"].as_array().cloned().unwrap_or_default();
+        let laptop = keys.iter().find(|k| k["name"] == "laptop").expect("its key");
+        assert_eq!((laptop["scope"].clone(), laptop["agent"].clone()), (json!("agent"), json!("Bookkeeper")), "never a whole-API key: {laptop}");
+        assert_eq!(laptop["agent_grants"]["entities"]["Quote"], json!(["read"]));
+    });
+}
+
+#[test]
+fn nothing_of_agents_while_the_door_is_shut() {
+    run(async {
+        let (kit, _ws, admin) = workspace("shut").await;
+        let id = make(&kit.k, &admin, json!({"name": "Before"})).await;
+        // A kernel that refuses agents as a build without them does (AG-1-2-fix 5, 6).
+        let shut = kit.replica().await;
+        shut.close_agents();
+        refused(shut.create_agent(&admin, &json!({"name": "Another"})).await, "agents closed", "not available yet");
+        refused(shut.create_agent_key(&admin, id, "key", None).await, "agents closed", "not available yet");
+        refused(as_agent(&shut, &admin, id).await, "agents closed", "not available yet");
+        as_agent(&kit.k, &admin, id).await.unwrap();
+    });
+}
+
+#[test]
+fn an_agents_context_is_made_clean() {
+    run(async {
+        let (kit, _ws, admin) = workspace("clean").await;
+        let k = &kit.k;
+        let id = make(k, &admin, json!({"name": "Clean"})).await;
+        let owner = request(k, &admin, "10.1.2.3").await;
+        // Built from a context that is the system, an app's, under a key's write: none of it is the agent's (AG-1-2-fix 8).
+        let dirty = Ctx { is_system: true, app: Some("crm".into()), effect_key: Some("crm:key-1".into()), ..owner };
+        let agent = k.agent_ctx(&dirty, id).await.unwrap();
+        assert!(!agent.is_system, "never the system");
+        assert!(agent.app.is_none(), "never an app");
+        assert!(agent.effect_key.is_none(), "never under another write's key");
+    });
+}
+
+#[test]
+fn the_console_is_not_an_agents_to_read() {
+    run(async {
+        let (kit, _ws, admin) = workspace("noconsole").await;
+        let k = &kit.k;
+        let id = make(k, &admin, json!({"name": "Reader"})).await;
+        let agent = as_agent(k, &admin, id).await.unwrap();
+        refused(k.agents(&agent, None, None).await, "forbidden", "console");
+        refused(k.agent(&agent, id).await, "forbidden", "console");
+        refused(k.agent_keys(&agent, id).await, "forbidden", "console");
+        refused(k.agent_usage(&agent, id, 30).await, "forbidden", "console");
+        refused(k.agent_activity(&agent, id, None, 50).await, "forbidden", "console");
+    });
+}
+
+#[test]
+fn an_owner_who_loses_a_role_narrows_its_agents_next_request() {
+    run(async {
+        let (kit, ws, admin) = workspace("loses").await;
+        let k = &kit.k;
+        let asha = ws.user("asha@loses.test", &["Clerk"]).await;
+        let id = make(k, &admin, json!({"name": "Hers", "owner": asha.user, "grants": {"entities": {"Quote": ["read", "write"]}}})).await;
+        assert_eq!(as_agent(k, &asha, id).await.unwrap().perms.access("Quote", Action::Read), Access::Own);
+        k.set_user_roles(&ws.admin, asha.user, &[]).await.unwrap();
+        assert_eq!(as_agent(k, &asha, id).await.unwrap().perms.access("Quote", Action::Read), Access::None, "its owner's rights as they are now");
     });
 }

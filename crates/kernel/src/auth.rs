@@ -640,15 +640,18 @@ impl Kernel {
         no_agent(ctx)?;
         let networks = key_networks(networks)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let n = sqlx::query("update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and (user_id = $3 or $4)")
-            .bind(ctx.tenant)
-            .bind(id)
-            .bind(ctx.user)
-            .bind(ctx.is_admin)
-            .bind(&networks)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        // A person's key, never an agent's: those change only through the agent's console (AG-1-2-fix 2).
+        let n = sqlx::query(
+            "update api_key set networks = $5 where tenant_id = $1 and id = $2 and revoked_at is null and agent_id is null and (user_id = $3 or $4)",
+        )
+        .bind(ctx.tenant)
+        .bind(id)
+        .bind(ctx.user)
+        .bind(ctx.is_admin)
+        .bind(&networks)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         if n == 0 {
             return Err(Error::NotFound("API key".into()));
         }
@@ -660,7 +663,7 @@ impl Kernel {
     pub async fn revoke_api_key(&self, ctx: &Ctx, id: Uuid) -> Result<()> {
         no_agent(ctx)?;
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
-        let n = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and id = $2 and (user_id = $3 or $4)")
+        let n = sqlx::query("update api_key set revoked_at = now() where tenant_id = $1 and id = $2 and agent_id is null and (user_id = $3 or $4)")
             .bind(ctx.tenant)
             .bind(id)
             .bind(ctx.user)

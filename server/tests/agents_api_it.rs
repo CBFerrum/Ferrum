@@ -223,4 +223,32 @@ async fn scenario() {
     assert_eq!(status, StatusCode::OK, "an agent an administrator made for her is hers to pause");
     let (status, _) = call(&router, Method::POST, &at(&admins["id"], "/pause"), her, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Her key changes none of it either: a change, a key made (AG-1-2-fix 9).
+    for (m, path, body) in [
+        (Method::PATCH, at(&for_her["id"], ""), json!({"revision": 1, "name": "Scripted"})),
+        (Method::POST, at(&for_her["id"], "/keys"), json!({"name": "scripted"})),
+    ] {
+        let (status, answer) = call(&router, m.clone(), &path, Cred::Bearer(&mia_key), Some(body)).await;
+        assert_eq!((status, answer["error"].clone()), (StatusCode::FORBIDDEN, json!("at_screen")), "{m} {path}: {answer}");
+    }
+
+    // While the door is shut, as in a build without agents: no part of the console is there, and no agent's key opens
+    // anything (AG-1-2-fix 5, 6).
+    let (status, live) = call(&router, Method::POST, &at(&for_her["id"], "/keys"), her, Some(json!({"name": "before"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{live}");
+    st.kernel.close_agents();
+    for (m, path) in [
+        (Method::GET, "/api/agents".to_string()),
+        (Method::POST, "/api/agents".to_string()),
+        (Method::GET, at(&for_her["id"], "")),
+        (Method::GET, at(&for_her["id"], "/keys")),
+        (Method::POST, at(&for_her["id"], "/keys")),
+        (Method::GET, at(&for_her["id"], "/usage")),
+    ] {
+        let (status, answer) = call(&router, m.clone(), &path, admin, Some(json!({"name": "After"}))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{m} {path}: {answer}");
+    }
+    let (status, _) = call(&router, Method::GET, "/api/v1/Contact", Cred::Bearer(live["key"].as_str().unwrap()), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "an agent's key opens nothing");
 }
