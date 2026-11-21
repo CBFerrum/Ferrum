@@ -51,7 +51,13 @@ struct Echo(&'static str);
 impl Site for Echo {
     async fn handle(&self, _: &Kernel, req: SiteRequest) -> ferrum_kernel::Result<SiteResponse> {
         let user = req.user.as_ref().map(|c| json!({"email": c.email, "outside": c.outside, "admin": c.is_admin, "roles": c.roles}));
+        if req.path.ends_with("fail") {
+            return Err(ferrum_kernel::Error::invalid("this order cannot be read"));
+        }
         let mut r = SiteResponse::json(200, &json!({"site": self.0, "path": req.path, "user": user}));
+        if req.path.ends_with("nostore") {
+            r.headers.push(("cache-control".into(), "no-store".into()));
+        }
         if req.path.ends_with("cached") {
             r.headers.push(("cache-control".into(), "public, max-age=60".into()));
         }
@@ -227,7 +233,12 @@ const SESSION: fn() -> &'static str = || ferrum_server::shell::cookie_name(false
 /// Steps 1 and 2: the site host sends the browser to the portal with a state it keeps; the portal, signed in, sends it
 /// back with a code. `(state cookie, callback path)`.
 async fn handed(w: &World) -> ((String, String), String) {
-    let (status, h, body) = call(&w.r, Method::GET, SHOP, "/_auth/sign-in?next=/account", &[], &[]).await;
+    handed_to(w, "/account").await
+}
+
+/// [`handed`], to come back to `next`.
+async fn handed_to(w: &World, next: &str) -> ((String, String), String) {
+    let (status, h, body) = call(&w.r, Method::GET, SHOP, &format!("/_auth/sign-in?next={next}"), &[], &[]).await;
     assert!(status.is_redirection(), "{status} {body}");
     let state_cookie = cookies(&h).into_iter().find(|(n, _)| n != SESSION()).expect("the state cookie");
     let (host, handoff) = location(&h);
@@ -564,5 +575,145 @@ fn a_signed_in_answer_is_never_cached_for_others() {
             assert_eq!(h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("private"), "{path}: {h:?}");
             assert!(h.get_all(header::VARY).iter().any(|v| v.to_str().unwrap_or_default().to_ascii_lowercase().contains("cookie")), "{path}: {h:?}");
         }
+    });
+}
+
+/// Every answer to a request that carried a site session is private, an app's error and the platform's error page
+/// included; an app's `no-store` stays (BD-89, second read, 5).
+#[test]
+#[serial]
+fn every_signed_in_answer_is_private() {
+    run(|| async {
+        let w = world().await;
+        let site = site_session(&w).await;
+        let same = [("sec-fetch-site", "same-origin")];
+        for (path, cache) in [
+            ("/api/site/acme/shop/fail", "private"),
+            ("/fail", "private"),
+            ("/nostore", "private, no-store"),
+            ("/api/site/acme/shop/nostore", "private, no-store"),
+        ] {
+            let (status, h, body) = call(&w.r, Method::GET, SHOP, path, &[(SESSION(), &site)], &same).await;
+            assert_eq!(h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some(cache), "{path}: {status} {body}");
+            assert!(h.get_all(header::VARY).iter().any(|v| v.to_str().unwrap_or_default().to_ascii_lowercase().contains("cookie")), "{path}: {h:?}");
+        }
+    });
+}
+
+/// The handoff mints a code for a portal person alone: a guest gets none (BD-89, second read, 6).
+#[test]
+#[serial]
+fn handoff_mints_nothing_for_a_guest() {
+    run(|| async {
+        let w = world().await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let admin = w.k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+        let gus = w.k.create_user(&admin, "gus@acme.test", "Gus", Some(PASSWORD), &[], false).await.unwrap();
+        w.k.set_user_kind(&admin, gus, "guest").await.unwrap();
+        let guest = w.k.login("acme", "gus@acme.test", PASSWORD).await.unwrap();
+        let sid = w.k.open_session(&guest, std::time::Duration::from_secs(600), "it", "203.0.113.5", None).await.unwrap();
+        let mut claims = serde_json::Map::new();
+        claims.insert("tenant".into(), json!(guest.tenant.to_string()));
+        claims.insert("tv".into(), json!(guest.token_version));
+        claims.insert("sid".into(), json!(sid.to_string()));
+        let cookie = w.st.sessions.sign(600, gus.to_string(), claims).unwrap();
+        let (_, h, _) = call(&w.r, Method::GET, SHOP, "/_auth/sign-in?next=/account", &[], &[]).await;
+        let (_, handoff) = location(&h);
+        let (status, h, body) = call(&w.r, Method::GET, PORTAL, &handoff, &[(SESSION(), &cookie)], &[]).await;
+        assert!(h.get(header::LOCATION).is_none_or(|l| !l.to_str().unwrap().contains("/_auth/callback")), "{status} {body}");
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let minted: i64 = sqlx::query_scalar("select count(*) from host_code").fetch_one(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(minted, 0, "nothing minted");
+    });
+}
+
+/// The site callback sits behind the sign-in limiter (BD-89, second read, 6).
+#[test]
+#[serial]
+fn the_site_callback_is_limited() {
+    run(|| async {
+        let w = world().await;
+        let mut limited = false;
+        for i in 0..30 {
+            let (status, _, _) = call(&w.r, Method::GET, SHOP, &format!("/_auth/callback?code=c{i}&state=abc"), &[], &[]).await;
+            limited |= status == StatusCode::TOO_MANY_REQUESTS;
+        }
+        assert!(limited, "thirty tries from one network are not all answered");
+    });
+}
+
+/// Signing out everywhere, or an administrator disabling the person, ends an open site session (BD-89, second read, 7).
+#[test]
+#[serial]
+fn signing_out_everywhere_ends_a_site_session() {
+    run(|| async {
+        let w = world().await;
+        let site = site_session(&w).await;
+        let (_, _, body) = call(&w.r, Method::GET, SHOP, "/hello", &[(SESSION(), &site)], &[]).await;
+        assert_eq!(user_of(&body)["email"], "pat@acme.test", "{body}");
+        let (status, _, body) =
+            call(&w.r, Method::POST, PORTAL, "/api/auth/logout_all", &[(SESSION(), &w.customer)], &[("sec-fetch-site", "same-origin")]).await;
+        assert!(status.is_success(), "{status} {body}");
+        let (_, _, body) = call(&w.r, Method::GET, SHOP, "/hello", &[(SESSION(), &site)], &[]).await;
+        assert_eq!(user_of(&body), Value::Null, "signed out everywhere: {body}");
+    });
+}
+
+#[test]
+#[serial]
+fn disabling_the_person_ends_a_site_session() {
+    run(|| async {
+        let w = world().await;
+        let site = site_session(&w).await;
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let admin = w.k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+        let pat = w.k.login("acme", "pat@acme.test", PASSWORD).await.unwrap().user;
+        w.k.set_user_active(&admin, pat, false).await.unwrap();
+        let (_, _, body) = call(&w.r, Method::GET, SHOP, "/hello", &[(SESSION(), &site)], &[]).await;
+        assert_eq!(user_of(&body), Value::Null, "disabled: {body}");
+    });
+}
+
+/// The site callback sends the browser on only to a path of its own host (BD-89, second read, 7).
+#[test]
+#[serial]
+fn the_site_callback_keeps_to_its_host() {
+    run(|| async {
+        let w = world().await;
+        let ((n, v), callback) = handed_to(&w, "//evil.example/steal").await;
+        let (status, h, body) = call(&w.r, Method::GET, SHOP, &callback, &[(&n, &v)], &[]).await;
+        assert!(status.is_redirection(), "{status} {body}");
+        let to = h.get(header::LOCATION).unwrap().to_str().unwrap();
+        assert!(to.starts_with('/') && !to.starts_with("//") && !to.contains("evil"), "{to}");
+    });
+}
+
+/// A site address released, or given later to another app, takes its sessions with it (BD-89, second read, 7).
+#[test]
+#[serial]
+fn a_released_site_address_ends_its_sessions() {
+    run(|| async {
+        let w = world().await;
+        let site = site_session(&w).await;
+        w.k.release_host(SHOP, Some(0)).await.unwrap();
+        let mut tx = w.k.db.system_tx().await.unwrap();
+        let open: i64 =
+            sqlx::query_scalar("select count(*) from user_session where host = $1 and revoked_at is null").bind(SHOP).fetch_one(&mut *tx).await.unwrap();
+        // Long ago, so the address may be given again: to the workspace's other app.
+        sqlx::query("update tenant_host set released_at = now() - interval '400 days', leaving_until = null where host = $1")
+            .bind(SHOP)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(open, 0, "the released address's sessions are ended");
+        let s = w.k.login("acme", "admin@acme.test", PASSWORD).await.unwrap();
+        let admin = w.k.load_ctx(s.tenant, s.user, None, "it".into()).await.unwrap();
+        w.k.add_host(&admin, SHOP, "site:other").await.unwrap();
+        w.k.host_checked(SHOP, true).await.unwrap();
+        let (status, _, body) = call(&w.r, Method::GET, SHOP, "/hello", &[(SESSION(), &site)], &[]).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!((serde_json::from_str::<Value>(&body).unwrap()["site"].clone(), user_of(&body)), (json!("other"), Value::Null), "{body}");
     });
 }

@@ -2222,10 +2222,23 @@ session at all: the handoff gives a code only to a portal person and sends a mem
 (the callback, too, takes a portal person's code alone); members as customers wait for a separate customer identity.
 A role every portal person holds is named by no conflict rule and no `role:` recipient (refused when saved and when
 sent); the evidence pack and a person's data copy list it as `held_by_every_portal_person`. Whether a role is a portal
-role, or one every portal person holds, is changed by an administrator at a screen (`PUT …/portal`); a pack's install
-applies marks as before. An answer to a request carrying a site session is `Cache-Control: private`, `Vary: Cookie`,
-whatever the app set. `POST /_auth/sign-out` on the site ends that session; signing out everywhere ends it too (token
-version).
+role, or one every portal person holds, is changed by an administrator at a screen (`PUT …/portal`, both marks in one
+transaction); a pack may bring a new role marked for the portal, but changes an existing role's portal mark, or any
+role's default mark, only when installed at a screen. Removing the portal mark records the default mark it clears. A
+conflict rule and the default mark take the same lock (the role's row).
+
+**Two sets of roles (second read).** A role a portal person holds only by default (`Ctx.default_roles`, never in
+`Ctx.roles`) counts for entity rights (`PermSet`, so the row rules bound it) and for a record's action, transition and
+workflow-state roles (`Ctx::has_record_role`), and nowhere else: deciding, seeing or closing a task or a case, a
+connection's `roles`, a capability's `role:` grant other than a transition's, a builder record shared with a role, a
+document's roles, approvals, recipients and app code asking `has_role` all take the roles given.
+
+**Answers and ends.** Every answer to a request that carried the session cookie on a site host is private
+(`Cache-Control: private`, `Vary: Cookie`), errors, error pages and redirects included; an app's `no-store` stays
+(`private, no-store`). The handoff and the site callback sit behind the sign-in limiter, and the handoff mints a code
+only for a portal person (a guest is refused there). `POST /_auth/sign-out` on the site ends that session; signing out
+everywhere (token version) and disabling the person end it too; releasing a site address ends every session made for
+it, so an address given back or later given to another app revives none.
 
 ## BD-90. A connection's inbound call answered by its app
 

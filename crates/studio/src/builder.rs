@@ -1822,5 +1822,9 @@ mod tests {
         assert!(visible(&ctx, REPORT, &doc(json!({"created_by": other, "sharing": "everyone"}))));
         assert!(visible(&ctx, REPORT, &doc(json!({"created_by": other, "sharing": "roles", "roles": [{"role": "Sales User"}]}))));
         assert!(!visible(&ctx, REPORT, &doc(json!({"created_by": other, "sharing": "roles", "roles": [{"role": "Accounts Manager"}]}))));
+        // A role every portal person holds is no role a record is shared with (BD-89, second read).
+        ctx.roles = vec![];
+        ctx.default_roles = vec!["Sales User".into()];
+        assert!(!visible(&ctx, REPORT, &doc(json!({"created_by": other, "sharing": "roles", "roles": [{"role": "Sales User"}]}))));
     }
 }

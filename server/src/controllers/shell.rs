@@ -162,6 +162,7 @@ async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, St
     if headers.contains_key(header::AUTHORIZATION) {
         return Ok(refused());
     }
+    st.login_limiter.check_from(headers, "site-sign-in").await?;
     // Not signed in here: the sign-in page, which comes back to this address.
     let (ctx, _, _) = match person(st, headers, uri).await {
         Ok(p) => p,
@@ -179,7 +180,8 @@ async fn handoff(st: &AppState, headers: &HeaderMap, uri: &Uri, q: &[(String, St
         ));
     }
     let Some(host) = ferrum_kernel::shell::normalize_host(host) else { return Ok(refused()) };
-    if !st.kernel.is_site_host_of(ctx.tenant, &host).await? {
+    // A code is minted for a portal person alone: a guest is refused here, not only when it is taken.
+    if !st.kernel.is_site_host_of(ctx.tenant, &host).await? || st.kernel.user_kind(ctx.tenant, ctx.user).await? != "portal" {
         return Ok(refused());
     }
     let session = ferrum_kernel::auth::Session { tenant: ctx.tenant, user: ctx.user, token_version: st.kernel.token_version(ctx.tenant, ctx.user).await? };
@@ -203,6 +205,7 @@ async fn site_callback(st: &AppState, headers: &HeaderMap, tenant: Uuid, q: &[(S
         }
         res
     };
+    st.login_limiter.check_from(headers, "site-sign-in").await?;
     let (Some(code), Some(state)) = (query(q, "code"), query(q, "state")) else { return Ok(failed("The link is incomplete.")) };
     let kept = name.as_deref().and_then(|n| shell::cookie(headers, n)).unwrap_or_default();
     let (kept_state, next) = kept.split_once('.').unwrap_or_default();
@@ -380,7 +383,7 @@ async fn home(State(app): State<AppContext>, headers: HeaderMap, uri: Uri, Query
         return Ok(res);
     }
     match place {
-        Place::Site(tenant, app_id) => return site_page(&st, tenant, &app_id, &headers, &uri, "", q).await,
+        Place::Site(tenant, app_id) => return super::sites::private_if_carried(&st, &headers, site_page(&st, tenant, &app_id, &headers, &uri, "", q).await),
         Place::Portal(tenant) => return portal_root(&st, &headers, tenant).await,
         Place::Accounts => return super::accounts::home(&st, &headers).await,
         Place::Hooks | Place::Nowhere => return Ok(nowhere()),
@@ -596,7 +599,9 @@ async fn page(
     }
     match place {
         // A site host serves the platform's own scripts and sign-in return first (BD-87); the rest is the app's.
-        Place::Site(tenant, app_id) if !matches!(first, "_shell" | "_auth") => return site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await,
+        Place::Site(tenant, app_id) if !matches!(first, "_shell" | "_auth") => {
+            return super::sites::private_if_carried(&st, &headers, site_page(&st, tenant, &app_id, &headers, &uri, &path, q).await);
+        }
         // The portal's host is the customer's whole public side: the portal, signing in, links to records, published
         // lists and every public page of its workspace (BD-87); the rest leads to the portal.
         Place::Portal(_)
@@ -628,11 +633,12 @@ async fn page(
         // A site's sign-in, handed from the portal (BD-89).
         "_auth" if matches!(place, Place::Site(..)) => {
             let Place::Site(tenant, _) = &place else { return Ok(not_found(uri.path())) };
-            return match rest {
+            let res = match rest {
                 Some("sign-in") => site_sign_in(&st, &headers, *tenant, &q).await,
                 Some("callback") => site_callback(&st, &headers, *tenant, &q).await,
                 _ => Ok(not_found(uri.path())),
             };
+            return super::sites::private_if_carried(&st, &headers, res);
         }
         "_auth" if rest == Some("handoff") => return handoff(&st, &headers, &uri, &q).await,
         "_auth" if rest == Some("callback") => return auth_callback(&st, &headers, &q).await,
@@ -1133,7 +1139,6 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
     };
     // A customer signed in on this host (BD-89), as their customer self.
     let user = super::sites::site_user(st, headers, &Method::GET, tenant, None).await?;
-    let signed_in = user.is_some();
     let mut req = super::sites::request(tenant, user, Method::GET, uri, format!("_site/{path}"), q.into_iter().collect(), headers, Bytes::new())?;
     let scheme = if st.shell.secure { "https" } else { "http" };
     let host = shell::request_host(headers).unwrap_or_default();
@@ -1168,9 +1173,6 @@ async fn site_page(st: &AppState, tenant: Uuid, app_id: &str, headers: &HeaderMa
         if !h.contains_key(name) {
             h.insert(name, HeaderValue::from_static(value));
         }
-    }
-    if signed_in {
-        super::sites::private(h);
     }
     Ok(res)
 }
@@ -1810,7 +1812,7 @@ async fn version(Auth(ctx): Auth, State(app): State<AppContext>, Query(q): Query
 async fn page_post(State(app): State<AppContext>, headers: HeaderMap, Path(path): Path<String>, body: Bytes) -> ApiResult<Response> {
     let st = app_state(&app)?;
     if path == "_auth/sign-out" {
-        return site_sign_out(&st, &headers).await;
+        return super::sites::private_if_carried(&st, &headers, site_sign_out(&st, &headers).await);
     }
     let Some(("public", rest)) = path.split_once('/') else { return Ok(StatusCode::NOT_FOUND.into_response()) };
     // A host serving one workspace counts only that workspace's pages, as it shows only those.

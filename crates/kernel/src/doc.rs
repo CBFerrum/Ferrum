@@ -1366,7 +1366,7 @@ impl Kernel {
         let state = doc.get("workflow_state").and_then(Value::as_str).unwrap_or(&wf.def.initial_state);
         if let Some(s) = wf.def.states.iter().find(|s| s.name == state)
             && !s.edit_roles.is_empty()
-            && !s.edit_roles.iter().any(|r| ctx.has_role(r))
+            && !s.edit_roles.iter().any(|r| ctx.has_record_role(r))
         {
             return Err(Error::Forbidden(format!("documents in state '{state}' can only be edited by: {}", s.edit_roles.join(", "))));
         }

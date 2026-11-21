@@ -91,7 +91,9 @@ impl Kernel {
     /// BD-02), for the portal's generic pages, each with what they may do there; reference data they
     /// may read whole to pick from is not listed. Empty for someone holding none.
     pub async fn portal_entities(&self, ctx: &Ctx) -> Result<Vec<Value>> {
-        if ctx.roles.is_empty() {
+        // Entity rights: the roles held by default count (BD-89).
+        let held: Vec<String> = ctx.roles.iter().chain(&ctx.default_roles).cloned().collect();
+        if held.is_empty() {
             return Ok(vec![]);
         }
         let mut tx = self.db.tenant_tx(ctx.tenant).await?;
@@ -100,7 +102,7 @@ impl Kernel {
              where p.tenant_id = $1 and r.portal and p.role = any($2) and p.can_read and (p.if_owner or p.via is not null) order by 1",
         )
         .bind(ctx.tenant)
-        .bind(&ctx.roles)
+        .bind(&held)
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;

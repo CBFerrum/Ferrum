@@ -193,6 +193,23 @@ async fn public(
     body: Body,
 ) -> ApiResult<Response> {
     let st = app_state(&app)?;
+    let res = answer(&st, tenant, package, path, method, uri, query, &headers, body).await;
+    private_if_carried(&st, &headers, res)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn answer(
+    st: &crate::state::AppState,
+    tenant: String,
+    package: String,
+    path: String,
+    method: Method,
+    uri: Uri,
+    query: HashMap<String, String>,
+    headers: &HeaderMap,
+    body: Body,
+) -> ApiResult<Response> {
+    let headers = headers.clone();
     // Counted per network and workspace once found; a workspace that does not exist counts on the network alone (BD-86).
     let found = st.kernel.tenant_by_slug(&tenant).await;
     st.public_limiter.check_from(&headers, &found.as_ref().map(|(id, _)| id.to_string()).unwrap_or_default()).await?;
@@ -203,23 +220,30 @@ async fn public(
     let schema = st.kernel.registry.schema(tenant).await?;
     let site = st.kernel.hooks.site(&package).filter(|_| schema.packages.contains(&package)).cloned();
     let site = site.ok_or_else(|| ApiError(Error::NotFound(format!("package {package}"))))?;
-    let user = site_user(&st, &headers, &method, tenant, Some(&package)).await?;
-    let signed_in = user.is_some();
+    let user = site_user(st, &headers, &method, tenant, Some(&package)).await?;
     let body = read_body(&headers, body, site.max_body_for(method.as_str(), &path)).await?;
     let req = request(tenant, user, method, &uri, path, query, &headers, body)?;
-    let mut res = respond(&st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
+    let mut res = respond(st, tenant, &package, handle(&st.kernel, site, req).await?, range(&headers)).await?;
     super::system::contain(res.headers_mut());
-    if signed_in {
-        private(res.headers_mut());
-    }
     Ok(res)
 }
 
 /// An answer made for a signed-in customer is that browser's alone, whatever the app said (BD-89): never kept by a
-/// cache for the next visitor.
+/// cache for the next visitor. An app's `no-store` stays.
 pub(crate) fn private(h: &mut axum::http::HeaderMap) {
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private"));
+    let no_store = h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()).is_some_and(|v| v.to_ascii_lowercase().contains("no-store"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static(if no_store { "private, no-store" } else { "private" }));
     h.append(header::VARY, HeaderValue::from_static("Cookie"));
+}
+
+/// `res` as the answer to a request on a site host: [`private`] whenever the request carried a session cookie, errors and
+/// redirects included (BD-89, second read).
+pub(crate) fn private_if_carried(st: &crate::state::AppState, headers: &HeaderMap, res: ApiResult<Response>) -> ApiResult<Response> {
+    let mut res = res.unwrap_or_else(IntoResponse::into_response);
+    if crate::shell::session_cookie(headers, st.shell.secure).is_some() {
+        private(res.headers_mut());
+    }
+    Ok(res)
 }
 
 /// The customer a site session makes of this request (docs/builder/decisions.md BD-89): only on a site host of `tenant`,

@@ -1461,6 +1461,7 @@ pub(crate) mod tests {
             email: "u@x.test".into(),
             full_name: "U".into(),
             roles: vec![],
+            default_roles: vec![],
             is_admin: false,
             admin_since: None,
             is_system: false,
